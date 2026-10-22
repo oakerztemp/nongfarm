@@ -192,7 +192,12 @@
 .farm-toolbar-btns { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 
 .order-board { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
-.order-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.order-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%;
+  background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.order-head .order-reset { margin-left: auto; }
+.order-ready { background: var(--success); color: var(--primary-text); }
 .order-sub { margin-top: 4px; font-weight: 700; }
 .order-list { display: flex; flex-direction: column; gap: 8px; }
 .order-card {

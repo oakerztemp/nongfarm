@@ -144,7 +144,17 @@ function plotCard(state, plot, i, fertCount) {
   </div>`;
 }
 
-// ---- orders board (top of the farm view)
+// ---- orders board (below the plots, collapsible; open state is a per-device preference)
+
+const ORDERS_OPEN_KEY = 'nongfarm_orders_open';
+let ordersOpen = true;
+try { ordersOpen = localStorage.getItem(ORDERS_OPEN_KEY) !== '0'; } catch { /* storage blocked: stay open */ }
+
+function toggleOrders() {
+  ordersOpen = !ordersOpen;
+  try { localStorage.setItem(ORDERS_OPEN_KEY, ordersOpen ? '1' : '0'); } catch { /* ignore */ }
+  emit('change');
+}
 
 function orderCard(state, o, weekly) {
   const lines = Object.entries(o.items || {}).map(([id, n]) => {
@@ -171,12 +181,22 @@ function ordersHtml(state) {
   const o = state.orders;
   if (!o || !Array.isArray(o.list) || !o.list.length) return '';
   const reset = nextMidnight(now());
+  const all = o.weekly ? [...o.list, o.weekly] : o.list;
+  const open = all.filter(x => x && !x.done);
+  const ready = open.filter(x => Object.entries(x.items || {}).every(([id, n]) => invOf(state, id) >= n)).length;
+  const summary = ready > 0
+    ? `<span class="badge order-ready">ส่งได้ ${ready}</span>`
+    : `<span class="muted farm-small">เหลือ ${open.length} ใบ</span>`;
   const weekly = o.weekly ? `<div class="order-sub">🏆 ออเดอร์ประจำสัปดาห์ <span class="muted farm-small">รางวัลใหญ่ + ไข่พิเศษ</span></div>${orderCard(state, o.weekly, true)}` : '';
+  const body = ordersOpen
+    ? `<div class="order-list">${o.list.map(x => orderCard(state, x, false)).join('')}</div>${weekly}`
+    : '';
   return `<div class="order-board card">
-    <div class="order-head"><b>📋 ออเดอร์วันนี้</b>
-      <span class="muted farm-small">รีเซ็ตใน <span data-countdown="${reset}">${formatDuration(reset - now())}</span></span></div>
-    <div class="order-list">${o.list.map(x => orderCard(state, x, false)).join('')}</div>
-    ${weekly}
+    <button type="button" class="order-head" data-action="toggle-orders" aria-expanded="${ordersOpen}">
+      <b>📋 ออเดอร์วันนี้</b> ${summary}
+      <span class="muted farm-small order-reset">รีเซ็ตใน <span data-countdown="${reset}">${formatDuration(reset - now())}</span> ${ordersOpen ? '▲' : '▼'}</span>
+    </button>
+    ${body}
   </div>`;
 }
 
@@ -201,7 +221,6 @@ function farmRender(state) {
       <b>💡 เคล็ดลับ</b> ส่งน้องที่ถนัดงานตรงกับพืชไปช่วย พืชจะโตไวขึ้น!
       <span class="muted">รดน้ำ +20% · น้องช่วย +30% × พลัง · ปุ๋ย +25% (ได้ครั้งเดียวต่อรอบ)</span>
     </div>
-    ${ordersHtml(state)}
     <div class="farm-toolbar">
       <span class="muted">🪙 ${num(coinsOf(state))}${fert > 0 ? ` · 🧪 ปุ๋ย ${fert}` : ''}</span>
       <span class="farm-toolbar-btns">
@@ -211,6 +230,7 @@ function farmRender(state) {
       </span>
     </div>
     <div class="farm-grid">${plots.map((p, i) => plotCard(state, p, i, fert)).join('')}${buyCard}</div>
+    ${ordersHtml(state)}
   </section>`;
 }
 
@@ -311,6 +331,7 @@ function farmBind(rootEl) {
       return n > 0 ? { ok: true, msg: `🔁 ปลูกซ้ำ ${n} แปลง` } : { ok: false, reason: 'ปลูกซ้ำไม่ได้ (เหรียญหรือเลเวลไม่พอ)' };
     }),
     'order-done': d => run(s => completeOrder(s, d.order)),
+    'toggle-orders': () => toggleOrders(),
     'buy-plot': () => run(s => buyPlot(s)),
   });
 }

@@ -1,0 +1,40 @@
+{
+ "version": 1,
+ "updatedAt": "yesterday",
+ "lastTick": null,
+ "player": "not an object",
+ "pets": "oops",
+ "barnCapacity": "three",
+ "incubator": [
+  null,
+  5,
+  {
+   "eggId": "egg_farm",
+   "startAt": 1,
+   "readyAt": 2
+  }
+ ],
+ "incubatorCapacity": null,
+ "inventory": {
+  "seed_carrot": 3,
+  "bad": -2,
+  "worse": "x",
+  "nan": null,
+  "food_kibble": 2.0,
+  "egg_farm": 1
+ },
+ "plots": null,
+ "expeditions": [
+  1,
+  "a",
+  null
+ ],
+ "collection": [
+  1,
+  2
+ ],
+ "log": "nope",
+ "mysteryField": {
+  "keep": "me"
+ }
+}

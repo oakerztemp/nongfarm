@@ -1,0 +1,127 @@
+{
+ "version": 1,
+ "updatedAt": 1789999999000,
+ "lastTick": 1790000000000,
+ "player": {
+  "farmName": "ฟาร์มทดสอบ",
+  "level": 2,
+  "xp": 20,
+  "coins": 240,
+  "createdAt": 1789740800000,
+  "lastDailyClaim": "2026-09-14"
+ },
+ "pets": [
+  {
+   "id": "pet1",
+   "speciesId": "hamster",
+   "nickname": "",
+   "shiny": false,
+   "personality": "cheerful",
+   "stage": 1,
+   "xp": 30,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 0,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "idle",
+   "task": null,
+   "bornAt": 1789982000000
+  },
+  {
+   "id": "pet2",
+   "speciesId": "chicken",
+   "nickname": "ไก่ทอง",
+   "shiny": false,
+   "personality": "cheerful",
+   "stage": 0,
+   "xp": 10,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 0,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "idle",
+   "task": null,
+   "bornAt": 1789982000000
+  }
+ ],
+ "barnCapacity": 3,
+ "incubator": [
+  {
+   "eggId": "egg_farm",
+   "startAt": 1789999980000,
+   "readyAt": 1790000060000
+  }
+ ],
+ "incubatorCapacity": 1,
+ "inventory": {
+  "egg_farm": 1,
+  "seed_carrot": 3,
+  "seed_corn": 2,
+  "food_kibble": 2,
+  "crop_carrot": 5,
+  "care_soap": 1
+ },
+ "plots": [
+  {
+   "index": 0,
+   "cropId": "carrot",
+   "plantedAt": 1789999940000,
+   "progress": 0.4,
+   "watered": true,
+   "petId": null
+  },
+  {
+   "index": 1,
+   "cropId": null,
+   "plantedAt": 0,
+   "progress": 0,
+   "watered": false,
+   "petId": null
+  },
+  {
+   "index": 2,
+   "cropId": null,
+   "plantedAt": 0,
+   "progress": 0,
+   "watered": false,
+   "petId": null
+  },
+  {
+   "index": 3,
+   "cropId": null,
+   "plantedAt": 0,
+   "progress": 0,
+   "watered": false,
+   "petId": null
+  }
+ ],
+ "expeditions": [],
+ "collection": {
+  "hamster": {
+   "owned": 1,
+   "shiny": false
+  },
+  "chicken": {
+   "owned": 1,
+   "shiny": false
+  }
+ },
+ "log": [
+  {
+   "t": 1789999995000,
+   "msg": "ฟักไข่ได้ แฮมสเตอร์"
+  }
+ ]
+}

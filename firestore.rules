@@ -1,0 +1,15 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Each player can only read and write their own save document.
+    // Writes use optimistic concurrency: the client sends rev = (last known rev) + 1, so a stale tab/device
+    // (or an old client that sends no rev) is rejected instead of overwriting a newer save.
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && (resource == null
+            || (request.resource.data.rev == resource.data.get('rev', 0) + 1
+                && request.resource.data.get('version', 1) >= resource.data.get('version', 1)));
+    }
+  }
+}

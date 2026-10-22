@@ -1,0 +1,213 @@
+/* Farm-side views: ไร่ / สำรวจ / ร้าน / กระเป๋า.
+   Only consumes shared tokens from style.css; soil/grass colours are local (--plot-*). */
+
+.farm-wrap,
+.plot-card,
+.zone-card,
+.shop-item,
+.bag-row {
+  --plot-soil: #9a6a3f;
+  --plot-soil-dark: #7a4f2a;
+  --plot-grass: #b9dc8a;
+  --plot-grass-dark: #8fc062;
+}
+
+@media (prefers-color-scheme: dark) {
+  .farm-wrap,
+  .plot-card,
+  .zone-card,
+  .shop-item,
+  .bag-row {
+    --plot-soil: #5e4126;
+    --plot-soil-dark: #46301b;
+    --plot-grass: #3f5a2c;
+    --plot-grass-dark: #2f4521;
+  }
+}
+
+.farm-wrap { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.farm-h { margin: 4px 0 0; font-size: 1.05rem; }
+.farm-small { font-size: 0.82rem; line-height: 1.4; }
+.farm-help { padding: 10px 12px; font-size: 0.9rem; line-height: 1.5; }
+.farm-help .muted { display: block; margin-top: 2px; }
+.farm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+.farm-job {
+  display: inline-block; margin: 2px 4px 0 0; padding: 1px 8px;
+  border-radius: 999px; background: var(--surface-2); color: var(--text-dim);
+  font-size: 0.75rem; white-space: nowrap;
+}
+.farm-power { font-size: 0.8rem; color: var(--text-dim); }
+.farm-reward {
+  display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px;
+  border-radius: 999px; background: var(--surface-2); font-size: 0.85rem;
+}
+
+/* ---------------------------------------------------------- plots */
+
+.farm-grid {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.plot-card {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 8px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.plot-card.is-ready { border-color: var(--success); }
+.plot-card.is-watered .plot-soil { background: linear-gradient(180deg, var(--plot-soil-dark), var(--plot-soil)); }
+.plot-empty, .plot-buy { align-items: stretch; }
+.plot-buy { border-style: dashed; }
+
+.plot-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: var(--text-dim); }
+.plot-speed { font-variant-numeric: tabular-nums; }
+
+.plot-soil {
+  position: relative; height: 84px; border-radius: calc(var(--radius) - 2px);
+  display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 80%, rgba(0, 0, 0, 0.12) 0 6px, transparent 7px),
+    radial-gradient(circle at 75% 65%, rgba(0, 0, 0, 0.1) 0 5px, transparent 6px),
+    linear-gradient(180deg, var(--plot-grass) 0 22%, var(--plot-soil) 22% 100%);
+  border-bottom: 4px solid var(--plot-soil-dark);
+}
+.plot-plant {
+  font-size: 2.6rem; line-height: 1; margin-bottom: 6px;
+  transform-origin: 50% 100%;
+  transform: scale(calc(0.55 + var(--p, 0) * 0.45));
+  transition: transform 0.6s ease;
+  animation: plot-sway 3.2s ease-in-out infinite;
+  user-select: none;
+}
+.plot-plant.is-ready { animation: plot-bounce 1s ease-in-out infinite; filter: drop-shadow(0 0 6px var(--warn)); }
+.plot-plant-empty { font-size: 1.8rem; opacity: 0.55; transform: none; animation: none; margin-bottom: 18px; }
+.plot-drop { position: absolute; top: 4px; right: 6px; font-size: 1rem; animation: plot-drip 2s ease-in-out infinite; }
+
+.plot-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.plot-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plot-bar { height: 8px; }
+.plot-status { font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.plot-ready-text { color: var(--success); }
+.plot-jobs { min-height: 1.4em; }
+.plot-pet { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.plot-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.plot-actions .btn { flex: 1 1 auto; white-space: nowrap; }
+.plot-watered { align-self: center; }
+
+/* ---------------------------------------------------------- explore */
+
+.zone-list, .zone-runs { display: flex; flex-direction: column; gap: 10px; }
+.zone-card, .zone-run {
+  display: flex; gap: 12px; align-items: center; padding: 12px;
+  border-radius: var(--radius); background: var(--surface);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.zone-card.is-locked { opacity: 0.55; filter: grayscale(0.6); }
+.zone-emoji { font-size: 2.4rem; line-height: 1; flex: none; }
+.zone-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.zone-title { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.zone-loot { font-size: 1.1rem; letter-spacing: 2px; }
+.zone-action { flex: none; }
+
+.zone-run { flex-direction: column; align-items: stretch; gap: 8px; }
+.zone-run.is-done { border-color: var(--success); }
+.zone-run-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zone-rewards { display: flex; flex-wrap: wrap; }
+
+/* ---------------------------------------------------------- seed picker modal */
+
+.farm-seedlist { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; }
+.farm-seed {
+  display: flex; gap: 10px; align-items: center; padding: 8px;
+  border-radius: var(--radius); background: var(--surface-2);
+}
+.farm-seed.is-locked { opacity: 0.5; filter: grayscale(0.6); }
+.farm-seed-emoji { font-size: 1.9rem; flex: none; }
+.farm-seed-info { flex: 1 1 auto; min-width: 0; }
+.farm-seed-actions { flex: none; display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+
+/* ---------------------------------------------------------- shop */
+
+.shop-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.shop-head .farm-h { margin: 0; }
+.shop-coins { font-weight: 700; padding: 2px 12px; border-radius: 999px; background: var(--surface-2); }
+.shop-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.shop-tab {
+  flex: none; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font: inherit; font-size: 0.9rem; white-space: nowrap;
+}
+.shop-tab.is-active { background: var(--primary); color: var(--primary-text); border-color: var(--primary); }
+.shop-list, .bag-group { display: flex; flex-direction: column; gap: 8px; }
+
+.shop-item, .bag-row {
+  display: flex; gap: 10px; align-items: center; padding: 10px;
+  border-radius: var(--radius); background: var(--surface);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.shop-item.is-locked { opacity: 0.55; filter: grayscale(0.6); }
+.shop-emoji, .bag-emoji { font-size: 1.9rem; line-height: 1; flex: none; width: 2.2rem; text-align: center; }
+.shop-info, .bag-info { flex: 1 1 auto; min-width: 0; }
+.shop-buy, .bag-actions { flex: none; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.shop-price { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.bag-summary { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-weight: 700; }
+
+/* ---------------------------------------------------------- narrow screens */
+
+@media (max-width: 480px) {
+  .farm-grid { gap: 8px; }
+  .shop-item, .bag-row { flex-wrap: wrap; }
+  .shop-info, .bag-info { flex-basis: calc(100% - 3.5rem); }
+  .shop-buy, .bag-actions { flex-basis: 100%; justify-content: flex-start; }
+  .zone-card { flex-wrap: wrap; }
+  .zone-info { flex-basis: calc(100% - 3.5rem); }
+  .zone-action { flex-basis: 100%; }
+  .zone-action .btn { width: 100%; }
+}
+
+/* ---------------------------------------------------------- motion */
+
+@keyframes plot-sway {
+  0%, 100% { rotate: -2deg; }
+  50% { rotate: 2deg; }
+}
+@keyframes plot-bounce {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -8px; }
+}
+@keyframes plot-drip {
+  0%, 100% { opacity: 0.4; translate: 0 0; }
+  50% { opacity: 1; translate: 0 3px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plot-plant, .plot-plant.is-ready, .plot-drop { animation: none; }
+  .plot-plant { transition: none; }
+}
+
+/* ---------------------------------------------------------- orders board */
+
+.farm-toolbar-btns { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+
+.order-board { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.order-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.order-sub { margin-top: 4px; font-weight: 700; }
+.order-list { display: flex; flex-direction: column; gap: 8px; }
+.order-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px;
+  border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border);
+}
+.order-card.is-weekly { border-color: var(--accent); }
+.order-card.is-done { opacity: 0.6; }
+.order-lines { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.order-line { padding: 1px 8px; border-radius: 999px; background: var(--surface); font-size: 0.85rem; white-space: nowrap; }
+.order-line.is-ok b { color: var(--success); }
+.order-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.order-reward { font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.order-done { color: var(--success); }
+
+@media (max-width: 480px) {
+  .order-foot .btn { margin-left: auto; }
+}

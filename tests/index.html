@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <title>NongFarm tests</title>
+  <style>
+    body { font: 14px/1.5 ui-monospace, Consolas, monospace; margin: 16px; background: #fff; color: #222; }
+    #result { white-space: pre-wrap; }
+    .fail { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>NongFarm tests</h1>
+  <pre id="result" data-status="running">running…</pre>
+  <script type="module">
+    import { test, runAll } from './harness.js';
+
+    const FILES = ['core', 'pets', 'farm', 'econ-sim'];
+    // A missing or broken test file becomes a FAIL entry instead of crashing the runner.
+    for (const f of FILES) {
+      try {
+        await import(`./${f}.test.js`);
+      } catch (e) {
+        test(`load ${f}.test.js`, () => { throw e; });
+      }
+    }
+
+    const results = await runAll();
+    const failed = results.filter(r => !r.ok);
+    const status = failed.length ? 'FAIL' : 'ALL PASS';
+    const lines = [`${status} (${results.length - failed.length}/${results.length} passed)`];
+    for (const r of results) {
+      lines.push(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name} (${r.ms}ms)${r.ok ? '' : `\n      ${r.error}`}`);
+    }
+    const out = document.getElementById('result');
+    out.dataset.status = status;
+    out.textContent = lines.join('\n');
+    // tests/run_tests.py listens for this POST (harmless 404/501 on any other server).
+    fetch('/__result', { method: 'POST', body: JSON.stringify({ status, text: out.textContent }) }).catch(() => {});
+  </script>
+</body>
+</html>

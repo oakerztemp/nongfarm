@@ -1,0 +1,459 @@
+{
+ "version": 1,
+ "updatedAt": 1789999999500,
+ "lastTick": 1790000000000,
+ "player": {
+  "farmName": "ฟาร์มกลางเกม",
+  "level": 8,
+  "xp": 150,
+  "coins": 2300,
+  "createdAt": 1789136000000,
+  "lastDailyClaim": "2026-09-14"
+ },
+ "pets": [
+  {
+   "id": "pet1",
+   "speciesId": "hamster",
+   "nickname": "",
+   "shiny": false,
+   "personality": "cheerful",
+   "stage": 2,
+   "xp": 300,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 0,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "working",
+   "task": {
+    "type": "plot",
+    "plotIndex": 0
+   },
+   "bornAt": 1789982000000
+  },
+  {
+   "id": "pet2",
+   "speciesId": "chicken",
+   "nickname": "",
+   "shiny": false,
+   "personality": "cheerful",
+   "stage": 2,
+   "xp": 250,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 0,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "working",
+   "task": {
+    "type": "plot",
+    "plotIndex": 1
+   },
+   "bornAt": 1789982000000
+  },
+  {
+   "id": "pet3",
+   "speciesId": "cat",
+   "nickname": "",
+   "shiny": true,
+   "personality": "lazy",
+   "stage": 1,
+   "xp": 60,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 0,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "expedition",
+   "task": {
+    "type": "expedition",
+    "expeditionId": "exp1"
+   },
+   "bornAt": 1789982000000
+  },
+  {
+   "id": "pet4",
+   "speciesId": "dog",
+   "nickname": "",
+   "shiny": false,
+   "personality": "hardworking",
+   "stage": 3,
+   "xp": 700,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 0,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "idle",
+   "task": null,
+   "bornAt": 1789982000000
+  },
+  {
+   "id": "pet5",
+   "speciesId": "cow",
+   "nickname": "",
+   "shiny": false,
+   "personality": "cheerful",
+   "stage": 1,
+   "xp": 40,
+   "stats": {
+    "hunger": 80,
+    "happy": 70,
+    "energy": 90,
+    "clean": 75
+   },
+   "poop": 2,
+   "sick": false,
+   "zeroSince": null,
+   "lastFedAt": 1789996400000,
+   "status": "sleeping",
+   "task": null,
+   "bornAt": 1789982000000
+  }
+ ],
+ "barnCapacity": 6,
+ "incubator": [
+  {
+   "eggId": "egg_forest",
+   "startAt": 1789999900000,
+   "readyAt": 1790000500000
+  }
+ ],
+ "incubatorCapacity": 1,
+ "inventory": {
+  "egg_farm": 2,
+  "egg_water": 1,
+  "seed_carrot": 10,
+  "seed_corn": 6,
+  "seed_tomato": 4,
+  "seed_potato": 3,
+  "food_kibble": 8,
+  "food_meat": 3,
+  "crop_carrot": 14,
+  "crop_corn": 7,
+  "crop_tomato": 3,
+  "forage_mushroom": 6,
+  "forage_berry": 9,
+  "care_soap": 3,
+  "care_toy": 2,
+  "care_medicine": 1,
+  "care_fertilizer": 4
+ },
+ "plots": [
+  {
+   "index": 0,
+   "cropId": "tomato",
+   "plantedAt": 1789996400000,
+   "progress": 0.5,
+   "watered": true,
+   "petId": "pet1"
+  },
+  {
+   "index": 1,
+   "cropId": "corn",
+   "plantedAt": 1789996400000,
+   "progress": 0.8,
+   "watered": false,
+   "petId": "pet2"
+  },
+  {
+   "index": 2,
+   "cropId": "carrot",
+   "plantedAt": 1789999999000,
+   "progress": 1.0,
+   "watered": false,
+   "petId": null
+  },
+  {
+   "index": 3,
+   "cropId": null,
+   "plantedAt": 0,
+   "progress": 0,
+   "watered": false,
+   "petId": null
+  },
+  {
+   "index": 4,
+   "cropId": null,
+   "plantedAt": 0,
+   "progress": 0,
+   "watered": false,
+   "petId": null
+  },
+  {
+   "index": 5,
+   "cropId": null,
+   "plantedAt": 0,
+   "progress": 0,
+   "watered": false,
+   "petId": null
+  }
+ ],
+ "expeditions": [
+  {
+   "id": "exp1",
+   "petId": "pet3",
+   "zoneId": "forest",
+   "startAt": 1789999900000,
+   "endAt": 1790000200000,
+   "done": false,
+   "rewards": null
+  }
+ ],
+ "collection": {
+  "hamster": {
+   "owned": 1,
+   "shiny": false
+  },
+  "chicken": {
+   "owned": 1,
+   "shiny": false
+  },
+  "cat": {
+   "owned": 1,
+   "shiny": true
+  },
+  "dog": {
+   "owned": 1,
+   "shiny": false
+  },
+  "cow": {
+   "owned": 1,
+   "shiny": false
+  },
+  "pig": {
+   "owned": 1,
+   "shiny": false
+  },
+  "sheep": {
+   "owned": 1,
+   "shiny": false
+  },
+  "goat": {
+   "owned": 1,
+   "shiny": false
+  }
+ },
+ "log": [
+  {
+   "t": 1790000000000,
+   "msg": "log 0"
+  },
+  {
+   "t": 1789999999000,
+   "msg": "log 1"
+  },
+  {
+   "t": 1789999998000,
+   "msg": "log 2"
+  },
+  {
+   "t": 1789999997000,
+   "msg": "log 3"
+  },
+  {
+   "t": 1789999996000,
+   "msg": "log 4"
+  },
+  {
+   "t": 1789999995000,
+   "msg": "log 5"
+  },
+  {
+   "t": 1789999994000,
+   "msg": "log 6"
+  },
+  {
+   "t": 1789999993000,
+   "msg": "log 7"
+  },
+  {
+   "t": 1789999992000,
+   "msg": "log 8"
+  },
+  {
+   "t": 1789999991000,
+   "msg": "log 9"
+  },
+  {
+   "t": 1789999990000,
+   "msg": "log 10"
+  },
+  {
+   "t": 1789999989000,
+   "msg": "log 11"
+  },
+  {
+   "t": 1789999988000,
+   "msg": "log 12"
+  },
+  {
+   "t": 1789999987000,
+   "msg": "log 13"
+  },
+  {
+   "t": 1789999986000,
+   "msg": "log 14"
+  },
+  {
+   "t": 1789999985000,
+   "msg": "log 15"
+  },
+  {
+   "t": 1789999984000,
+   "msg": "log 16"
+  },
+  {
+   "t": 1789999983000,
+   "msg": "log 17"
+  },
+  {
+   "t": 1789999982000,
+   "msg": "log 18"
+  },
+  {
+   "t": 1789999981000,
+   "msg": "log 19"
+  },
+  {
+   "t": 1789999980000,
+   "msg": "log 20"
+  },
+  {
+   "t": 1789999979000,
+   "msg": "log 21"
+  },
+  {
+   "t": 1789999978000,
+   "msg": "log 22"
+  },
+  {
+   "t": 1789999977000,
+   "msg": "log 23"
+  },
+  {
+   "t": 1789999976000,
+   "msg": "log 24"
+  },
+  {
+   "t": 1789999975000,
+   "msg": "log 25"
+  },
+  {
+   "t": 1789999974000,
+   "msg": "log 26"
+  },
+  {
+   "t": 1789999973000,
+   "msg": "log 27"
+  },
+  {
+   "t": 1789999972000,
+   "msg": "log 28"
+  },
+  {
+   "t": 1789999971000,
+   "msg": "log 29"
+  },
+  {
+   "t": 1789999970000,
+   "msg": "log 30"
+  },
+  {
+   "t": 1789999969000,
+   "msg": "log 31"
+  },
+  {
+   "t": 1789999968000,
+   "msg": "log 32"
+  },
+  {
+   "t": 1789999967000,
+   "msg": "log 33"
+  },
+  {
+   "t": 1789999966000,
+   "msg": "log 34"
+  },
+  {
+   "t": 1789999965000,
+   "msg": "log 35"
+  },
+  {
+   "t": 1789999964000,
+   "msg": "log 36"
+  },
+  {
+   "t": 1789999963000,
+   "msg": "log 37"
+  },
+  {
+   "t": 1789999962000,
+   "msg": "log 38"
+  },
+  {
+   "t": 1789999961000,
+   "msg": "log 39"
+  },
+  {
+   "t": 1789999960000,
+   "msg": "log 40"
+  },
+  {
+   "t": 1789999959000,
+   "msg": "log 41"
+  },
+  {
+   "t": 1789999958000,
+   "msg": "log 42"
+  },
+  {
+   "t": 1789999957000,
+   "msg": "log 43"
+  },
+  {
+   "t": 1789999956000,
+   "msg": "log 44"
+  },
+  {
+   "t": 1789999955000,
+   "msg": "log 45"
+  },
+  {
+   "t": 1789999954000,
+   "msg": "log 46"
+  },
+  {
+   "t": 1789999953000,
+   "msg": "log 47"
+  },
+  {
+   "t": 1789999952000,
+   "msg": "log 48"
+  },
+  {
+   "t": 1789999951000,
+   "msg": "log 49"
+  }
+ ]
+}

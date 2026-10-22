@@ -1,0 +1,569 @@
+// Farm-side views: farm (ไร่), explore (สำรวจ), shop (ร้าน), bag (กระเป๋า).
+// Each view = { id, icon, label, render(state) -> HTML, bind(rootEl) } (see CONTRACT §4).
+// Events use delegation on rootEl via data-action attributes; no inline handlers.
+import { now, notify, escapeHtml, formatDuration, openModal } from '../util.js';
+import { update, getState, emit } from '../state.js';
+import { canWork, getWorkPower, getPet } from '../pets.js';
+import { openPetPicker, petChipHtml } from './petsView.js';
+import { JOBS } from '../data/species.js';
+import { CROPS, getCrop } from '../data/crops.js';
+import { ITEMS, getItem } from '../data/items.js';
+import { getEgg } from '../data/eggs.js';
+import {
+  ZONES, getZone, MAX_PLOTS, MAX_BARN,
+  plantSeed, waterPlot, fertilize, assignPet, unassignPet, harvestPlot, harvestAll, replantPlot, completeOrder,
+  incubatorUpgradePrice, upgradeIncubator, MAX_INCUBATOR, nextMidnight,
+  startExpedition, claimExpedition, buyItem, sellItem,
+  plotPrice, buyPlot, barnUpgradePrice, upgradeBarn,
+  plotSpeed, plotEtaMs, effectivePower,
+} from '../farm.js';
+
+const esc = escapeHtml;
+const READY_EPS = 1e-9;
+
+// ---------------------------------------------------------------- shared helpers
+
+// Run a logic function against the live state, toast the result, return it.
+function run(fn) {
+  const r = update(fn) || { ok: false, reason: 'เกิดข้อผิดพลาด' };
+  const text = r.ok ? r.msg : r.reason;
+  if (text) notify(text, r.ok ? 'success' : 'warn');
+  return r;
+}
+
+// One click listener per view root; dispatches on the nearest [data-action].
+function delegate(rootEl, handlers) {
+  rootEl.addEventListener('click', ev => {
+    const el = ev.target && ev.target.closest ? ev.target.closest('[data-action]') : null;
+    if (!el || !rootEl.contains(el) || el.disabled) return;
+    const fn = handlers[el.dataset.action];
+    if (fn) fn(el.dataset, el);
+  });
+}
+
+const coinsOf = state => Math.floor(Number(state.player && state.player.coins) || 0);
+const levelOf = state => Number(state.player && state.player.level) || 1;
+const invOf = (state, id) => Number(state.inventory && state.inventory[id]) || 0;
+const clamp01 = v => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0);
+const num = n => Number(n).toLocaleString('th-TH');
+
+function jobsHtml(jobs) {
+  return (jobs || []).map(j => {
+    const info = JOBS && JOBS[j];
+    return `<span class="farm-job" title="${esc(info ? info.nameTh : j)}">${info ? info.emoji : '🔧'} ${esc(info ? info.nameTh : j)}</span>`;
+  }).join('');
+}
+
+function powerNote(pet, jobs, label) {
+  const p = Number(getWorkPower(pet, jobs)) || 0;
+  return `<span class="farm-power">พลัง ${p.toFixed(1)}${label ? ' · ' + label(effectivePower(p)) : ''}</span>`;
+}
+
+function itemLine(id, n) {
+  const it = getItem(id);
+  return it ? `<span class="farm-reward">${it.emoji} ${esc(it.nameTh)} <b>x${n}</b></span>` : '';
+}
+
+function petCanWork(pet) {
+  try { return !!canWork(pet).ok; } catch (e) { return false; }
+}
+
+// ================================================================ FARM VIEW
+
+function plotCard(state, plot, i, fertCount) {
+  const crop = getCrop(plot && plot.cropId);
+  if (!crop) {
+    const last = getCrop(plot && plot.lastCropId);
+    const again = last
+      ? `<button class="btn btn-primary btn-sm" data-action="replant" data-plot="${i}" title="ปลูก${esc(last.nameTh)}ซ้ำ">🔁 ปลูกซ้ำ ${last.emoji}</button>`
+      : '';
+    return `<div class="plot-card plot-empty">
+      <div class="plot-head"><span class="plot-num">#${i + 1}</span></div>
+      <div class="plot-soil"><div class="plot-plant plot-plant-empty">🟫</div></div>
+      <div class="plot-body"><span class="muted">แปลงว่าง</span></div>
+      <div class="plot-actions">${again}<button class="btn ${last ? '' : 'btn-primary '}btn-sm" data-action="plant" data-plot="${i}">🌱 ${last ? 'เลือกพืช' : 'ปลูก'}</button></div>
+    </div>`;
+  }
+
+  const progress = clamp01(Number(plot.progress));
+  const ready = progress >= 1 - READY_EPS;
+  const pct = Math.floor(progress * 100);
+  const pet = plot.petId ? getPet(state, plot.petId) : null;
+  const speed = plotSpeed(state, plot);
+  const t = now();
+  const eta = plotEtaMs(state, plot);
+  const startMs = Math.round(t - (progress * crop.growMs) / speed);
+  const endMs = Math.round(t + eta);
+  const glyph = progress < 0.2 ? '🌱' : crop.emoji;
+
+  const bar = ready
+    ? `<div class="bar plot-bar"><div class="bar-fill" style="width:100%"></div></div>`
+    : `<div class="bar plot-bar"><div class="bar-fill" style="width:${pct}%" data-progress-start="${startMs}" data-progress-end="${endMs}"></div></div>`;
+  const status = ready
+    ? `<b class="plot-ready-text">พร้อมเก็บเกี่ยว!</b>${Number(plot.helperBonus) > 0 ? ` <span class="muted">น้องช่วย +${Number(plot.helperBonus)}</span>` : ''}`
+    : `<span>${pct}% · เหลือ <span data-countdown="${endMs}">${formatDuration(eta)}</span></span>`;
+
+  const petRow = pet
+    ? `<div class="plot-pet">${petChipHtml(pet)}<button class="btn btn-ghost btn-sm" data-action="unassign" data-plot="${i}">เรียกกลับ</button></div>`
+    : '';
+
+  let actions = '';
+  if (ready) {
+    actions += `<button class="btn btn-primary btn-sm" data-action="harvest" data-plot="${i}">🧺 เก็บเกี่ยว</button>`;
+  } else {
+    actions += plot.watered
+      ? `<span class="badge plot-watered">💧 รดน้ำแล้ว</span>`
+      : `<button class="btn btn-sm" data-action="water" data-plot="${i}">💧 รดน้ำ</button>`;
+    if (plot.fertilized) {
+      actions += `<span class="badge plot-watered">🧪 ใส่ปุ๋ยแล้ว</span>`;
+    } else if (fertCount > 0 && progress < 0.95) {
+      actions += `<button class="btn btn-sm" data-action="fertilize" data-plot="${i}">🧪 ปุ๋ย (${fertCount})</button>`;
+    }
+    if (!pet) {
+      actions += `<button class="btn btn-sm" data-action="helper" data-plot="${i}">🐾 ส่งน้องมาช่วย</button>`;
+    }
+  }
+
+  return `<div class="plot-card ${ready ? 'is-ready' : 'is-growing'}${plot.watered && !ready ? ' is-watered' : ''}">
+    <div class="plot-head">
+      <span class="plot-num">#${i + 1}</span>
+      ${ready ? '' : `<span class="plot-speed" title="ความเร็วการเติบโต">⚡ x${speed.toFixed(2)}</span>`}
+    </div>
+    <div class="plot-soil">
+      <div class="plot-plant${ready ? ' is-ready' : ''}" style="--p:${progress.toFixed(3)}">${glyph}</div>
+      ${plot.watered && !ready ? '<span class="plot-drop">💧</span>' : ''}
+    </div>
+    <div class="plot-body">
+      <div class="plot-title">${crop.emoji} ${esc(crop.nameTh)}</div>
+      ${bar}
+      <div class="plot-status muted">${status}</div>
+      <div class="plot-jobs">${jobsHtml(crop.jobs)}</div>
+    </div>
+    ${petRow}
+    <div class="plot-actions">${actions}</div>
+  </div>`;
+}
+
+// ---- orders board (top of the farm view)
+
+function orderCard(state, o, weekly) {
+  const lines = Object.entries(o.items || {}).map(([id, n]) => {
+    const it = getItem(id);
+    const have = invOf(state, id);
+    return `<span class="order-line${have >= n ? ' is-ok' : ''}">${it ? it.emoji : '❓'} ${esc(it ? it.nameTh : id)} <b>${Math.min(have, n)}/${n}</b></span>`;
+  }).join('');
+  const r = o.reward || {};
+  const gifts = Object.entries(r.items || {}).map(([id, n]) => {
+    const it = getItem(id);
+    return it ? ` · ${it.emoji} ${esc(it.nameTh)} x${n}` : '';
+  }).join('');
+  const can = !o.done && Object.entries(o.items || {}).every(([id, n]) => invOf(state, id) >= n);
+  const btn = o.done
+    ? '<span class="badge order-done">✅ ส่งแล้ว</span>'
+    : `<button class="btn ${can ? 'btn-primary ' : ''}btn-sm" data-action="order-done" data-order="${esc(o.id)}" ${can ? '' : 'disabled'}>ส่งของ</button>`;
+  return `<div class="order-card${weekly ? ' is-weekly' : ''}${o.done ? ' is-done' : ''}">
+    <div class="order-lines">${lines}</div>
+    <div class="order-foot"><span class="order-reward">🪙 ${num(r.coins || 0)} · ⭐ ${num(r.xp || 0)} XP${gifts}</span>${btn}</div>
+  </div>`;
+}
+
+function ordersHtml(state) {
+  const o = state.orders;
+  if (!o || !Array.isArray(o.list) || !o.list.length) return '';
+  const reset = nextMidnight(now());
+  const weekly = o.weekly ? `<div class="order-sub">🏆 ออเดอร์ประจำสัปดาห์ <span class="muted farm-small">รางวัลใหญ่ + ไข่พิเศษ</span></div>${orderCard(state, o.weekly, true)}` : '';
+  return `<div class="order-board card">
+    <div class="order-head"><b>📋 ออเดอร์วันนี้</b>
+      <span class="muted farm-small">รีเซ็ตใน <span data-countdown="${reset}">${formatDuration(reset - now())}</span></span></div>
+    <div class="order-list">${o.list.map(x => orderCard(state, x, false)).join('')}</div>
+    ${weekly}
+  </div>`;
+}
+
+function farmRender(state) {
+  const plots = Array.isArray(state.plots) ? state.plots : [];
+  const fert = invOf(state, 'care_fertilizer');
+  const price = plotPrice(state);
+  const readyCount = plots.filter(p => p && p.cropId && clamp01(Number(p.progress)) >= 1 - READY_EPS).length;
+  const replantable = plots.filter(p => p && !p.cropId && getCrop(p.lastCropId)).length;
+
+  const buyCard = price == null
+    ? ''
+    : `<div class="plot-card plot-buy">
+        <div class="plot-soil"><div class="plot-plant plot-plant-empty">➕</div></div>
+        <div class="plot-body"><div class="plot-title">แปลงใหม่</div>
+          <div class="muted">${plots.length}/${MAX_PLOTS} แปลง</div></div>
+        <div class="plot-actions"><button class="btn btn-primary btn-sm" data-action="buy-plot" ${coinsOf(state) < price ? 'disabled' : ''}>🪙 ${num(price)}</button></div>
+      </div>`;
+
+  return `<section class="farm-wrap">
+    <div class="farm-help card">
+      <b>💡 เคล็ดลับ</b> ส่งน้องที่ถนัดงานตรงกับพืชไปช่วย พืชจะโตไวขึ้น!
+      <span class="muted">รดน้ำ +20% · น้องช่วย +30% × พลัง · ปุ๋ย +25% (ได้ครั้งเดียวต่อรอบ)</span>
+    </div>
+    ${ordersHtml(state)}
+    <div class="farm-toolbar">
+      <span class="muted">🪙 ${num(coinsOf(state))}${fert > 0 ? ` · 🧪 ปุ๋ย ${fert}` : ''}</span>
+      <span class="farm-toolbar-btns">
+        ${readyCount > 0 ? `<button class="btn btn-primary btn-sm" data-action="harvest-all">🧺 เก็บเกี่ยวทั้งหมด (${readyCount})</button>` : ''}
+        ${readyCount > 0 ? `<button class="btn btn-sm" data-action="harvest-replant">🧺🔁 เก็บแล้วปลูกซ้ำ</button>` : ''}
+        ${replantable > 1 ? `<button class="btn btn-sm" data-action="replant-all">🔁 ปลูกซ้ำทุกแปลงว่าง (${replantable})</button>` : ''}
+      </span>
+    </div>
+    <div class="farm-grid">${plots.map((p, i) => plotCard(state, p, i, fert)).join('')}${buyCard}</div>
+  </section>`;
+}
+
+// ---- seed picker modal
+
+function seedPickerHtml(state, plotIndex) {
+  const lvl = levelOf(state);
+  const coins = coinsOf(state);
+  const rows = CROPS.map(c => {
+    const locked = lvl < c.unlockLevel;
+    const owned = invOf(state, 'seed_' + c.id);
+    const price = c.seedPrice;
+    const afford = coins >= price;
+    let btns;
+    if (locked) {
+      btns = `<span class="badge">🔒 Lv.${c.unlockLevel}</span>`;
+    } else if (owned > 0) {
+      btns = `<button class="btn btn-primary btn-sm" data-action="seed-plant" data-crop="${esc(c.id)}">ปลูก</button>
+        <button class="btn btn-ghost btn-sm" data-action="seed-buy" data-crop="${esc(c.id)}" ${afford ? '' : 'disabled'}>+ซื้อ 🪙${num(price)}</button>`;
+    } else {
+      btns = `<button class="btn btn-primary btn-sm" data-action="seed-buyplant" data-crop="${esc(c.id)}" ${afford ? '' : 'disabled'}>ซื้อ+ปลูก 🪙${num(price)}</button>`;
+    }
+    return `<div class="farm-seed${locked ? ' is-locked' : ''}">
+      <span class="farm-seed-emoji">${c.emoji}</span>
+      <div class="farm-seed-info">
+        <div><b>${esc(c.nameTh)}</b> ${locked ? '' : `<span class="muted">มีเมล็ด ${owned}</span>`}</div>
+        <div class="muted farm-small">⏱️ ${formatDuration(c.growMs)} · ผลผลิต ${c.yield[0]}–${c.yield[1]} · ขาย ${num(c.sellPrice)}🪙</div>
+        <div class="farm-small">${jobsHtml(c.jobs)}</div>
+      </div>
+      <div class="farm-seed-actions">${btns}</div>
+    </div>`;
+  }).join('');
+  return `<div class="farm-seedlist" data-plot="${plotIndex}"><div class="muted farm-small">🪙 ${num(coins)}</div>${rows}</div>`;
+}
+
+function openSeedPicker(plotIndex) {
+  let close = null;
+  const body = () => seedPickerHtml(getState(), plotIndex);
+  close = openModal({
+    title: `🌱 เลือกพืชที่จะปลูก (แปลง #${plotIndex + 1})`,
+    html: body(),
+    onMount(el) {
+      el.addEventListener('click', ev => {
+        const b = ev.target && ev.target.closest ? ev.target.closest('[data-action]') : null;
+        if (!b || b.disabled || !el.contains(b)) return;
+        const cropId = b.dataset.crop;
+        const act = b.dataset.action;
+        if (act === 'seed-plant') {
+          const r = run(s => plantSeed(s, plotIndex, cropId));
+          if (r.ok && close) close(); else el.innerHTML = body();
+        } else if (act === 'seed-buy') {
+          run(s => buyItem(s, 'seed_' + cropId, 1));
+          el.innerHTML = body();
+        } else if (act === 'seed-buyplant') {
+          const r = run(s => {
+            const bought = buyItem(s, 'seed_' + cropId, 1);
+            return bought.ok ? plantSeed(s, plotIndex, cropId) : bought;
+          });
+          if (r.ok && close) close(); else el.innerHTML = body();
+        }
+      });
+    },
+  });
+}
+
+function pickHelper(plotIndex) {
+  const st = getState();
+  const plot = st.plots[plotIndex];
+  const crop = plot && getCrop(plot.cropId);
+  if (!crop) return;
+  if (!st.pets.some(petCanWork)) {
+    notify('ตอนนี้ไม่มีน้องที่พร้อมทำงาน (ต้องตื่น ไม่ป่วย พลัง ≥ 20 อิ่ม ≥ 15)', 'warn');
+    return;
+  }
+  openPetPicker({
+    title: `ส่งน้องมาช่วยดูแล ${crop.emoji} ${crop.nameTh}`,
+    filter: pet => petCanWork(pet),
+    describe: pet => powerNote(pet, crop.jobs, p => `โตไวขึ้น +${Math.round(p * 30)}%`),
+    onPick: petId => run(s => assignPet(s, plotIndex, petId)),
+  });
+}
+
+function farmBind(rootEl) {
+  const idx = d => Number(d.plot);
+  delegate(rootEl, {
+    plant: d => openSeedPicker(idx(d)),
+    water: d => run(s => waterPlot(s, idx(d))),
+    fertilize: d => run(s => fertilize(s, idx(d))),
+    helper: d => pickHelper(idx(d)),
+    unassign: d => run(s => unassignPet(s, idx(d))),
+    harvest: d => run(s => harvestPlot(s, idx(d))),
+    'harvest-all': () => run(s => harvestAll(s, false)),
+    'harvest-replant': () => run(s => harvestAll(s, true)),
+    replant: d => run(s => replantPlot(s, idx(d))),
+    'replant-all': () => run(s => {
+      let n = 0;
+      s.plots.forEach((p, i) => { if (p && !p.cropId && replantPlot(s, i).ok) n++; });
+      return n > 0 ? { ok: true, msg: `🔁 ปลูกซ้ำ ${n} แปลง` } : { ok: false, reason: 'ปลูกซ้ำไม่ได้ (เหรียญหรือเลเวลไม่พอ)' };
+    }),
+    'order-done': d => run(s => completeOrder(s, d.order)),
+    'buy-plot': () => run(s => buyPlot(s)),
+  });
+}
+
+// ================================================================ EXPLORE VIEW
+
+function zoneCard(state, zone) {
+  const locked = levelOf(state) < zone.unlockLevel;
+  const busy = (state.expeditions || []).filter(e => e && e.zoneId === zone.id && !e.done).length;
+  const lootIds = [...new Set(zone.loot.map(l => l.itemId))];
+  const lootEmoji = lootIds.map(id => { const it = getItem(id); return it ? `<span title="${esc(it.nameTh)}">${it.emoji}</span>` : ''; }).join('');
+  return `<div class="zone-card${locked ? ' is-locked' : ''}">
+    <div class="zone-emoji">${zone.emoji}</div>
+    <div class="zone-info">
+      <div class="zone-title"><b>${esc(zone.nameTh)}</b> ${busy ? `<span class="badge">กำลังสำรวจ ${busy}</span>` : ''}</div>
+      <div class="muted farm-small">${esc(zone.desc || '')}</div>
+      <div class="farm-small">⏱️ ${formatDuration(zone.durationMs)} · งาน: ${jobsHtml([zone.job])}</div>
+      <div class="zone-loot" aria-label="ของที่อาจได้">${lootEmoji}</div>
+    </div>
+    <div class="zone-action">
+      ${locked
+        ? `<span class="badge">🔒 Lv.${zone.unlockLevel}</span>`
+        : `<button class="btn btn-primary btn-sm" data-action="explore-send" data-zone="${esc(zone.id)}">🐾 ส่งน้องไปสำรวจ</button>`}
+    </div>
+  </div>`;
+}
+
+function runCard(state, ex) {
+  const zone = getZone(ex.zoneId);
+  const pet = getPet(state, ex.petId);
+  const zoneName = zone ? `${zone.emoji} ${esc(zone.nameTh)}` : '🧭 การสำรวจ';
+  const chip = pet ? petChipHtml(pet) : '<span class="muted">น้อง</span>';
+  if (ex.done) {
+    const rewards = ex.rewards || {};
+    const lines = Object.entries(rewards).map(([id, n]) => itemLine(id, n)).join('') || '<span class="muted">ไม่ได้อะไรเลย</span>';
+    return `<div class="zone-run is-done">
+      <div class="zone-run-head"><b>${zoneName}</b> ${chip}</div>
+      <div class="zone-rewards">${lines}</div>
+      <button class="btn btn-primary btn-sm" data-action="claim" data-exp="${esc(ex.id)}">🎁 รับของ</button>
+    </div>`;
+  }
+  const left = Math.max(0, ex.endAt - now());
+  return `<div class="zone-run">
+    <div class="zone-run-head"><b>${zoneName}</b> ${chip}</div>
+    <div class="bar"><div class="bar-fill" style="width:${Math.floor(clamp01((now() - ex.startAt) / Math.max(1, ex.endAt - ex.startAt)) * 100)}%" data-progress-start="${ex.startAt}" data-progress-end="${ex.endAt}"></div></div>
+    <div class="muted farm-small">เหลืออีก <span data-countdown="${ex.endAt}">${formatDuration(left)}</span></div>
+  </div>`;
+}
+
+function exploreRender(state) {
+  const list = (Array.isArray(state.expeditions) ? state.expeditions : []).filter(Boolean)
+    .slice().sort((a, b) => (b.done - a.done) || (a.endAt - b.endAt));
+  const runs = list.length
+    ? `<h3 class="farm-h">กำลังสำรวจ (${list.length})</h3><div class="zone-runs">${list.map(e => runCard(state, e)).join('')}</div>`
+    : '';
+  return `<section class="farm-wrap">
+    <div class="farm-help card">
+      <b>💡 เคล็ดลับ</b> ส่งน้องที่ถนัดงานตรงกับโซนไปสำรวจ ยิ่งพลังสูงยิ่งได้ของเยอะ
+      <span class="muted">เบบี้ยังไปไม่ได้ · เวลาเดินต่อแม้ปิดเกม</span>
+    </div>
+    ${runs}
+    <h3 class="farm-h">โซนสำรวจ</h3>
+    <div class="zone-list">${ZONES.map(z => zoneCard(state, z)).join('')}</div>
+  </section>`;
+}
+
+function pickExplorer(zoneId) {
+  const zone = getZone(zoneId);
+  const st = getState();
+  if (!zone) return;
+  if (levelOf(st) < zone.unlockLevel) {
+    notify(`${zone.nameTh}ปลดล็อกที่เลเวล ${zone.unlockLevel}`, 'warn');
+    return;
+  }
+  const eligible = pet => pet.stage >= 1 && petCanWork(pet);
+  if (!st.pets.some(eligible)) {
+    notify('ไม่มีน้องที่พร้อมออกสำรวจ (ต้องโตกว่าเบบี้ ตื่น ไม่ป่วย พลัง ≥ 20 อิ่ม ≥ 15)', 'warn');
+    return;
+  }
+  openPetPicker({
+    title: `ส่งน้องไปสำรวจ ${zone.emoji} ${zone.nameTh}`,
+    filter: eligible,
+    describe: pet => powerNote(pet, [zone.job], p => `เก็บของ ~${Math.round(zone.baseRolls + 0.75 * p)} ครั้ง`),
+    onPick: petId => run(s => startExpedition(s, petId, zoneId)),
+  });
+}
+
+function exploreBind(rootEl) {
+  delegate(rootEl, {
+    'explore-send': d => pickExplorer(d.zone),
+    claim: d => run(s => claimExpedition(s, d.exp)),
+  });
+}
+
+// ================================================================ SHOP VIEW
+
+const SHOP_TABS = [
+  { id: 'seed', label: '🌱 เมล็ด' },
+  { id: 'food', label: '🍖 อาหาร' },
+  { id: 'care', label: '🧼 ของใช้' },
+  { id: 'egg', label: '🥚 ไข่' },
+  { id: 'upgrade', label: '⬆️ อัปเกรด' },
+];
+const TAG_TH = { veg: 'ผัก', fruit: 'ผลไม้', grain: 'ธัญพืช', meat: 'เนื้อ', fish: 'ปลา', insect: 'แมลง', sweet: 'ของหวาน', milk: 'นม', leaf: 'ใบไม้' };
+let shopTab = 'seed';
+
+function shopDetail(item) {
+  if (item.type === 'seed') {
+    const c = getCrop(item.id.replace(/^seed_/, ''));
+    if (c) return `⏱️ ${formatDuration(c.growMs)} · ผลผลิต ${c.yield[0]}–${c.yield[1]} · ขาย ${num(c.sellPrice)}🪙/ชิ้น`;
+  }
+  if (item.type === 'food' && item.food) {
+    const tags = (item.food.tags || []).map(t => TAG_TH[t] || t).join('/');
+    return `อิ่ม +${item.food.hunger} · สุข +${item.food.happy} · ${tags}`;
+  }
+  if (item.type === 'egg') {
+    const e = getEgg(item.id);
+    if (e) return `ฟักใน ${formatDuration(e.hatchMs)}`;
+  }
+  return item.desc || '';
+}
+
+function shopItemCard(state, item) {
+  const locked = levelOf(state) < item.unlockLevel;
+  const owned = invOf(state, item.id);
+  const coins = coinsOf(state);
+  let buy;
+  if (locked) {
+    buy = `<span class="badge">🔒 Lv.${item.unlockLevel}</span>`;
+  } else {
+    const b = (q) => `<button class="btn btn-sm${q === 1 ? ' btn-primary' : ''}" data-action="buy" data-item="${esc(item.id)}" data-qty="${q}" ${coins < item.buy * q ? 'disabled' : ''}>ซื้อ x${q}</button>`;
+    buy = `<span class="shop-price">🪙 ${num(item.buy)}</span>${b(1)}${b(5)}`;
+  }
+  return `<div class="shop-item${locked ? ' is-locked' : ''}">
+    <span class="shop-emoji">${item.emoji}</span>
+    <div class="shop-info">
+      <div><b>${esc(item.nameTh)}</b> ${owned > 0 ? `<span class="badge">มี ${num(owned)}</span>` : ''}</div>
+      <div class="muted farm-small">${esc(shopDetail(item))}</div>
+    </div>
+    <div class="shop-buy">${buy}</div>
+  </div>`;
+}
+
+function upgradeCards(state) {
+  const coins = coinsOf(state);
+  const pp = plotPrice(state);
+  const bp = barnUpgradePrice(state);
+  const ip = incubatorUpgradePrice(state);
+  const incCap = Number(state.incubatorCapacity) || 1;
+  const plots = Array.isArray(state.plots) ? state.plots.length : 0;
+  const cap = Number(state.barnCapacity) || 3;
+  const card = (emoji, title, sub, price, action) => `<div class="shop-item">
+    <span class="shop-emoji">${emoji}</span>
+    <div class="shop-info"><div><b>${title}</b></div><div class="muted farm-small">${sub}</div></div>
+    <div class="shop-buy">${price == null
+      ? '<span class="badge">เต็มแล้ว</span>'
+      : `<span class="shop-price">🪙 ${num(price)}</span><button class="btn btn-primary btn-sm" data-action="${action}" ${coins < price ? 'disabled' : ''}>ซื้อ</button>`}</div>
+  </div>`;
+  return card('🌾', 'ขยายแปลงไร่', `ตอนนี้ ${plots}/${MAX_PLOTS} แปลง · ปลูกได้พร้อมกันมากขึ้น`, pp, 'buy-plot')
+    + card('🏠', 'ขยายคอก', `ตอนนี้ ${cap}/${MAX_BARN} ช่อง · เลี้ยงน้องได้มากขึ้น`, bp, 'upgrade-barn')
+    + card('🥚', 'ขยายตู้ฟัก', `ตอนนี้ ${incCap}/${MAX_INCUBATOR} ช่อง · ฟักไข่ได้พร้อมกันมากขึ้น`, ip, 'upgrade-incubator');
+}
+
+function shopRender(state) {
+  if (!SHOP_TABS.some(t => t.id === shopTab)) shopTab = 'seed';
+  const tabs = SHOP_TABS.map(t =>
+    `<button class="shop-tab${t.id === shopTab ? ' is-active' : ''}" data-action="shop-tab" data-tab="${t.id}" role="tab" aria-selected="${t.id === shopTab}">${t.label}</button>`).join('');
+  let body;
+  if (shopTab === 'upgrade') {
+    body = upgradeCards(state);
+  } else {
+    const items = Object.values(ITEMS).filter(it => it.type === shopTab && it.buy != null);
+    body = items.map(it => shopItemCard(state, it)).join('') || '<div class="empty-state">ยังไม่มีสินค้า</div>';
+  }
+  return `<section class="farm-wrap">
+    <div class="shop-head"><h3 class="farm-h">🛒 ร้านค้า</h3><span class="shop-coins">🪙 ${num(coinsOf(state))}</span></div>
+    <div class="shop-tabs" role="tablist">${tabs}</div>
+    <div class="shop-list">${body}</div>
+  </section>`;
+}
+
+function shopBind(rootEl) {
+  delegate(rootEl, {
+    'shop-tab': d => { shopTab = d.tab; emit('change'); },
+    buy: d => run(s => buyItem(s, d.item, Number(d.qty) || 1)),
+    'buy-plot': () => run(s => buyPlot(s)),
+    'upgrade-barn': () => run(s => upgradeBarn(s)),
+    'upgrade-incubator': () => run(s => upgradeIncubator(s)),
+  });
+}
+
+// ================================================================ BAG VIEW
+
+const BAG_GROUPS = [
+  { type: 'crop', title: '🧺 ผลผลิต' },
+  { type: 'forage', title: '🍄 ของป่า' },
+  { type: 'seed', title: '🌱 เมล็ด' },
+  { type: 'food', title: '🍖 อาหาร' },
+  { type: 'care', title: '🧼 ของใช้' },
+  { type: 'egg', title: '🥚 ไข่' },
+];
+
+function bagRow(id, count) {
+  const it = getItem(id);
+  if (!it) return '';
+  let acts = '';
+  if (it.sell != null) {
+    acts = `<button class="btn btn-sm" data-action="sell" data-item="${esc(id)}" data-qty="1">ขาย x1</button>`
+      + (count > 1 ? `<button class="btn btn-sm btn-primary" data-action="sell" data-item="${esc(id)}" data-qty="all">ขายทั้งหมด +${num(it.sell * count)}🪙</button>` : '');
+  } else if (it.type === 'egg') {
+    acts = '<span class="muted farm-small">ฟักที่แท็บคอก</span>';
+  } else {
+    acts = '<span class="muted farm-small">ขายไม่ได้</span>';
+  }
+  const sub = it.sell != null ? `ขาย ${num(it.sell)}🪙/ชิ้น` : (it.type === 'care' || it.type === 'food' ? 'ใช้ที่แท็บคอก' : '');
+  return `<div class="bag-row">
+    <span class="bag-emoji">${it.emoji}</span>
+    <div class="bag-info"><div><b>${esc(it.nameTh)}</b> <span class="badge">x${num(count)}</span></div>
+      ${sub ? `<div class="muted farm-small">${sub}</div>` : ''}</div>
+    <div class="bag-actions">${acts}</div>
+  </div>`;
+}
+
+function bagRender(state) {
+  const inv = state.inventory || {};
+  const entries = Object.entries(inv).filter(([id, n]) => n > 0 && getItem(id));
+  if (!entries.length) {
+    return `<section class="farm-wrap"><div class="empty-state">🎒 กระเป๋ายังว่างอยู่<br><span class="muted">เก็บเกี่ยวพืชหรือส่งน้องไปสำรวจเพื่อหาของ</span></div></section>`;
+  }
+  let total = 0;
+  const groups = BAG_GROUPS.map(g => {
+    const rows = entries.filter(([id]) => getItem(id).type === g.type);
+    if (!rows.length) return '';
+    rows.forEach(([id, n]) => { total += (getItem(id).sell || 0) * n; });
+    return `<div class="bag-group"><h3 class="farm-h">${g.title}</h3>${rows.map(([id, n]) => bagRow(id, n)).join('')}</div>`;
+  }).join('');
+  return `<section class="farm-wrap">
+    <div class="bag-summary"><span>🎒 ${entries.length} ชนิด</span><span class="muted">มูลค่าขายรวม 🪙 ${num(total)}</span></div>
+    ${groups}
+  </section>`;
+}
+
+function bagBind(rootEl) {
+  delegate(rootEl, {
+    sell: d => run(s => sellItem(s, d.item, d.qty === 'all' ? (Number(s.inventory[d.item]) || 0) : Number(d.qty) || 1)),
+  });
+}
+
+// ================================================================ exports
+
+export const views = [
+  { id: 'farm', icon: '🌾', label: 'ไร่', render: farmRender, bind: farmBind },
+  { id: 'explore', icon: '🧭', label: 'สำรวจ', render: exploreRender, bind: exploreBind },
+  { id: 'shop', icon: '🛒', label: 'ร้าน', render: shopRender, bind: shopBind },
+  { id: 'bag', icon: '🎒', label: 'กระเป๋า', render: bagRender, bind: bagBind },
+];

@@ -38,7 +38,7 @@ export async function withFakeNow(ms, fn) {
 /** Clears saved games and installs a brand-new game state; returns it. */
 export function freshState() {
   for (const k of Object.keys(localStorage)) {
-    if (k.startsWith('nongfarm_')) localStorage.removeItem(k);
+    if (k.startsWith('nongfarm_') || k.startsWith('nongfarm3_')) localStorage.removeItem(k);
   }
   replaceState(createNewState());
   return getState();

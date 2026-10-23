@@ -16,7 +16,7 @@ import { ITEMS, getItem } from '../js/data/items.js';
 import {
   tickFarm, plantSeed, waterPlot, assignPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
   buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, upgradeIncubator, incubatorUpgradePrice,
-  completeOrder, ensureOrders, nextMidnight, fertilize, harvestPlot, replantPlot, ZONES, effectivePower,
+  completeOrder, ensureOrders, nextMidnight, fertilize, harvestPlot, replantPlot, ZONES, effectivePower, plotTeam, slotPowerPreview,
 } from '../js/farm.js';
 
 const MIN = 60 * 1000;
@@ -180,18 +180,29 @@ function session(s, bot, cadence) {
     if (pet.stage >= 1) {
       for (const z of zones) {
         const cycle = Math.max(cadence, Math.ceil(z.durationMs / cadence) * cadence);
-        const v = zoneEv(z, effectivePower(getWorkPower(pet, [z.job]))) / (cycle / HOUR);
+        const ctx = { kind: 'expedition', jobs: [z.job], zoneId: z.id, hour: new Date(now()).getHours() };
+        const v = zoneEv(z, effectivePower(getWorkPower(pet, [z.job], ctx))) / (cycle / HOUR);
         if (v > best.value) best = { value: v, zone: z };
       }
     }
+    // team plots: the best (plot, slot) for this pet = highest speed gain on that crop's profit rate
     for (const p of s.plots) {
-      if (!p.cropId || p.petId || isReady(p)) continue;
+      if (!p.cropId || isReady(p)) continue;
       const c = getCrop(p.cropId);
-      const v = 0.3 * effectivePower(getWorkPower(pet, c.jobs)) * (profitOf(c) / (c.growMs / HOUR)) * (1 - p.progress);
-      if (v > best.value) best = { value: v, plot: p };
+      const team = plotTeam(s, p);
+      for (const sl of team.slots) {
+        if (sl.pet) continue;
+        const gain = 0.3 * slotPowerPreview(s, p.index, sl.slot, pet).eff;
+        const v = gain * (profitOf(c) / (c.growMs / HOUR)) * (1 - p.progress);
+        if (v > best.value) best = { value: v, plot: p, slot: sl.slot };
+      }
     }
     if (best.zone) startExpedition(s, pet.id, best.zone.id);
-    else if (best.plot) assignPet(s, best.plot.index, pet.id);
+    else if (best.plot && assignPet(s, best.plot.index, pet.id, best.slot).ok) {
+      bot.assigns++;
+      const tm = plotTeam(s, best.plot);
+      if (tm.full && tm.slots.length > 1) bot.combos++;
+    }
   }
 
   // 7. invest what is left
@@ -251,7 +262,7 @@ function runSim(profile, seed) {
     Math.random = mulberry32(seed);
     try {
       const s = createNewState();
-      const bot = { earned: 0, by: { crop: 0, forage: 0, orders: 0 } };
+      const bot = { earned: 0, assigns: 0, combos: 0, by: { crop: 0, forage: 0, orders: 0 } };
       const rows = [];
       let last = START;
       let lastRowAt = START;
@@ -273,7 +284,7 @@ function runSim(profile, seed) {
           lastRowAt = t;
         }
       }
-      return { rows, by: bot.by, earned: bot.earned, perHour: bot.earned / (DAYS * 24), ms: Date.now() - t0, state: s };
+      return { rows, assigns: bot.assigns, combos: bot.combos, by: bot.by, earned: bot.earned, perHour: bot.earned / (DAYS * 24), ms: Date.now() - t0, state: s };
     } finally {
       Math.random = realRandom;
     }
@@ -288,7 +299,7 @@ async function result(name) {
 
 function table(name, r) {
   const share = k => Math.round((100 * r.by[k]) / Math.max(1, r.earned));
-  const lines = [`[econ-sim] ${name}: ${Math.round(r.perHour)} coins/h earned on average (${r.ms} ms); income mix crops ${share('crop')}% / forage ${share('forage')}% / orders ${share('orders')}%`,
+  const lines = [`[econ-sim] ${name}: ${Math.round(r.perHour)} coins/h earned on average (${r.ms} ms); income mix crops ${share('crop')}% / forage ${share('forage')}% / orders ${share('orders')}%; plot-helper assignments ${r.assigns}, full-team combos ${r.combos}`,
     'day  lvl  plots pets inc barn orders  coins/h(day)   coins'];
   for (const x of r.rows) {
     lines.push(`${String(x.day).padStart(3)}  ${String(x.level).padStart(3)}  ${String(x.plots).padStart(5)} ${String(x.pets).padStart(4)} ${String(x.inc).padStart(3)} ${String(x.barn).padStart(4)} ${String(x.orders).padStart(6)}  ${String(Math.round(x.perHour)).padStart(12)}  ${String(x.coins).padStart(7)}`);

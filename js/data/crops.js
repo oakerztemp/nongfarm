@@ -7,7 +7,7 @@
 
 const MIN = 60 * 1000;
 
-export const CROPS = [
+const RAW_CROPS = [
   { id: 'carrot',      emoji: '🥕', nameTh: 'แครอท',        seedPrice: 3,   sellPrice: 4,   growMs: 2 * MIN,   yield: [2, 3], unlockLevel: 1,  jobs: ['dig', 'water'],       xp: 3 },
   { id: 'corn',        emoji: '🌽', nameTh: 'ข้าวโพด',      seedPrice: 5,   sellPrice: 6,   growMs: 5 * MIN,   yield: [2, 4], unlockLevel: 1,  jobs: ['carry', 'water'],     xp: 4 },
   { id: 'tomato',      emoji: '🍅', nameTh: 'มะเขือเทศ',    seedPrice: 9,   sellPrice: 13,  growMs: 10 * MIN,  yield: [2, 4], unlockLevel: 2,  jobs: ['pollinate', 'water'], xp: 6 },
@@ -19,12 +19,17 @@ export const CROPS = [
   { id: 'pumpkin',     emoji: '🎃', nameTh: 'ฟักทอง',       seedPrice: 73, sellPrice: 56,  growMs: 75 * MIN,  yield: [5, 7], unlockLevel: 6,  jobs: ['carry', 'guard'],     xp: 15 },
   { id: 'watermelon',  emoji: '🍉', nameTh: 'แตงโม',        seedPrice: 90, sellPrice: 68, growMs: 90 * MIN,  yield: [5, 7], unlockLevel: 7,  jobs: ['carry', 'water'],     xp: 16 },
   { id: 'sunflower',   emoji: '🌻', nameTh: 'ทานตะวัน',     seedPrice: 93, sellPrice: 60, growMs: 105 * MIN, yield: [6, 8], unlockLevel: 8,  jobs: ['pollinate', 'fly'],   xp: 14 },
-  { id: 'rice',        emoji: '🌾', nameTh: 'ข้าว',         seedPrice: 104, sellPrice: 63, growMs: 120 * MIN, yield: [6, 9], unlockLevel: 9,  jobs: ['water', 'carry'],     xp: 14 },
-  { id: 'grape',       emoji: '🍇', nameTh: 'องุ่น',        seedPrice: 116, sellPrice: 70, growMs: 150 * MIN, yield: [6, 9], unlockLevel: 10, jobs: ['pollinate', 'fly'],   xp: 15 },
-  { id: 'broccoli',    emoji: '🥦', nameTh: 'บร็อกโคลี',    seedPrice: 127, sellPrice: 68, growMs: 180 * MIN, yield: [7, 10], unlockLevel: 11, jobs: ['water', 'guard'],     xp: 15 },
-  { id: 'sweetpotato', emoji: '🍠', nameTh: 'มันเทศ',       seedPrice: 147, sellPrice: 83, growMs: 210 * MIN, yield: [7, 9], unlockLevel: 12, jobs: ['dig', 'carry'],       xp: 16 },
-  { id: 'pineapple',   emoji: '🍍', nameTh: 'สับปะรด',      seedPrice: 169, sellPrice: 85, growMs: 240 * MIN, yield: [8, 10], unlockLevel: 12, jobs: ['carry', 'guard'],     xp: 16 },
+  { id: 'rice',        emoji: '🌾', nameTh: 'ข้าว',         seedPrice: 104, sellPrice: 63, growMs: 120 * MIN, yield: [6, 9], unlockLevel: 9,  jobs: ['water', 'carry', 'guard'],     xp: 14 },
+  { id: 'grape',       emoji: '🍇', nameTh: 'องุ่น',        seedPrice: 116, sellPrice: 70, growMs: 150 * MIN, yield: [6, 9], unlockLevel: 10, jobs: ['pollinate', 'fly', 'guard'],   xp: 15 },
+  { id: 'broccoli',    emoji: '🥦', nameTh: 'บร็อกโคลี',    seedPrice: 127, sellPrice: 68, growMs: 180 * MIN, yield: [7, 10], unlockLevel: 11, jobs: ['water', 'guard', 'dig'],     xp: 15 },
+  { id: 'sweetpotato', emoji: '🍠', nameTh: 'มันเทศ',       seedPrice: 147, sellPrice: 83, growMs: 210 * MIN, yield: [7, 9], unlockLevel: 12, jobs: ['dig', 'carry', 'water'],       xp: 16 },
+  { id: 'pineapple',   emoji: '🍍', nameTh: 'สับปะรด',      seedPrice: 169, sellPrice: 85, growMs: 240 * MIN, yield: [8, 10], unlockLevel: 12, jobs: ['carry', 'guard', 'pollinate'],     xp: 16 },
 ];
+
+// Team slots by grow time: 1 for < 30 min, 2 for 30 min - < 2 h, 3 for >= 2 h. Slot i is tied to jobs[i]
+// (3-slot crops therefore list 3 jobs; 1-slot crops keep the old "best of the crop's jobs" rule).
+const slotsFor = growMs => (growMs < 30 * MIN ? 1 : growMs < 120 * MIN ? 2 : 3);
+export const CROPS = RAW_CROPS.map(c => ({ ...c, slots: slotsFor(c.growMs) }));
 
 const BY_ID = new Map(CROPS.map(c => [c.id, c]));
 

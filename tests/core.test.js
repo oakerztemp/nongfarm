@@ -9,6 +9,8 @@ import {
   formatDuration, escapeHtml, todayKey, pickWeighted, randInt, uid, morph, now, onNotify,
 } from '../js/util.js';
 import * as storage from '../js/storage.js';
+import { createNotifyMemory, pollNotifications, THROTTLE_MS, HUNGER_LOW } from '../js/notify.js';
+import { shouldRegisterSW } from '../js/pwa.js';
 
 const HOUR = 3600 * 1000;
 const FIXTURES = ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt'];
@@ -511,7 +513,7 @@ test('rev: every write is lastKnownRev + 1 and carries the version', () => withC
   await storage.connectUser('r1', apply, noAsk);
   act();
   await storage.flushSave();
-  assertEq([cloud.docs.r1.rev, cloud.docs.r1.version], [8, 2], 'first write');
+  assertEq([cloud.docs.r1.rev, cloud.docs.r1.version], [8, STATE_VERSION], 'first write');
   act();
   await storage.flushSave();
   assertEq(cloud.docs.r1.rev, 9, 'second write');
@@ -593,7 +595,7 @@ test('v1-style client (no rev) can no longer overwrite an existing cloud save', 
 
 /** Another browser tab, simulated with a second BroadcastChannel instance; collects what this tab announces. */
 function fakeOtherTab(scope) {
-  const ch = new BroadcastChannel('nongfarm-writer');
+  const ch = new BroadcastChannel(storage.WRITER_CHANNEL);
   const heard = [];
   ch.onmessage = e => {
     heard.push(e.data);
@@ -619,7 +621,7 @@ test('two tabs: a tab that loses focus writes the shared cache first and announc
     tab.claim();
     await delay(100);
     assertEq(storage.getSaveStatus(), 'othertab', 'this tab steps back');
-    assertEq(JSON.parse(localStorage.getItem('nongfarm_r5')).updatedAt, stamp, 'shared local cache already has the last action');
+    assertEq(JSON.parse(localStorage.getItem('nongfarm3_r5')).updatedAt, stamp, 'shared local cache already has the last action');
     const msg = tab.heard.find(m => m.type === 'yielded');
     assert(msg && msg.updatedAt === stamp && Number.isFinite(msg.rev), `yielded announced with rev + updatedAt (${JSON.stringify(msg)})`);
 
@@ -642,7 +644,7 @@ test('two tabs: the new writer adopts the newest of memory / local cache / cloud
     tab.claim();
     await delay(60);
     // the other tab plays on and saves only locally so far (its upload is still in flight)
-    localStorage.setItem('nongfarm_r6', JSON.stringify(mkState('FROM_TAB_A', 700, { pets: 2 })));
+    localStorage.setItem('nongfarm3_r6', JSON.stringify(mkState('FROM_TAB_A', 700, { pets: 2 })));
     storage.claimWriter(); // we come back to the front
     tab.yielded();
     await delay(120);
@@ -731,12 +733,12 @@ test('background tab: an auth change does not make it a writer', () => withCloud
   await whileHidden(async () => {
     await storage.connectUser('h1', apply, noAsk); // onAuthStateChanged fires in every tab
     assertEq(storage.getSaveStatus(), 'othertab', 'hidden tab is not the writer');
-    assertEq(localStorage.getItem('nongfarm_h1'), null, 'shared cache untouched');
+    assertEq(localStorage.getItem('nongfarm3_h1'), null, 'shared cache untouched');
     const writes = cloud.writes;
     act();
     await storage.flushSave();
     assertEq(cloud.writes, writes, 'no upload from a background tab');
-    assertEq(localStorage.getItem('nongfarm_h1'), null, 'still nothing written locally');
+    assertEq(localStorage.getItem('nongfarm3_h1'), null, 'still nothing written locally');
     storage.disconnectUser(apply); // logout in the same background tab
     assertEq(storage.getSaveStatus(), 'othertab', 'still not the writer after logout');
   });
@@ -763,14 +765,14 @@ test('reconcile: the new writer is locked while syncing and backs up every losin
     tab.claim();
     await delay(80);
     act(); // unsent action in this (now background) tab: memory updatedAt 101
-    localStorage.setItem('nongfarm_r9', JSON.stringify(mkState('CACHE_COPY', 500, { pets: 2 })));
+    localStorage.setItem('nongfarm3_r9', JSON.stringify(mkState('CACHE_COPY', 500, { pets: 2 })));
     cloud.docs.r9 = { state: JSON.stringify(mkState('CLOUD_NEWEST', 900, { pets: 3 })), updatedAt: 900, version: 2, rev: 2 };
 
     storage.claimWriter();
     await delay(50);
     assertEq([storage.isSyncing(), storage.getSaveStatus()], [true, 'syncing'], 'locked while syncing');
-    const before = localStorage.getItem('nongfarm_r9');
-    assertEq(localStorage.getItem('nongfarm_r9'), before, 'nothing written during the sync');
+    const before = localStorage.getItem('nongfarm3_r9');
+    assertEq(localStorage.getItem('nongfarm3_r9'), before, 'nothing written during the sync');
     tab.yielded();
     await delay(250);
     assertEq([storage.isSyncing(), getState().player.farmName], [false, 'CLOUD_NEWEST'], 'cloud copy won');
@@ -788,7 +790,7 @@ test('reconcile: an action taken during the sync window does not silently drop t
   try {
     tab.claim();
     await delay(80);
-    localStorage.setItem('nongfarm_r10', JSON.stringify(mkState('OLD_TAB_UNSENT', 4000, { pets: 2 })));
+    localStorage.setItem('nongfarm3_r10', JSON.stringify(mkState('OLD_TAB_UNSENT', 4000, { pets: 2 })));
     storage.claimWriter();
     await delay(50);
     const s = getState(); // a click that slipped in during the window: memory becomes the newest copy
@@ -849,3 +851,302 @@ test('quests preDone: veteran steps never pay out even when claimed in order', a
   assertEq(currentQuest(mid), null, 'no quest left');
   assert(!claimQuest(mid).ok, 'nothing left to claim');
 });
+
+// ---- v2 -> v3 migration ----
+
+test('migrate v2 -> v3: petId becomes petIds, tasks get a slot, bond + settings defaults', async () => {
+  const raw = await loadFixture('save_v2_midgame');
+  const s = migrate(raw);
+  assertEq(s.version, STATE_VERSION, 'version');
+  assertEq(s.plots[0].petIds, ['pet1'], 'working pet kept in its slot (tomato has one slot)');
+  assert(!('petId' in s.plots[0]), 'petId removed');
+  assertEq(s.plots[1].petIds, [null], 'plot without a worker: one empty slot');
+  assertEq(s.plots[1].helperPetIds, ['pet2'], 'helperPetId -> helperPetIds');
+  assert(!('helperPetId' in s.plots[1]), 'helperPetId removed');
+  assertEq(s.plots[2].helperPetIds, [], 'no helper snapshot -> empty list');
+  assertEq(s.plots[3].petIds, [], 'empty plot has no slots');
+  const pet1 = s.pets.find(p => p.id === 'pet1');
+  assertEq(pet1.task, { type: 'plot', plotIndex: 0, slot: 0 }, 'task gains slot 0');
+  assertEq(s.pets.find(p => p.id === 'pet3').task, { type: 'expedition', expeditionId: 'exp1' }, 'expedition task untouched');
+  for (const p of s.pets) {
+    assertEq([p.bond, p.bondDay, p.bondToday, p.giftDay], [0, null, 0, null], `bond defaults for ${p.id}`);
+  }
+  assertEq(pet1.zeroMs, 0, 'unknown pet fields survive');
+  assertEq(s.settings, { notify: false }, 'settings default');
+  assertEq(s.player.coins, 2300, 'nothing lost');
+  assertEq(s.stats.helped, 1, 'stats kept');
+  assertEq(findBad(s), null, 'no NaN/undefined');
+});
+
+test('migrate v2 -> v3: sizes petIds to the crop slot count and repairs broken pet <-> plot links', () => {
+  const raw = {
+    version: 2,
+    plots: [
+      { index: 0, cropId: 'strawberry', petId: 'a' },          // 30 min crop: 2 slots
+      { index: 1, cropId: 'carrot', petId: 'ghost' },          // pet does not exist -> slot cleared
+      { index: 2, cropId: 'carrot', petId: 'b' },              // pet b points elsewhere -> cleared
+      { index: 3, cropId: null, petId: 'c' },                  // no crop: no slots, pet c freed
+    ],
+    pets: [
+      { id: 'a', speciesId: 'hamster', status: 'working', task: { type: 'plot', plotIndex: 0 } },
+      { id: 'b', speciesId: 'hamster', status: 'working', task: { type: 'plot', plotIndex: 0 } },
+      { id: 'c', speciesId: 'hamster', status: 'working', task: { type: 'plot', plotIndex: 3 } },
+      { id: 'd', speciesId: 'hamster', status: 'sleeping', task: null },
+    ],
+  };
+  const s = migrate(raw);
+  assertEq(s.plots[0].petIds, ['a', null], 'padded to 2 slots');
+  assertEq(s.plots[1].petIds, [null], 'ghost removed');
+  assertEq(s.plots[2].petIds, [null], 'unlinked pet removed from the slot');
+  assertEq(s.plots[3].petIds, [], 'cropless plot has no slots');
+  const byId = Object.fromEntries(s.pets.map(p => [p.id, p]));
+  assertEq(byId.a.task, { type: 'plot', plotIndex: 0, slot: 0 }, 'a linked');
+  assertEq([byId.b.status, byId.b.task], ['idle', null], 'b freed (plot 0 does not list it)');
+  assertEq([byId.c.status, byId.c.task], ['idle', null], 'c freed');
+  assertEq(byId.d.status, 'sleeping', 'sleeping pet untouched');
+  // every remaining link is two-way
+  for (const p of s.pets) {
+    if (p.task && p.task.type === 'plot') assertEq(s.plots[p.task.plotIndex].petIds[p.task.slot], p.id, 'two-way link');
+  }
+});
+
+test('migrate v1 fixtures all the way to v3 (no NaN, links consistent)', async () => {
+  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt']) {
+    const s = migrate(await loadFixture(name));
+    assertEq(s.version, STATE_VERSION, `${name}: version`);
+    assert(s.plots.every(p => Array.isArray(p.petIds) && !('petId' in p)), `${name}: plots use petIds`);
+    for (const p of s.pets) {
+      if (p.task && p.task.type === 'plot') assertEq(s.plots[p.task.plotIndex].petIds[p.task.slot], p.id, `${name}: two-way link`);
+    }
+    assertEq(findBad(s), null, `${name}: no NaN/undefined`);
+  }
+});
+
+// ---- PWA: service worker guard, manifest, icons ----
+
+test('service worker is not registered on localhost unless ?sw=1', () => {
+  const nav = { serviceWorker: {} };
+  const at = (hostname, search = '', protocol = 'https:') => ({ hostname, search, protocol });
+  assert(!shouldRegisterSW(at('localhost', '', 'http:'), nav), 'localhost');
+  assert(!shouldRegisterSW(at('127.0.0.1', '', 'http:'), nav), '127.0.0.1');
+  assert(!shouldRegisterSW(at('[::1]', '?x=1', 'http:'), nav), 'ipv6 localhost');
+  assert(!shouldRegisterSW(at('dev.localhost', '', 'http:'), nav), '*.localhost');
+  assert(shouldRegisterSW(at('localhost', '?sw=1', 'http:'), nav), 'localhost with ?sw=1 opts in');
+  assert(shouldRegisterSW(at('oakerztemp.github.io'), nav), 'https production host');
+  assert(!shouldRegisterSW(at('example.com', '', 'http:'), nav), 'plain http elsewhere');
+  assert(!shouldRegisterSW(at('oakerztemp.github.io'), {}), 'browser without service workers');
+});
+
+test('manifest + icons are valid and installable', async () => {
+  const manifest = await (await fetch(new URL('../manifest.webmanifest', import.meta.url))).json();
+  assertEq([manifest.name, manifest.short_name], ['ฟาร์มน้องๆ', 'NongFarm'], 'names');
+  assertEq([manifest.start_url, manifest.scope, manifest.display], ['./', './', 'standalone'], 'start/scope/display');
+  const sizes = manifest.icons.map(i => `${i.sizes}:${i.purpose}`);
+  assert(sizes.includes('192x192:any') && sizes.includes('512x512:any') && sizes.includes('512x512:maskable'), `icon set (${sizes})`);
+  for (const icon of manifest.icons) {
+    const res = await fetch(new URL(`../${icon.src}`, import.meta.url));
+    assert(res.ok, `${icon.src} exists`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    assertEq([...bytes.slice(1, 4)].map(b => String.fromCharCode(b)).join(''), 'PNG', `${icon.src} is a PNG`);
+  }
+});
+
+test('sw.js: stampable version, own-origin only, never skips waiting', async () => {
+  const text = await (await fetch(new URL('../sw.js', import.meta.url))).text();
+  assert(/const VERSION = '[^']*';/.test(text), 'VERSION line exists for version_assets.py');
+  assert(text.includes('self.location.origin'), 'ignores cross-origin (Firebase/Google) requests');
+  assert(!text.includes('skipWaiting') && !text.includes('clients.claim'), 'no surprise takeover mid-play');
+  assert(text.includes('caches.delete'), 'old caches are deleted on activate');
+  assert(text.includes('notificationclick'), 'notification clicks handled');
+});
+
+// ---- local notifications (notify.js) ----
+
+const MIN = 60 * 1000;
+const T0 = new Date(2026, 5, 1, 12, 0, 0).getTime();
+
+function notifyState(extra = {}) {
+  const s = createNewState();
+  s.settings.notify = true;
+  return Object.assign(s, extra);
+}
+const egg = readyAt => ({ eggId: 'egg_farm', startAt: readyAt - 60000, readyAt });
+const poll = (state, t, memory, active = false) => pollNotifications(state, t, memory, { active });
+
+test('notify: an egg that becomes ready is announced once, on the barn tab', () => {
+  const s = notifyState({ incubator: [egg(T0 + 5 * MIN)] });
+  const memory = createNotifyMemory();
+  assertEq(poll(s, T0, memory), [], 'not ready yet');
+  const notices = poll(s, T0 + 5 * MIN, memory);
+  assertEq(notices.length, 1, 'one notice');
+  assertEq([notices[0].category, notices[0].tab, notices[0].tag], ['egg', 'barn', 'nongfarm-egg'], 'category/tab/tag');
+  assert(notices[0].title.includes('ไข่'), 'title mentions the egg');
+  assertEq(poll(s, T0 + 6 * MIN, memory), [], 'never repeated');
+});
+
+test('notify: crops, expeditions and hungry pets map to their tabs; same-category events are merged', () => {
+  const s = notifyState();
+  s.plots[0] = { ...s.plots[0], cropId: 'carrot', progress: 1, plantedAt: 10 };
+  s.plots[1] = { ...s.plots[1], cropId: 'corn', progress: 1.2, plantedAt: 20 };
+  s.expeditions = [{ id: 'e1', petId: 'p', zoneId: 'forest', startAt: 0, endAt: T0 - 1, done: true, rewards: {} }];
+  s.pets = [{ id: 'p', speciesId: 'hamster', nickname: 'ถั่วดำ', stats: { hunger: 10 } }];
+  const byCat = Object.fromEntries(poll(s, T0, createNotifyMemory()).map(n => [n.category, n]));
+  assertEq(Object.keys(byCat).sort(), ['crop', 'hungry', 'trip'], 'one notice per category');
+  assertEq([byCat.crop.tab, byCat.trip.tab, byCat.hungry.tab], ['farm', 'explore', 'barn'], 'tabs');
+  assert(byCat.crop.body.includes('2'), 'two ready plots are merged into one notice');
+  assert(byCat.hungry.body.includes('ถั่วดำ'), 'hungry notice names the pet');
+});
+
+test('notify: nothing is shown while the player is looking, and it is not shown later either', () => {
+  const s = notifyState({ incubator: [egg(T0)] });
+  const memory = createNotifyMemory();
+  assertEq(poll(s, T0, memory, true), [], 'active tab: silent');
+  assertEq(poll(s, T0 + MIN, memory, false), [], 'already seen: not announced after the tab is hidden');
+});
+
+test('notify: switched off in settings -> silent, and enabling later does not flood', () => {
+  const s = notifyState({ incubator: [egg(T0)] });
+  s.settings.notify = false;
+  const memory = createNotifyMemory();
+  assertEq(poll(s, T0, memory), [], 'off: silent');
+  s.settings.notify = true;
+  assertEq(poll(s, T0 + MIN, memory), [], 'old events are not announced when turned on');
+  s.incubator.push(egg(T0 + 2 * MIN));
+  assertEq(poll(s, T0 + 2 * MIN, memory).length, 1, 'new events are');
+});
+
+test('notify: at most one notification per category per 10 minutes, pending news is kept', () => {
+  const s = notifyState({ incubator: [egg(T0)] });
+  const memory = createNotifyMemory();
+  assertEq(poll(s, T0, memory).length, 1, 'first egg');
+  s.incubator = [egg(T0 + 2 * MIN)];
+  assertEq(poll(s, T0 + 2 * MIN, memory), [], 'second egg 2 min later: throttled');
+  assertEq(poll(s, T0 + THROTTLE_MS - 1000, memory), [], 'still throttled just before 10 min');
+  const later = poll(s, T0 + THROTTLE_MS, memory);
+  assertEq(later.length, 1, 'announced as soon as the window passes');
+  s.plots[0] = { ...s.plots[0], cropId: 'carrot', progress: 1, plantedAt: 5 };
+  assertEq(poll(s, T0 + THROTTLE_MS + MIN, memory).map(n => n.category), ['crop'], 'crop is not blocked by the egg throttle');
+});
+
+test('notify: a collected item stops being pending; a new planting notifies again', () => {
+  const s = notifyState();
+  const memory = createNotifyMemory();
+  s.plots[0] = { ...s.plots[0], cropId: 'carrot', progress: 1, plantedAt: 100 };
+  assertEq(poll(s, T0, memory).length, 1, 'ready');
+  s.plots[0] = { ...s.plots[0], cropId: null, progress: 0, plantedAt: 0 }; // harvested
+  assertEq(poll(s, T0 + MIN, memory), [], 'nothing pending');
+  s.plots[0] = { ...s.plots[0], cropId: 'carrot', progress: 1, plantedAt: 999 };
+  assertEq(poll(s, T0 + THROTTLE_MS + MIN, memory).length, 1, 'new crop is announced');
+});
+
+test('notify: a hungry pet is announced again only after it was fed', () => {
+  const s = notifyState();
+  s.pets = [{ id: 'p', speciesId: 'cow', nickname: '', stats: { hunger: HUNGER_LOW - 5 } }];
+  const memory = createNotifyMemory();
+  const first = poll(s, T0, memory);
+  assertEq(first.length, 1, 'hungry');
+  assert(first[0].body.includes('หิว'), 'says the pet is hungry');
+  assertEq(poll(s, T0 + 20 * MIN, memory), [], 'still the same hunger episode');
+  s.pets[0].stats.hunger = 80; // fed
+  poll(s, T0 + 21 * MIN, memory);
+  s.pets[0].stats.hunger = 10;
+  assertEq(poll(s, T0 + 31 * MIN, memory).length, 1, 'hungry again after being fed');
+});
+
+test('notify: fake clock drives due times (egg ready exactly at readyAt)', () => withFakeNow(T0, clock => {
+  const s = notifyState({ incubator: [egg(T0 + 90 * 1000)] });
+  const memory = createNotifyMemory();
+  assertEq(poll(s, now(), memory), [], 'before');
+  clock.advance(90 * 1000);
+  assertEq(poll(s, now(), memory).length, 1, 'at readyAt');
+}));
+
+// ---- v3 local keys: a still-open v2 tab cannot interfere ----
+
+/** A save as the old (v2) client wrote it: plots use petId, tasks have no slot. */
+function v2Save(name, updatedAt) {
+  return {
+    version: 2,
+    updatedAt,
+    lastTick: Date.now(),
+    player: { farmName: name, level: 3, xp: 5, coins: 321, createdAt: 1, lastDailyClaim: null },
+    pets: [{ id: 'a', speciesId: 'hamster', status: 'working', task: { type: 'plot', plotIndex: 0 } }],
+    plots: [{ index: 0, cropId: 'carrot', plantedAt: 1, progress: 0.5, watered: false, petId: 'a', helperPetId: 'ghost' }],
+  };
+}
+
+test('v2 tab on the old keys / old channel does not affect the v3 tab', () => withCloud(async () => {
+  storage.saveLocal(storage.GUEST_KEY, mkState('V3_GUEST', 900, { pets: 1 }));
+  localStorage.setItem('nongfarm_guest', JSON.stringify(v2Save('V2_TAB', 5000))); // old code keeps writing its own key
+  const ch = new BroadcastChannel('nongfarm-writer'); // ...and claims on its own channel
+  try {
+    storage.disconnectUser(apply);
+    assertEq(getState().player.farmName, 'V3_GUEST', 'old key ignored once the new key exists');
+    await delay(250);
+    ch.postMessage({ type: 'claim', scope: 'guest', tab: 'old-v2-tab' });
+    await delay(100);
+    assert(storage.getSaveStatus() !== 'othertab', 'a v2 tab cannot take the writer role');
+    act();
+    await storage.flushSave();
+    assertEq(JSON.parse(localStorage.getItem('nongfarm_guest')).player.farmName, 'V2_TAB', 'old key left untouched');
+    assertEq(JSON.parse(localStorage.getItem(storage.GUEST_KEY)).player.farmName, 'V3_GUEST', 'v3 saves to its own key');
+  } finally {
+    ch.close();
+  }
+}));
+
+test('first v3 load migrates once from the old guest key and leaves it alone', () => withCloud(async () => {
+  const raw = JSON.stringify(v2Save('FROM_V2', 800));
+  localStorage.setItem('nongfarm_guest', raw);
+  const res = storage.disconnectUser(apply);
+  assertEq(res.isNew, false, 'an existing farm, not a new one');
+  const s = getState();
+  assertEq([s.player.farmName, s.version], ['FROM_V2', STATE_VERSION], 'migrated to the current version');
+  assertEq(s.plots[0].petIds, ['a'], 'petId became petIds');
+  assertEq(s.pets[0].task, { type: 'plot', plotIndex: 0, slot: 0 }, 'task gained a slot');
+  assertEq(s.plots[0].helperPetIds, ['ghost'], 'helper snapshot converted');
+  assertEq(JSON.parse(localStorage.getItem(storage.GUEST_KEY)).version, STATE_VERSION, 'copied to the new key');
+  assertEq(localStorage.getItem('nongfarm_guest'), raw, 'old key untouched');
+
+  // the old tab keeps playing; once the new key is retired the old copy must not come back
+  localStorage.setItem('nongfarm_guest', JSON.stringify(v2Save('V2_KEEPS_PLAYING', 9000)));
+  localStorage.removeItem(storage.GUEST_KEY);
+  const again = storage.disconnectUser(apply);
+  assertEq(again.isNew, true, 'not resurrected from the old key');
+  assertEq(getState().player.farmName !== 'V2_KEEPS_PLAYING', true, 'fresh farm');
+}));
+
+test('first v3 login migrates the old per-account cache once', () => withCloud(async () => {
+  localStorage.setItem('nongfarm_mig1', JSON.stringify(v2Save('OLD_CACHE', 700)));
+  const res = await storage.connectUser('mig1', apply, noAsk); // no cloud copy: the old cache is the account farm
+  assertEq(res.source, 'cache', 'source');
+  assertEq([getState().player.farmName, getState().version], ['OLD_CACHE', STATE_VERSION], 'migrated');
+  assertEq(getState().plots[0].petIds, ['a'], 'petIds rebuilt');
+  assert(localStorage.getItem('nongfarm3_mig1') !== null, 'new key written');
+  assertEq(JSON.parse(localStorage.getItem('nongfarm_mig1')).version, 2, 'old key still v2 and untouched');
+}));
+
+test('adopting a v2-shaped cache from another tab goes through migrate()', () => withCloud(async cloud => {
+  putCloud(cloud, 'r11', mkState('BASE', 100, { pets: 1 }));
+  await storage.connectUser('r11', apply, noAsk);
+  await delay(250);
+  const tab = fakeOtherTab('uid:r11');
+  try {
+    tab.claim();
+    await delay(80);
+    // a v2-shaped save shows up in the shared cache (e.g. written by older code)
+    localStorage.setItem('nongfarm3_r11', JSON.stringify(v2Save('V2_SHAPED', 700)));
+    storage.claimWriter();
+    tab.yielded();
+    await delay(250);
+    const s = getState();
+    assertEq(s.player.farmName, 'V2_SHAPED', 'adopted');
+    assertEq(s.version, STATE_VERSION, 'upgraded to the current version');
+    assertEq(s.plots[0].petIds, ['a'], 'petIds rebuilt');
+    assertEq(s.pets[0].task, { type: 'plot', plotIndex: 0, slot: 0 }, 'task slot rebuilt');
+    assertEq(s.plots[0].helperPetIds, ['ghost'], 'helper snapshot converted, not used raw');
+    assert(!('petId' in s.plots[0]), 'no v2 fields left');
+  } finally {
+    tab.close();
+  }
+}));

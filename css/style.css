@@ -256,6 +256,13 @@ body.tab-syncing .view-root,
 body.tab-syncing .quest-bar { opacity: 0.55; pointer-events: none; transition: opacity 0.2s 0.4s; }
 body.tab-syncing .tab-banner { animation: fade-in 0.2s 0.4s both; }
 
+.hdr-settings { min-width: 32px; padding: 4px 8px; font-size: 1rem; }
+.settings { display: flex; flex-direction: column; gap: 14px; }
+.settings-row { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.settings-row input { width: 22px; height: 22px; flex: none; margin-top: 2px; accent-color: var(--primary); }
+.settings-hint { display: block; font-size: 0.82rem; }
+.settings-version { margin: 0; font-size: 0.8rem; }
+
 .hdr-user { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .hdr-avatar {
   width: 28px;

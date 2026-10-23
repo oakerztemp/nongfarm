@@ -11,8 +11,13 @@ import {
 import { getDb } from './auth.js';
 import { notify, now, uid as newId } from './util.js';
 
-export const GUEST_KEY = 'nongfarm_guest';
-const userKey = uid => `nongfarm_${uid}`;
+// v3 uses its own local keys and channel, so a still-open v2 tab (old code) can neither overwrite our shared
+// cache nor take the writer role from us. The old keys are read once and left untouched.
+export const GUEST_KEY = 'nongfarm3_guest';
+const userKey = uid => `nongfarm3_${uid}`;
+const LEGACY_GUEST_KEY = 'nongfarm_guest';
+const legacyUserKey = uid => `nongfarm_${uid}`;
+export const WRITER_CHANNEL = 'nongfarm3-writer';
 
 const LOCAL_INTERVAL_MS = 2000;
 const CLOUD_INTERVAL_MS = 30000;
@@ -112,9 +117,28 @@ export function saveLocal(key, state) {
   }
 }
 
+/**
+ * Local save under the current key. The first time a key is used, the save of the previous (v2) key is read,
+ * migrated and copied over (the old key stays untouched); a marker makes this happen only once per key.
+ */
+function loadWithLegacy(key, legacyKey) {
+  const own = loadLocal(key);
+  if (own) return own;
+  const marker = `${key}_legacy_checked`;
+  try {
+    if (localStorage.getItem(marker)) return null;
+    localStorage.setItem(marker, '1');
+  } catch {
+    return null;
+  }
+  const old = loadLocal(legacyKey); // migrate() upgrades the v2 shape
+  if (old) saveLocal(key, old);
+  return old;
+}
+
 /** Guest save from localStorage, or a brand-new game. */
 export function loadGuest() {
-  const saved = loadLocal(GUEST_KEY);
+  const saved = loadWithLegacy(GUEST_KEY, LEGACY_GUEST_KEY);
   return saved ? { state: saved, isNew: false } : { state: createNewState(), isNew: true };
 }
 
@@ -319,7 +343,7 @@ async function handleRejectedWrite(uid) {
 
 function ensureChannel() {
   if (channel || typeof BroadcastChannel === 'undefined') return;
-  channel = new BroadcastChannel('nongfarm-writer');
+  channel = new BroadcastChannel(WRITER_CHANNEL);
   channel.onmessage = e => {
     const m = e.data;
     if (!m || m.tab === tabId || m.scope !== scopeId()) return;
@@ -570,7 +594,7 @@ export async function connectUser(uid, apply, askWhichFarm) {
   flushLocal();
 
   const key = userKey(uid);
-  const cached = loadLocal(key);
+  const cached = loadWithLegacy(key, legacyUserKey(uid));
 
   if (cloudFailed) {
     notify('ต่อคลาวด์ไม่ได้ — เล่นต่อในเครื่อง รีเฟรชหน้าเพื่อลองใหม่', 'warn');

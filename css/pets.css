@@ -276,3 +276,18 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .book-shop-hint { margin: 0; font-size: 0.82rem; }
 .book-shop-eggs { display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); }
 .book-shop-eggs .btn { justify-content: center; }
+
+/* ───────── Traits & bond hearts ───────── */
+.pet-trait {
+  display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 0.75rem;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+}
+.pet-hearts { font-size: 0.95rem; letter-spacing: 1px; line-height: 1.2; }
+.pet-bond-badge { animation: pet-twinkle 2s ease-in-out infinite; }
+.pet-trait-box { padding: 8px 10px; background: var(--surface-2); border-radius: 10px; border: 1px solid var(--border); }
+.pet-bond-fill { background: var(--danger); }
+.pet-gift-btn { justify-self: start; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-bond-badge { animation: none !important; }
+}

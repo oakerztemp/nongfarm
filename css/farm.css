@@ -216,3 +216,27 @@
 @media (max-width: 480px) {
   .order-foot .btn { margin-left: auto; }
 }
+
+/* ---------------------------------------------------------- team slots on a plot */
+
+.plot-slots { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.plot-slot {
+  display: flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: wrap;
+  padding: 3px 6px; border-radius: calc(var(--radius) - 4px);
+  background: var(--surface-2); border: 1px solid var(--border);
+  font: inherit; font-size: 0.82rem; color: var(--text);
+}
+.plot-slot.is-empty { border-style: dashed; color: var(--text-dim); cursor: pointer; justify-content: center; }
+.plot-slot.is-empty:hover { border-color: var(--primary); color: var(--text); }
+.plot-slot-job { font-size: 1rem; line-height: 1; flex: none; }
+.plot-slot.is-filled { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px; }
+.plot-slot .pet-chip { min-width: 0; overflow: hidden; white-space: nowrap; }
+.plot-slot .pet-chip-name { overflow: hidden; text-overflow: ellipsis; }
+.plot-slot .pet-chip-stage { display: none; } /* keep slot rows to one line at 360px */
+.plot-slot-pow { flex: none; font-size: 0.75rem; color: var(--success); font-variant-numeric: tabular-nums; }
+.plot-slot-x {
+  flex: none; width: 22px; height: 22px; padding: 0; line-height: 1;
+  border: 0; border-radius: 50%; background: transparent; color: var(--text-dim); cursor: pointer;
+}
+.plot-slot-x:hover { background: var(--border); color: var(--danger); }
+.plot-combo { align-self: flex-start; color: var(--success); font-weight: 700; }

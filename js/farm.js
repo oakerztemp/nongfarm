@@ -2,13 +2,14 @@
 // DOM-free. Every action takes the state object, mutates it, and returns { ok, msg } or { ok:false, reason }.
 // Extra (optional) plot fields, initialised lazily when missing:
 //   plot.lastGrowAt  - ms timestamp growth was last applied (missing => plantedAt)
-//   plot.xpCarryMs   - leftover working time (<60s) not yet converted to pet XP
+//   plot.petIds      - one pet id (or null) per team slot of the planted crop (replaces pre-v3 plot.petId)
+//   plot.xpCarryMs   - per-slot leftover working time (<60s) not yet converted to pet XP
 //   plot.fertilized  - true once fertilizer was used for this planting (max one per crop)
-//   plot.helperBonus / plot.helperPetId - yield bonus + pet snapshotted when the crop became ready
+//   plot.helperBonus / plot.helperPetIds - yield bonus + helpers snapshotted when the crop became ready
 //   plot.lastCropId  - crop last planted here (kept after harvest) for the one-tap replant button
 import { now, randInt, pickWeighted, uid, addLog, notify, formatDuration, todayKey } from './util.js';
 import { addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, bumpStat } from './state.js';
-import { canWork, getWorkPower, addPetXp, getPet, petEmoji, petName } from './pets.js';
+import { canWork, getWorkPower, traitEffect, addBond, addPetXp, getPet, petEmoji, petName } from './pets.js';
 import { CROPS, getCrop } from './data/crops.js';
 import { EGGS } from './data/eggs.js';
 import { getItem } from './data/items.js';
@@ -106,10 +107,40 @@ export function effectivePower(p) {
   return Math.min(x, 2) + 0.4 * Math.max(0, x - 2);
 }
 
-// Effective (diminished) work power of a pet for the given jobs; 0 for a missing pet.
-function safePower(pet, jobs) {
-  if (!pet) return 0;
-  return effectivePower(getWorkPower(pet, jobs));
+const hourOf = ms => new Date(ms).getHours();
+
+// ---- team plots: a crop has 1-3 slots; slot i is tied to crop.jobs[i] (1-slot crops use their best job)
+export const TEAM_COMBO = 1.25; // speed multiplier on the pet part when every slot of a 2-3 slot plot is filled
+
+const slotCount = crop => Math.max(1, Number(crop && crop.slots) || 1);
+
+// Jobs that count for the pet standing in `slot`.
+export function slotJobs(crop, slot) {
+  if (!crop) return [];
+  return slotCount(crop) < 2 ? crop.jobs : [crop.jobs[slot] || crop.jobs[0]];
+}
+
+// Effective (diminished) power of `pet` in `slot` of `crop`, trait + bond included (via ctx).
+function slotPower(pet, crop, slot, teamSize, ms) {
+  if (!pet || !crop) return 0;
+  const jobs = slotJobs(crop, slot);
+  return effectivePower(getWorkPower(pet, jobs, { kind: 'plot', jobs, teamSize, hour: hourOf(ms) }));
+}
+
+// Normalises plot.petIds to exactly one entry per slot (also upgrades a pre-v3 plot.petId).
+function ensureSlots(plot, crop) {
+  const n = slotCount(crop);
+  if (!Array.isArray(plot.petIds)) plot.petIds = plot.petId ? [plot.petId] : [];
+  while (plot.petIds.length < n) plot.petIds.push(null);
+  if (plot.petIds.length > n) plot.petIds.length = n;
+  return plot.petIds;
+}
+
+// Per-slot leftover working time (<60 s) not yet converted to pet XP.
+function carryArr(plot, n) {
+  if (!Array.isArray(plot.xpCarryMs)) plot.xpCarryMs = [Number(plot.xpCarryMs) || 0];
+  while (plot.xpCarryMs.length < n) plot.xpCarryMs.push(0);
+  return plot.xpCarryMs;
 }
 
 function isReady(plot) {
@@ -117,43 +148,144 @@ function isReady(plot) {
 }
 
 function newPlot(index) {
-  return { index, cropId: null, plantedAt: 0, progress: 0, watered: false, petId: null, lastGrowAt: 0, xpCarryMs: 0, fertilized: false, helperBonus: 0, helperPetId: null, lastCropId: null };
+  return {
+    index, cropId: null, plantedAt: 0, progress: 0, watered: false, petIds: [], lastGrowAt: 0, xpCarryMs: [],
+    fertilized: false, helperBonus: 0, helperPetIds: [], lastCropId: null, workMs: {}, growElapsedMs: 0,
+  };
 }
 
 function resetPlot(plot, index) {
   const last = plot.lastCropId || null;
-  Object.assign(plot, newPlot(index), { lastCropId: last });
+  const fresh = newPlot(index);
+  delete plot.petId; // pre-v3 field
+  delete plot.helperPetId;
+  Object.assign(plot, fresh, { lastCropId: last });
 }
 
-// The pet currently working this plot (validated), or null for empty/dangling assignments.
-function plotPet(state, plot, index) {
-  if (!plot || !plot.petId) return null;
-  const pet = getPet(state, plot.petId);
-  if (!pet || !pet.task || pet.task.type !== 'plot' || pet.task.plotIndex !== index) return null;
-  return pet;
+// Pets validly working this plot: [{ slot, pet }] (dangling ids / pets with another task are skipped).
+function teamOf(state, plot, index) {
+  const out = [];
+  const ids = plot && Array.isArray(plot.petIds) ? plot.petIds : [];
+  for (let slot = 0; slot < ids.length; slot++) {
+    const pet = ids[slot] ? getPet(state, ids[slot]) : null;
+    const t = pet && pet.task;
+    if (t && t.type === 'plot' && t.plotIndex === index && (t.slot || 0) === slot) out.push({ slot, pet });
+  }
+  return out;
 }
 
-// Send the plot's pet home (idle) and clear the assignment. Safe with dangling ids.
-function releasePlotPet(state, plot, index) {
-  const pet = plot.petId ? getPet(state, plot.petId) : null;
-  if (pet && pet.task && pet.task.type === 'plot' && pet.task.plotIndex === index) {
+// Send the pet in one slot home (idle) and free the slot. Safe with dangling ids.
+function releaseSlot(state, plot, index, slot) {
+  const id = Array.isArray(plot.petIds) ? plot.petIds[slot] : null;
+  const pet = id ? getPet(state, id) : null;
+  if (pet && pet.task && pet.task.type === 'plot' && pet.task.plotIndex === index && (pet.task.slot || 0) === slot) {
     pet.status = 'idle';
     pet.task = null;
   }
-  plot.petId = null;
-  plot.xpCarryMs = 0;
+  if (Array.isArray(plot.petIds) && slot < plot.petIds.length) plot.petIds[slot] = null;
+  if (Array.isArray(plot.xpCarryMs)) plot.xpCarryMs[slot] = 0;
   return pet;
 }
 
-function speedFor(plot, pet, crop) {
-  return 1 + (plot.watered ? WATER_BOOST : 0) + PET_BOOST * safePower(pet, crop.jobs);
+function releaseAll(state, plot, index) {
+  const pets = [];
+  const n = Array.isArray(plot.petIds) ? plot.petIds.length : 0;
+  for (let slot = 0; slot < n; slot++) {
+    const p = releaseSlot(state, plot, index, slot);
+    if (p) pets.push(p);
+  }
+  plot.petIds = Array.isArray(plot.petIds) ? plot.petIds.map(() => null) : [];
+  return pets;
+}
+
+// Sum of the pets' speed contributions (with the full-team combo) for a validated team.
+function teamBoost(team, crop, ms) {
+  const n = team.length;
+  let sum = 0;
+  for (const { slot, pet } of team) sum += PET_BOOST * slotPower(pet, crop, slot, n, ms);
+  const full = slotCount(crop) >= 2 && n === slotCount(crop);
+  return { boost: sum * (full ? TEAM_COMBO : 1), full };
+}
+
+// A helper must have worked this share of the grow time to earn harvest XP and bond.
+export const HELPER_MIN_SHARE = 0.25;
+
+// Per-helper yield bonus: floor(power/2) + harvester-type trait bonus, scaled by the share of the
+// grow time that pet actually worked (rounded down per pet). shareOf(pet) -> 0..1.
+function helperDetail(team, crop, ms, shareOf = () => 1) {
+  return team.map(({ slot, pet }) => {
+    const jobs = slotJobs(crop, slot);
+    const te = traitEffect(pet, { kind: 'plot', jobs, teamSize: team.length, hour: hourOf(ms) });
+    const trait = te && Number.isFinite(te.yieldBonus) ? Math.max(0, Math.floor(te.yieldBonus)) : 0;
+    const base = Math.floor(slotPower(pet, crop, slot, team.length, ms) / 2) + trait;
+    const raw = Number(shareOf(pet));
+    const share = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0;
+    return { slot, pet, base, share, bonus: Math.floor(share * base + 1e-9) };
+  });
+}
+
+// Share of the plot's grow time (so far) that `pet` has worked.
+function workShare(plot, pet) {
+  const total = Number(plot.growElapsedMs) || 0;
+  const w = plot.workMs && Number(plot.workMs[pet.id]) || 0;
+  return total > 0 ? w / total : 0;
+}
+
+// Yield bonus the current team would bring if the crop were harvested after finishing at the current
+// speed (shares projected to the end). For the "น้องช่วย +N" preview on growing plots.
+export function plotBonusPreview(state, plot) {
+  const crop = plot && getCrop(plot.cropId);
+  if (!crop || isReady(plot)) return 0;
+  const team = teamOf(state, plot, plot.index);
+  if (!team.length) return 0;
+  const eta = plotEtaMs(state, plot);
+  const total = Number(plot.growElapsedMs) || 0;
+  const det = helperDetail(team, crop, now(), pet => {
+    const w = plot.workMs && Number(plot.workMs[pet.id]) || 0;
+    return total + eta > 0 ? (w + eta) / (total + eta) : 0;
+  });
+  return det.reduce((t, d) => t + d.bonus, 0);
 }
 
 // Current growth speed multiplier of a plot (used by the UI for ETA / badges).
 export function plotSpeed(state, plot) {
   const crop = plot && getCrop(plot.cropId);
   if (!crop) return 1;
-  return speedFor(plot, plotPet(state, plot, plot.index), crop);
+  const { boost } = teamBoost(teamOf(state, plot, plot.index), crop, now());
+  return 1 + (plot.watered ? WATER_BOOST : 0) + boost;
+}
+
+// Everything the plot card needs: one entry per slot with its job, pet and that pet's power right now.
+export function plotTeam(state, plot) {
+  const crop = plot && getCrop(plot.cropId);
+  if (!crop) return null;
+  const ms = now();
+  const team = teamOf(state, plot, plot.index);
+  const { boost, full } = teamBoost(team, crop, ms);
+  const slots = [];
+  for (let slot = 0; slot < slotCount(crop); slot++) {
+    const found = team.find(t => t.slot === slot);
+    slots.push({
+      slot,
+      job: slotCount(crop) >= 2 ? crop.jobs[slot] : null,
+      jobs: slotJobs(crop, slot),
+      pet: found ? found.pet : null,
+      power: found ? slotPower(found.pet, crop, slot, team.length, ms) : 0,
+    });
+  }
+  return { crop, slots, full, boost, speed: 1 + (plot.watered ? WATER_BOOST : 0) + boost };
+}
+
+// Power a pet WOULD have if assigned to `slot` now (teamSize counts the pet itself). For pickers.
+export function slotPowerPreview(state, plotIndex, slot, pet) {
+  const plot = getPlot(state, plotIndex);
+  const crop = plot && getCrop(plot.cropId);
+  if (!crop || !pet) return { raw: 0, eff: 0, jobs: [] };
+  const jobs = slotJobs(crop, slot);
+  const team = teamOf(state, plot, plotIndex);
+  const size = team.length + (team.some(t => t.pet.id === pet.id) ? 0 : 1);
+  const raw = Number(getWorkPower(pet, jobs, { kind: 'plot', jobs, teamSize: size, hour: hourOf(now()) })) || 0;
+  return { raw, eff: effectivePower(raw), jobs };
 }
 
 // Estimated ms until the plot is ready at its current speed (0 if ready/empty).
@@ -189,15 +321,19 @@ function tickPlot(state, plot, index, nowMs) {
   plot.index = index;
 
   if (!plot.cropId) {
-    if (plot.petId) releasePlotPet(state, plot, index);
+    if (Array.isArray(plot.petIds) && plot.petIds.some(Boolean)) releaseAll(state, plot, index);
+    plot.petIds = [];
     return;
   }
   const crop = getCrop(plot.cropId);
   if (!crop) { // unknown crop id (bad save): clear the plot
-    releasePlotPet(state, plot, index);
+    releaseAll(state, plot, index);
     resetPlot(plot, index);
     return;
   }
+  const n = slotCount(crop);
+  ensureSlots(plot, crop);
+  const carry = carryArr(plot, n);
 
   if (!Number.isFinite(plot.progress)) plot.progress = 0;
   if (!Number.isFinite(plot.lastGrowAt) || plot.lastGrowAt <= 0) {
@@ -209,64 +345,81 @@ function tickPlot(state, plot, index, nowMs) {
   const dt = nowMs - plot.lastGrowAt;
   plot.lastGrowAt = nowMs;
 
-  // Validate the assigned pet; send it home if gone, replaced, sick or exhausted.
-  let pet = null;
-  if (plot.petId) {
-    pet = plotPet(state, plot, index);
-    if (!pet) {
-      plot.petId = null; // dangling id (pet released / task changed)
-      plot.xpCarryMs = 0;
+  // Validate every slot; send a pet home if gone, replaced, sick or exhausted.
+  for (let slot = 0; slot < n; slot++) {
+    const id = plot.petIds[slot];
+    if (!id) continue;
+    const pet = getPet(state, id);
+    const t = pet && pet.task;
+    if (!t || t.type !== 'plot' || t.plotIndex !== index || (t.slot || 0) !== slot) {
+      plot.petIds[slot] = null; // dangling id (pet released / task changed)
+      carry[slot] = 0;
     } else if (pet.sick || !pet.stats || !(pet.stats.energy > 0)) {
       notify(`${petEmoji(pet)} ${petName(pet)} ${pet.sick ? 'ป่วย' : 'หมดแรง'} เลยกลับคอกแล้ว`, 'warn');
-      releasePlotPet(state, plot, index);
-      pet = null;
+      releaseSlot(state, plot, index, slot);
     }
   }
+  const team = teamOf(state, plot, index);
 
   if (plot.progress < 1 - READY_EPS) {
     // Pet help only counts for a bounded slice of dt (energy is unknown over long gaps).
-    const petDt = pet ? Math.min(dt, PET_STEP_CAP_MS) : 0;
-    const petPart = pet ? PET_BOOST * safePower(pet, crop.jobs) : 0;
+    const petDt = team.length ? Math.min(dt, PET_STEP_CAP_MS) : 0;
+    const petPart = team.length ? teamBoost(team, crop, nowMs).boost : 0;
     const gain = (dt * (1 + (plot.watered ? WATER_BOOST : 0)) + petDt * petPart) / crop.growMs;
     const need = 1 - plot.progress;
     plot.progress = Math.min(1, plot.progress + gain);
 
-    if (pet && petDt > 0) {
-      // XP only for the part of the time before the crop finished.
-      const worked = gain > need ? petDt * (need / gain) : petDt;
-      plot.xpCarryMs = (Number(plot.xpCarryMs) || 0) + worked;
-      const mins = Math.floor(plot.xpCarryMs / MIN);
-      if (mins > 0) {
-        plot.xpCarryMs -= mins * MIN;
-        addPetXp(state, pet.id, mins);
+    // Only the time before the crop finished counts (for pet XP and for the helpers' work share).
+    const frac = gain > need ? need / gain : 1;
+    plot.growElapsedMs = (Number(plot.growElapsedMs) || 0) + dt * frac;
+    if (petDt > 0) {
+      const worked = petDt * frac;
+      if (!plot.workMs || typeof plot.workMs !== 'object') plot.workMs = {};
+      for (const { slot, pet } of team) {
+        plot.workMs[pet.id] = (Number(plot.workMs[pet.id]) || 0) + worked;
+        carry[slot] = (Number(carry[slot]) || 0) + worked;
+        const mins = Math.floor(carry[slot] / MIN);
+        if (mins > 0) {
+          carry[slot] -= mins * MIN;
+          addPetXp(state, pet.id, mins);
+        }
       }
     }
     if (plot.progress < 1 - READY_EPS) return;
     plot.progress = 1;
-    if (!pet) notify(`${crop.emoji} ${crop.nameTh} พร้อมเก็บเกี่ยวแล้ว!`, 'success');
+    if (!team.length) notify(`${crop.emoji} ${crop.nameTh} พร้อมเก็บเกี่ยวแล้ว!`, 'success');
   } else {
     plot.progress = 1;
   }
 
-  // Ready: snapshot the helper's bonus onto the plot and send the pet home to rest.
-  if (pet) {
-    plot.helperBonus = Math.floor(safePower(pet, crop.jobs) / 2);
-    plot.helperPetId = pet.id;
-    notify(`🌱 ${crop.nameTh} พร้อมเก็บแล้ว น้อง ${petName(pet)} กลับคอกพักผ่อน`, 'success');
-    releasePlotPet(state, plot, index);
+  // Ready: snapshot the team's bonus onto the plot and send every helper home to rest.
+  if (team.length) {
+    const det = helperDetail(team, crop, nowMs, pet => workShare(plot, pet));
+    plot.helperBonus = det.reduce((t, d) => t + d.bonus, 0);
+    plot.helperPetIds = det.filter(d => d.share >= HELPER_MIN_SHARE).map(d => d.pet.id);
+    const names = team.map(t => petName(t.pet)).join(', ');
+    notify(`🌱 ${crop.nameTh} พร้อมเก็บแล้ว น้อง ${names} กลับคอกพักผ่อน`, 'success');
+    releaseAll(state, plot, index);
   }
 }
 
-function rollLoot(zone, power) {
-  const rolls = zone.baseRolls + Math.floor(power * 0.75 + Math.random());
+// Expedition loot. Pet power and traits come in through getWorkPower / traitEffect (ctx kind 'expedition').
+function rollLoot(zone, pet, ms) {
+  const ctx = { kind: 'expedition', jobs: [zone.job], zoneId: zone.id, hour: hourOf(ms) };
+  const power = pet ? effectivePower(getWorkPower(pet, [zone.job], ctx)) : 0.5;
+  const te = pet ? traitEffect(pet, ctx) : null;
+  const extra = te && Number.isFinite(te.extraRolls) ? Math.max(0, Math.floor(te.extraRolls)) : 0;
+  const eggMult = te && te.eggChanceMult > 0 ? te.eggChanceMult : 1;
+  const rolls = zone.baseRolls + Math.floor(power * 0.75 + Math.random()) + extra;
   const out = {};
   for (let i = 0; i < rolls; i++) {
     const entry = pickWeighted(zone.loot, l => l.weight);
     if (!entry) continue;
     out[entry.itemId] = (out[entry.itemId] || 0) + randInt(entry.min, entry.max);
   }
-  // Rare egg drop (3-7% per expedition, slightly better with a stronger pet).
-  if (zone.eggs && zone.eggs.length && Math.random() < zone.eggChance + 0.005 * Math.min(power, 4)) {
+  // Rare egg drop (3-7% per expedition, slightly better with a stronger pet; lucky pets double it).
+  const chance = (zone.eggChance + 0.005 * Math.min(power, 4)) * eggMult;
+  if (zone.eggs && zone.eggs.length && Math.random() < chance) {
     const egg = zone.eggs[Math.floor(Math.random() * zone.eggs.length)];
     out[egg] = (out[egg] || 0) + 1;
   }
@@ -279,7 +432,7 @@ function tickExpeditions(state, nowMs) {
     if (!ex || ex.done || !(nowMs >= ex.endAt)) continue;
     const zone = getZone(ex.zoneId);
     const pet = getPet(state, ex.petId);
-    ex.rewards = zone ? rollLoot(zone, pet ? safePower(pet, [zone.job]) : 0.5) : {};
+    ex.rewards = zone ? rollLoot(zone, pet, Number.isFinite(ex.startAt) ? ex.startAt : nowMs) : {};
     ex.done = true;
     if (pet && pet.task && pet.task.type === 'expedition' && pet.task.expeditionId === ex.id) {
       pet.status = 'idle';
@@ -292,7 +445,7 @@ function tickExpeditions(state, nowMs) {
   }
 }
 
-// Clear pets whose task points to a plot/expedition that no longer holds them.
+// Clear pets whose task points to a plot slot / expedition that no longer holds them.
 function repairPetTasks(state) {
   if (!Array.isArray(state.pets)) return;
   for (const pet of state.pets) {
@@ -300,7 +453,8 @@ function repairPetTasks(state) {
     if (pet.status === 'working') {
       const t = pet.task;
       const plot = t && t.type === 'plot' ? getPlot(state, t.plotIndex) : null;
-      if (!plot || plot.petId !== pet.id) { pet.status = 'idle'; pet.task = null; }
+      const holds = plot && Array.isArray(plot.petIds) && plot.petIds[t.slot || 0] === pet.id;
+      if (!holds) { pet.status = 'idle'; pet.task = null; }
     } else if (pet.status === 'expedition') {
       const t = pet.task;
       const ex = t && t.type === 'expedition' && Array.isArray(state.expeditions)
@@ -321,7 +475,8 @@ export function plantSeed(state, plotIndex, cropId) {
   if (state.player.level < crop.unlockLevel) return fail(`ปลูก${crop.nameTh}ได้ที่เลเวล ${crop.unlockLevel}`);
   if (!removeItem(state, 'seed_' + crop.id, 1)) return fail(`ไม่มีเมล็ด${crop.nameTh} ซื้อได้ที่ร้านค้า`);
   const t = now();
-  Object.assign(plot, newPlot(plotIndex), { cropId: crop.id, plantedAt: t, lastGrowAt: t, lastCropId: crop.id });
+  Object.assign(plot, newPlot(plotIndex), { cropId: crop.id, plantedAt: t, lastGrowAt: t, lastCropId: crop.id, petIds: Array(slotCount(crop)).fill(null), xpCarryMs: Array(slotCount(crop)).fill(0) });
+  delete plot.petId;
   bumpStat(state, 'planted');
   return done(`ปลูก ${crop.emoji} ${crop.nameTh} แล้ว`);
 }
@@ -349,32 +504,54 @@ export function fertilize(state, plotIndex) {
   return done('🧪 ใส่ปุ๋ยแล้ว พืชโตขึ้นอีกนิด');
 }
 
-export function assignPet(state, plotIndex, petId) {
+// Put a pet in a slot of a growing plot. `slot` omitted/null = the first free slot.
+export function assignPet(state, plotIndex, petId, slot = null) {
   const plot = getPlot(state, plotIndex);
   if (!plot || !plot.cropId) return fail('ต้องปลูกพืชก่อนถึงจะส่งน้องมาช่วยได้');
   const crop = getCrop(plot.cropId);
   if (!crop) return fail('ไม่รู้จักพืชชนิดนี้');
   if (isReady(plot)) return fail('พืชโตเต็มที่แล้ว เก็บเกี่ยวได้เลย');
-  if (plotPet(state, plot, plotIndex)) return fail('แปลงนี้มีน้องประจำอยู่แล้ว');
+  plot.index = plotIndex;
+  ensureSlots(plot, crop);
+  const taken = new Set(teamOf(state, plot, plotIndex).map(t => t.slot));
+  let s = slot;
+  if (s == null) {
+    s = -1;
+    for (let i = 0; i < slotCount(crop); i++) if (!taken.has(i)) { s = i; break; }
+    if (s < 0) return fail('แปลงนี้มีน้องประจำครบทุกช่องแล้ว');
+  } else if (!Number.isInteger(s) || s < 0 || s >= slotCount(crop)) {
+    return fail('ไม่มีช่องนี้ในแปลง');
+  } else if (taken.has(s)) {
+    return fail('ช่องนี้มีน้องประจำอยู่แล้ว');
+  }
   const pet = getPet(state, petId);
   if (!pet) return fail('ไม่พบน้องตัวนี้');
   const can = canWork(pet);
   if (!can.ok) return fail(can.reason || 'น้องยังทำงานไม่ได้');
-  plot.petId = pet.id;
-  plot.xpCarryMs = 0;
-  plot.index = plotIndex;
+  const carry = carryArr(plot, slotCount(crop));
+  plot.petIds[s] = pet.id;
+  carry[s] = 0;
   pet.status = 'working';
-  pet.task = { type: 'plot', plotIndex };
+  pet.task = { type: 'plot', plotIndex, slot: s };
   bumpStat(state, 'helped');
-  const boost = Math.round(PET_BOOST * safePower(pet, crop.jobs) * 100);
-  return done(`${petEmoji(pet)} ${petName(pet)} มาช่วยดูแล${crop.nameTh} โตไวขึ้น +${boost}%`);
+  const team = teamOf(state, plot, plotIndex);
+  const { full } = teamBoost(team, crop, now());
+  const boost = Math.round(PET_BOOST * slotPower(pet, crop, s, team.length, now()) * (full ? TEAM_COMBO : 1) * 100);
+  return done(`${petEmoji(pet)} ${petName(pet)} มาช่วยดูแล${crop.nameTh} โตไวขึ้น +${boost}%${full ? ' 🤝 คอมโบ!' : ''}`);
 }
 
-export function unassignPet(state, plotIndex) {
+// Send the pet in `slot` home; slot omitted/null = every pet on the plot.
+export function unassignPet(state, plotIndex, slot = null) {
   const plot = getPlot(state, plotIndex);
   if (!plot) return fail('ไม่พบแปลงนี้');
-  if (!plot.petId) return fail('แปลงนี้ไม่มีน้องประจำอยู่');
-  const pet = releasePlotPet(state, plot, plotIndex);
+  const ids = Array.isArray(plot.petIds) ? plot.petIds : [];
+  if (!ids.some(Boolean)) return fail('แปลงนี้ไม่มีน้องประจำอยู่');
+  if (slot == null) {
+    const pets = releaseAll(state, plot, plotIndex);
+    return done(pets.length ? `${pets.map(p => `${petEmoji(p)} ${petName(p)}`).join(', ')} กลับคอกแล้ว` : 'เรียกน้องกลับแล้ว');
+  }
+  if (!Number.isInteger(slot) || slot < 0 || slot >= ids.length || !ids[slot]) return fail('ช่องนี้ไม่มีน้องประจำอยู่');
+  const pet = releaseSlot(state, plot, plotIndex, slot);
   return done(pet ? `${petEmoji(pet)} ${petName(pet)} กลับคอกแล้ว` : 'เรียกน้องกลับแล้ว');
 }
 
@@ -385,17 +562,23 @@ export function harvestPlot(state, plotIndex) {
   if (!crop) return fail('ไม่รู้จักพืชชนิดนี้');
   if (!isReady(plot)) return fail('พืชยังโตไม่เต็มที่');
 
-  // Helper bonus was snapshotted when the crop became ready (pet may already be elsewhere).
-  const live = plotPet(state, plot, plotIndex); // legacy: pet still assigned on a ready plot
+  // The team's bonus was snapshotted when the crop became ready (the pets may already be elsewhere).
+  const live = teamOf(state, plot, plotIndex); // legacy: pets still assigned on a ready plot
   const snap = Math.floor(Number(plot.helperBonus));
-  const bonus = Number.isFinite(snap) && snap > 0 ? snap : Math.floor(safePower(live, crop.jobs) / 2);
-  const helper = (plot.helperPetId && getPet(state, plot.helperPetId)) || live;
+  const bonus = Number.isFinite(snap) && snap > 0 ? snap
+    : (live.length ? helperDetail(live, crop, now()).reduce((t, d) => t + d.bonus, 0) : 0);
+  const ids = new Set(Array.isArray(plot.helperPetIds) ? plot.helperPetIds : []);
+  for (const t of live) ids.add(t.pet.id);
   const amount = randInt(crop.yield[0], crop.yield[1]) + bonus;
   addItem(state, 'crop_' + crop.id, amount);
   addPlayerXp(state, crop.xp);
   bumpStat(state, 'harvested');
-  if (helper) addPetXp(state, helper.id, Math.max(2, Math.ceil(crop.xp / 2)));
-  releasePlotPet(state, plot, plotIndex);
+  for (const id of ids) {
+    if (!getPet(state, id)) continue;
+    addPetXp(state, id, Math.max(2, Math.ceil(crop.xp / 2)));
+    addBond(state, id, 1);
+  }
+  releaseAll(state, plot, plotIndex);
   resetPlot(plot, plotIndex);
   const extra = bonus > 0 ? ` (น้องช่วย +${bonus})` : '';
   return done(`เก็บเกี่ยว ${crop.emoji} ${crop.nameTh} x${amount}${extra} +${crop.xp} XP`);

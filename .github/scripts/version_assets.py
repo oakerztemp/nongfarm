@@ -4,7 +4,9 @@ Usage: python version_assets.py SITE_DIR VERSION
 
 - js/**/*.js: every quoted relative module path ending in .js ('./x.js', "../y.js") gets ?v=VERSION
   (static imports, dynamic import() and path strings such as the view module list).
-- index.html: css/ and js/ hrefs/srcs get ?v=VERSION.
+- index.html: css/, js/ and icons/ hrefs/srcs and the web manifest link get ?v=VERSION.
+- sw.js: `const VERSION = '...'` is set to VERSION (the cache name); the './sw.js' registration in js/pwa.js is
+  versioned like any other module path.
 Absolute URLs (CDN imports, fonts) are never touched. Stdlib only; running it twice is a no-op.
 """
 import pathlib
@@ -12,7 +14,8 @@ import re
 import sys
 
 MODULE_SPEC = re.compile(r"""(['"])(\.{1,2}/[^'"?\s]+?\.js)\1""")
-HTML_ASSET = re.compile(r"""\b(href|src)="((?:css|js)/[^"?]+)\"""")
+HTML_ASSET = re.compile(r"""\b(href|src)="((?:css|js|icons)/[^"?]+|manifest\.webmanifest)\"""")
+SW_VERSION = re.compile(r"const VERSION = '[^']*';")
 
 
 def main(site, version):
@@ -30,6 +33,15 @@ def main(site, version):
     if new != text:
         index.write_text(new, encoding="utf-8", newline="")
         changed += 1
+    sw = root / "sw.js"
+    if sw.exists():
+        text = sw.read_text(encoding="utf-8")
+        if not SW_VERSION.search(text):
+            sys.exit("sw.js has no `const VERSION = '...';` line to stamp")
+        new = SW_VERSION.sub(f"const VERSION = '{version}';", text)
+        if new != text:
+            sw.write_text(new, encoding="utf-8", newline="")
+            changed += 1
     print(f"versioned {changed} files with ?v={version}")
 
 

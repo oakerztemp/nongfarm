@@ -15,7 +15,7 @@ import {
   incubatorUpgradePrice, upgradeIncubator, MAX_INCUBATOR, nextMidnight,
   startExpedition, claimExpedition, buyItem, sellItem,
   plotPrice, buyPlot, barnUpgradePrice, upgradeBarn,
-  plotSpeed, plotEtaMs, effectivePower,
+  plotSpeed, plotEtaMs, effectivePower, plotTeam, slotPowerPreview, slotJobs, TEAM_COMBO, plotBonusPreview,
 } from '../farm.js';
 
 const esc = escapeHtml;
@@ -54,8 +54,30 @@ function jobsHtml(jobs) {
   }).join('');
 }
 
-function powerNote(pet, jobs, label) {
-  const p = Number(getWorkPower(pet, jobs)) || 0;
+const jobEmoji = j => (JOBS && JOBS[j] ? JOBS[j].emoji : '🔧');
+const jobName = j => (JOBS && JOBS[j] ? JOBS[j].nameTh : j);
+const PET_PCT = 0.3; // pet crop-speed share per effective power (same constant as farm.js)
+
+// Team slots of a growing plot: one row per slot = job emoji + pet chip (with its speed share and a
+// recall button) or a "+" button that opens the picker for that slot.
+function slotsHtml(team, plotIndex, ready) {
+  const multi = team.slots.length > 1;
+  const rows = team.slots.map(sl => {
+    const emoji = multi ? jobEmoji(sl.job) : team.crop.jobs.map(jobEmoji).join('');
+    const title = multi ? `ช่อง ${sl.slot + 1}: ${esc(jobName(sl.job))}` : 'ช่องคนช่วย';
+    if (sl.pet) {
+      const pct = Math.round(PET_PCT * sl.power * (team.full && multi ? TEAM_COMBO : 1) * 100);
+      return `<div class="plot-slot is-filled" title="${title}"><span class="plot-slot-job">${emoji}</span>${petChipHtml(sl.pet)}<span class="plot-slot-pow">+${pct}%</span><button type="button" class="plot-slot-x" data-action="unassign" data-plot="${plotIndex}" data-slot="${sl.slot}" aria-label="เรียกกลับ" title="เรียกกลับ">✕</button></div>`;
+    }
+    if (ready) return '';
+    return `<button type="button" class="plot-slot is-empty" data-action="helper" data-plot="${plotIndex}" data-slot="${sl.slot}" title="${title}"><span class="plot-slot-job">${emoji}</span> ＋ ส่งน้อง</button>`;
+  }).join('');
+  const combo = team.full && multi ? `<span class="badge plot-combo">🤝 คอมโบ! x${TEAM_COMBO}</span>` : '';
+  return `<div class="plot-slots">${rows}${combo}</div>`;
+}
+
+function powerNote(pet, jobs, label, ctx) {
+  const p = Number(getWorkPower(pet, jobs, ctx)) || 0;
   return `<span class="farm-power">พลัง ${p.toFixed(1)}${label ? ' · ' + label(effectivePower(p)) : ''}</span>`;
 }
 
@@ -88,8 +110,8 @@ function plotCard(state, plot, i, fertCount) {
   const progress = clamp01(Number(plot.progress));
   const ready = progress >= 1 - READY_EPS;
   const pct = Math.floor(progress * 100);
-  const pet = plot.petId ? getPet(state, plot.petId) : null;
-  const speed = plotSpeed(state, plot);
+  const team = plotTeam(state, plot);
+  const speed = team ? team.speed : plotSpeed(state, plot);
   const t = now();
   const eta = plotEtaMs(state, plot);
   const startMs = Math.round(t - (progress * crop.growMs) / speed);
@@ -99,13 +121,12 @@ function plotCard(state, plot, i, fertCount) {
   const bar = ready
     ? `<div class="bar plot-bar"><div class="bar-fill" style="width:100%"></div></div>`
     : `<div class="bar plot-bar"><div class="bar-fill" style="width:${pct}%" data-progress-start="${startMs}" data-progress-end="${endMs}"></div></div>`;
+  const bonusPreview = ready ? 0 : plotBonusPreview(state, plot);
   const status = ready
     ? `<b class="plot-ready-text">พร้อมเก็บเกี่ยว!</b>${Number(plot.helperBonus) > 0 ? ` <span class="muted">น้องช่วย +${Number(plot.helperBonus)}</span>` : ''}`
-    : `<span>${pct}% · เหลือ <span data-countdown="${endMs}">${formatDuration(eta)}</span></span>`;
+    : `<span>${pct}% · เหลือ <span data-countdown="${endMs}">${formatDuration(eta)}</span></span>${bonusPreview > 0 ? ` <span class="muted">· น้องช่วย +${bonusPreview}</span>` : ''}`;
 
-  const petRow = pet
-    ? `<div class="plot-pet">${petChipHtml(pet)}<button class="btn btn-ghost btn-sm" data-action="unassign" data-plot="${i}">เรียกกลับ</button></div>`
-    : '';
+  const slotsRow = team && team.slots.some(sl => sl.pet || !ready) ? slotsHtml(team, i, ready) : '';
 
   let actions = '';
   if (ready) {
@@ -118,9 +139,6 @@ function plotCard(state, plot, i, fertCount) {
       actions += `<span class="badge plot-watered">🧪 ใส่ปุ๋ยแล้ว</span>`;
     } else if (fertCount > 0 && progress < 0.95) {
       actions += `<button class="btn btn-sm" data-action="fertilize" data-plot="${i}">🧪 ปุ๋ย (${fertCount})</button>`;
-    }
-    if (!pet) {
-      actions += `<button class="btn btn-sm" data-action="helper" data-plot="${i}">🐾 ส่งน้องมาช่วย</button>`;
     }
   }
 
@@ -137,9 +155,9 @@ function plotCard(state, plot, i, fertCount) {
       <div class="plot-title">${crop.emoji} ${esc(crop.nameTh)}</div>
       ${bar}
       <div class="plot-status muted">${status}</div>
-      <div class="plot-jobs">${jobsHtml(crop.jobs)}</div>
+      ${crop.slots > 1 ? '' : `<div class="plot-jobs">${jobsHtml(crop.jobs)}</div>`}
     </div>
-    ${petRow}
+    ${slotsRow}
     <div class="plot-actions">${actions}</div>
   </div>`;
 }
@@ -219,7 +237,7 @@ function farmRender(state) {
   return `<section class="farm-wrap">
     <div class="farm-help card">
       <b>💡 เคล็ดลับ</b> ส่งน้องที่ถนัดงานตรงกับพืชไปช่วย พืชจะโตไวขึ้น!
-      <span class="muted">รดน้ำ +20% · น้องช่วย +30% × พลัง · ปุ๋ย +25% (ได้ครั้งเดียวต่อรอบ)</span>
+      <span class="muted">รดน้ำ +20% · น้องช่วย +30% × พลัง · ปุ๋ย +25% (ครั้งเดียวต่อรอบ) · พืชหลายช่อง ส่งน้องครบทุกช่อง = คอมโบ x1.25</span>
     </div>
     <div class="farm-toolbar">
       <span class="muted">🪙 ${num(coinsOf(state))}${fert > 0 ? ` · 🧪 ปุ๋ย ${fert}` : ''}</span>
@@ -296,7 +314,7 @@ function openSeedPicker(plotIndex) {
   });
 }
 
-function pickHelper(plotIndex) {
+function pickHelper(plotIndex, slot) {
   const st = getState();
   const plot = st.plots[plotIndex];
   const crop = plot && getCrop(plot.cropId);
@@ -305,11 +323,16 @@ function pickHelper(plotIndex) {
     notify('ตอนนี้ไม่มีน้องที่พร้อมทำงาน (ต้องตื่น ไม่ป่วย พลัง ≥ 20 อิ่ม ≥ 15)', 'warn');
     return;
   }
+  const jobs = slotJobs(crop, slot);
+  const multi = (crop.slots || 1) > 1;
   openPetPicker({
-    title: `ส่งน้องมาช่วยดูแล ${crop.emoji} ${crop.nameTh}`,
+    title: `ส่งน้องมาช่วย ${crop.emoji} ${crop.nameTh}${multi ? ` · ช่อง ${slot + 1} ${jobEmoji(jobs[0])} ${jobName(jobs[0])}` : ''}`,
     filter: pet => petCanWork(pet),
-    describe: pet => powerNote(pet, crop.jobs, p => `โตไวขึ้น +${Math.round(p * 30)}%`),
-    onPick: petId => run(s => assignPet(s, plotIndex, petId)),
+    describe: pet => {
+      const pv = slotPowerPreview(getState(), plotIndex, slot, pet);
+      return `<span class="farm-power">${jobs.map(jobEmoji).join('')} พลัง ${pv.raw.toFixed(1)} · โต +${Math.round(PET_PCT * pv.eff * 100)}%</span>`;
+    },
+    onPick: petId => run(s => assignPet(s, plotIndex, petId, slot)),
   });
 }
 
@@ -319,8 +342,8 @@ function farmBind(rootEl) {
     plant: d => openSeedPicker(idx(d)),
     water: d => run(s => waterPlot(s, idx(d))),
     fertilize: d => run(s => fertilize(s, idx(d))),
-    helper: d => pickHelper(idx(d)),
-    unassign: d => run(s => unassignPet(s, idx(d))),
+    helper: d => pickHelper(idx(d), Number(d.slot) || 0),
+    unassign: d => run(s => unassignPet(s, idx(d), d.slot === undefined ? null : Number(d.slot))),
     harvest: d => run(s => harvestPlot(s, idx(d))),
     'harvest-all': () => run(s => harvestAll(s, false)),
     'harvest-replant': () => run(s => harvestAll(s, true)),
@@ -414,7 +437,7 @@ function pickExplorer(zoneId) {
   openPetPicker({
     title: `ส่งน้องไปสำรวจ ${zone.emoji} ${zone.nameTh}`,
     filter: eligible,
-    describe: pet => powerNote(pet, [zone.job], p => `เก็บของ ~${Math.round(zone.baseRolls + 0.75 * p)} ครั้ง`),
+    describe: pet => powerNote(pet, [zone.job], p => `เก็บของ ~${Math.round(zone.baseRolls + 0.75 * p)} ครั้ง`, { kind: 'expedition', jobs: [zone.job], zoneId: zone.id, hour: new Date(now()).getHours() }),
     onPick: petId => run(s => startExpedition(s, petId, zoneId)),
   });
 }

@@ -1,7 +1,8 @@
 // Farm logic tests: plot growth, fertilizer, helper pets, offline clamp, orders, shop, upgrades, stats.
 import { test, assert, assertEq, withFakeNow } from './harness.js';
 import { createNewState, addItem, countItem } from '../js/state.js';
-import { getWorkPower, getPet } from '../js/pets.js';
+import { getWorkPower, getPet, traitEffect, bondHearts } from '../js/pets.js';
+import { getSpecies, SPECIES } from '../js/data/species.js';
 import { getCrop, CROPS } from '../js/data/crops.js';
 import { ITEMS, getItem } from '../js/data/items.js';
 import {
@@ -9,6 +10,7 @@ import {
   startExpedition, claimExpedition, buyItem, sellItem, buyPlot, plotPrice, upgradeBarn, barnUpgradePrice,
   incubatorUpgradePrice, upgradeIncubator, ensureOrders, completeOrder, isoWeekKey, orderValue,
   generateDailyOrders, generateWeeklyOrder, forageDropsPerTrip, cropProducedPerDay, effectivePower, ZONES, MAX_PLOTS,
+  slotJobs, plotTeam, plotSpeed, TEAM_COMBO, plotBonusPreview,
 } from '../js/farm.js';
 
 const MIN = 60 * 1000;
@@ -17,6 +19,27 @@ const T0 = new Date(2026, 2, 2, 10, 0, 0).getTime(); // Monday 2026-03-02 10:00 
 const DAY1 = '2026-03-02';
 
 const near = (a, b, msg, eps = 1e-6) => assert(Math.abs(a - b) < eps, `${msg}: expected ${b}, got ${a}`);
+
+/** Raw power exactly as farm.js asks for it (slot jobs + context, so traits/bond are included). */
+function pw(pet, cropId, slot = 0, team = 1, ms = T0) {
+  const jobs = slotJobs(getCrop(cropId), slot);
+  return getWorkPower(pet, jobs, { kind: 'plot', jobs, teamSize: team, hour: new Date(ms).getHours() });
+}
+
+/** Runs fn with a species temporarily given a trait (restores it afterwards). */
+function withTrait(speciesId, trait, fn) {
+  const sp = getSpecies(speciesId);
+  const old = sp.trait;
+  sp.trait = trait;
+  try { return fn(); } finally { if (old === undefined) delete sp.trait; else sp.trait = old; }
+}
+
+/** Ticks in 1-minute steps (like the offline catch-up) until `until()` is true; returns the last tick time. */
+function tickMinutes(s, from, until, maxMin = 400) {
+  let t = from;
+  for (let i = 0; i < maxMin && !until(); i++) { t += MIN; tickFarm(s, t); }
+  return t;
+}
 
 function fresh(level = 1) {
   const s = createNewState();
@@ -70,7 +93,7 @@ test('farm: assigned pet adds 30% x power; pet XP is 1 per full minute', () => w
   const s = fresh(2);
   const pet = mkPet(s);
   const plot = plant(s, 'potato');
-  const power = getWorkPower(pet, getCrop('potato').jobs);
+  const power = pw(pet, 'potato');
   assert(power > 0, 'power > 0');
   assert(assignPet(s, 0, pet.id).ok, 'assign ok');
   assertEq(pet.status, 'working', 'pet working');
@@ -83,7 +106,7 @@ test('farm: water + pet stack', () => withFakeNow(T0, () => {
   const s = fresh(2);
   const pet = mkPet(s);
   const plot = plant(s, 'potato');
-  const power = getWorkPower(pet, getCrop('potato').jobs);
+  const power = pw(pet, 'potato');
   assert(assignPet(s, 0, pet.id).ok, 'assign');
   assert(waterPlot(s, 0).ok, 'water');
   tickFarm(s, T0 + MIN);
@@ -96,7 +119,7 @@ test('farm: manual unassign returns pet idle and clears the plot', () => withFak
   const plot = plant(s);
   assignPet(s, 0, pet.id);
   assert(unassignPet(s, 0).ok, 'unassign');
-  assertEq([pet.status, pet.task, plot.petId], ['idle', null, null], 'state after unassign');
+  assertEq([pet.status, pet.task, plot.petIds[0]], ['idle', null, null], 'state after unassign');
   assert(!unassignPet(s, 0).ok, 'nothing to unassign');
 }));
 
@@ -111,20 +134,20 @@ test('farm: sick or exhausted pets are sent home automatically', () => withFakeN
   a.sick = true;
   b.stats.energy = 0;
   tickFarm(s, T0 + 10 * 1000);
-  assertEq([a.status, b.status, s.plots[0].petId, s.plots[1].petId], ['idle', 'idle', null, null], 'both released');
+  assertEq([a.status, b.status, s.plots[0].petIds[0], s.plots[1].petIds[0]], ['idle', 'idle', null, null], 'both released');
   assertEq([a.task, b.task], [null, null], 'tasks cleared');
 }));
 
 test('farm: dangling pet id on a plot is cleaned up without NaN', () => withFakeNow(T0, () => {
   const s = fresh();
   const plot = plant(s);
-  plot.petId = 'ghost';
+  plot.petIds = ['ghost'];
   tickFarm(s, T0 + MIN);
-  assertEq(plot.petId, null, 'ghost cleared');
+  assertEq(plot.petIds[0], null, 'ghost cleared');
   assert(Number.isFinite(plot.progress), 'progress finite');
   near(plot.progress, 0.5, 'plain growth');
   // pet that thinks it works on a plot that does not hold it
-  const pet = mkPet(s, { status: 'working', task: { type: 'plot', plotIndex: 3 } });
+  const pet = mkPet(s, { status: 'working', task: { type: 'plot', plotIndex: 3, slot: 0 } });
   tickFarm(s, T0 + 2 * MIN);
   assertEq([pet.status, pet.task], ['idle', null], 'stale pet task repaired');
 }));
@@ -175,13 +198,14 @@ test('farm: ready plot sends the helper home and snapshots helperBonus; harvest 
   const s = fresh();
   const pet = mkPet(s);
   const plot = plant(s);
-  const power = getWorkPower(pet, getCrop('carrot').jobs);
+  const power = pw(pet, 'carrot');
   assignPet(s, 0, pet.id);
   tickFarm(s, T0 + 3 * MIN);
   assertEq(plot.progress, 1, 'ready');
-  assertEq([pet.status, pet.task, plot.petId], ['idle', null, null], 'pet released on ready');
-  assertEq(plot.helperBonus, Math.floor(effectivePower(power) / 2), 'bonus snapshot');
-  assertEq(plot.helperPetId, pet.id, 'helper remembered');
+  assertEq([pet.status, pet.task, plot.petIds[0]], ['idle', null, null], 'pet released on ready');
+  const yb = traitEffect(pet, { kind: 'plot', jobs: ['dig', 'water'], teamSize: 1, hour: 10 }).yieldBonus || 0;
+  assertEq(plot.helperBonus, Math.floor(effectivePower(power) / 2) + yb, 'bonus snapshot');
+  assertEq(plot.helperPetIds, [pet.id], 'helper remembered');
   const workedMs = getCrop('carrot').growMs / (1 + 0.3 * effectivePower(power));
   assertEq(pet.xp, Math.floor(workedMs / MIN), 'XP only for the time before the crop was ready');
   assert(!assignPet(s, 0, pet.id).ok, 'cannot assign to a ready plot');
@@ -189,10 +213,10 @@ test('farm: ready plot sends the helper home and snapshots helperBonus; harvest 
   const r = harvestPlot(s, 0);
   assert(r.ok, 'harvest');
   const got = countItem(s, 'crop_carrot');
-  const bonus = Math.floor(effectivePower(power) / 2);
+  const bonus = Math.floor(effectivePower(power) / 2) + yb;
   assert(got >= crop.yield[0] + bonus && got <= crop.yield[1] + bonus, 'yield includes helper bonus: ' + got);
   assert(pet.xp >= 2, 'pet gets harvest XP bonus');
-  assertEq([plot.cropId, plot.helperBonus, plot.helperPetId, plot.lastCropId], [null, 0, null, 'carrot'], 'plot reset, lastCropId kept');
+  assertEq([plot.cropId, plot.helperBonus, plot.helperPetIds, plot.lastCropId], [null, 0, [], 'carrot'], 'plot reset, lastCropId kept');
 }));
 
 // ── offline clamp ───────────────────────────────────────────────────────────
@@ -519,3 +543,303 @@ test('farm: effectivePower has diminishing returns (full to 2, 40% above)', () =
   // pet crop speed = 0.3*min(p,2) + 0.12*max(0,p-2)
   near(0.3 * effectivePower(5), 0.3 * 2 + 0.12 * 3, 'speed bonus formula');
 });
+
+// ── team plots (CONTRACT_V3 §4) ─────────────────────────────────────────────
+test('teams: crops get 1/2/3 slots by grow time, slot i = jobs[i], 3-slot crops list 3 jobs', () => {
+  for (const c of CROPS) {
+    const want = c.growMs < 30 * MIN ? 1 : c.growMs < 120 * MIN ? 2 : 3;
+    assertEq(c.slots, want, c.id + ' slots');
+    assert(c.jobs.length >= c.slots, `${c.id}: needs ${c.slots} jobs, has ${c.jobs.length}`);
+    assertEq(new Set(c.jobs).size, c.jobs.length, c.id + ' jobs are distinct');
+    if (c.slots === 1) assertEq(slotJobs(c, 0), c.jobs, c.id + ' single slot uses all jobs');
+    else for (let i = 0; i < c.slots; i++) assertEq(slotJobs(c, i), [c.jobs[i]], `${c.id} slot ${i} job`);
+  }
+  assert(CROPS.some(c => c.slots === 1) && CROPS.some(c => c.slots === 2) && CROPS.some(c => c.slots === 3), 'all slot sizes used');
+});
+
+test('teams: assignPet per slot (first free by default), refusals, per-slot unassign', () => withFakeNow(T0, () => {
+  const s = fresh(5);
+  const a = mkPet(s); const b = mkPet(s); const c = mkPet(s);
+  const plot = plant(s, 'strawberry'); // 2 slots
+  assertEq(plot.petIds, [null, null], 'one entry per slot');
+  assert(!assignPet(s, 0, a.id, 2).ok, 'slot out of range');
+  assert(!assignPet(s, 0, a.id, -1).ok, 'negative slot');
+  assert(assignPet(s, 0, a.id, 1).ok, 'explicit slot 1');
+  assertEq(a.task, { type: 'plot', plotIndex: 0, slot: 1 }, 'task records the slot');
+  assert(!assignPet(s, 0, b.id, 1).ok, 'slot already taken');
+  assert(assignPet(s, 0, b.id).ok, 'default = first free slot');
+  assertEq(b.task.slot, 0, 'went to slot 0');
+  assertEq(plot.petIds, [b.id, a.id], 'petIds by slot');
+  assert(!assignPet(s, 0, c.id).ok, 'plot full');
+  assertEq(s.stats.helped, 2, 'helped counts successful assigns only');
+  assert(unassignPet(s, 0, 1).ok, 'unassign slot 1');
+  assertEq([a.status, a.task, plot.petIds], ['idle', null, [b.id, null]], 'only slot 1 freed');
+  assert(!unassignPet(s, 0, 1).ok, 'slot already empty');
+  assert(assignPet(s, 0, c.id).ok && c.task.slot === 1, 'freed slot reusable');
+  assert(unassignPet(s, 0).ok, 'no slot = everyone goes home');
+  assertEq([b.status, c.status, plot.petIds], ['idle', 'idle', [null, null]], 'all released');
+}));
+
+test('teams: per-slot job power and the full-team combo', () => withFakeNow(T0, () => {
+  const s = fresh(12);
+  // hamster: dig 3 carry 1. sweetpotato slots = dig / carry / water
+  const diggerPet = mkPet(s, { speciesId: 'hamster' });
+  const crop = getCrop('sweetpotato');
+  assertEq(crop.jobs.slice(0, 3), ['dig', 'carry', 'water'], 'sweetpotato slot jobs');
+  const plot = plant(s, 'sweetpotato');
+  const inDig = pw(diggerPet, 'sweetpotato', 0, 1);
+  const inWater = pw(diggerPet, 'sweetpotato', 2, 1);
+  assert(inDig > inWater, `hamster is far better at dig (${inDig.toFixed(2)}) than water (${inWater.toFixed(2)})`);
+  assert(assignPet(s, 0, diggerPet.id, 0).ok, 'assign dig slot');
+  const t1 = plotTeam(s, plot);
+  assertEq(t1.slots.map(x => x.job), ['dig', 'carry', 'water'], 'plotTeam lists slot jobs');
+  near(t1.slots[0].power, effectivePower(pw(diggerPet, 'sweetpotato', 0, 1)), 'slot power uses the slot job');
+  assert(!t1.full, 'not full with one pet');
+  near(plotSpeed(s, plot), 1 + 0.3 * t1.slots[0].power, 'solo speed has no combo');
+
+  const p2 = mkPet(s, { speciesId: 'hamster' }); const p3 = mkPet(s, { speciesId: 'hamster' });
+  assert(assignPet(s, 0, p2.id, 1).ok && assignPet(s, 0, p3.id, 2).ok, 'fill all slots');
+  const t3 = plotTeam(s, plot);
+  assert(t3.full, 'full team');
+  const sum = t3.slots.reduce((a, x) => a + x.power, 0);
+  near(plotSpeed(s, plot), 1 + 0.3 * sum * TEAM_COMBO, 'combo multiplies the pet part x1.25');
+  assertEq(TEAM_COMBO, 1.25, 'combo constant');
+  // two slots of a three-slot crop do not get the combo
+  unassignPet(s, 0, 2);
+  const t2 = plotTeam(s, plot);
+  assert(!t2.full, 'two of three is not full');
+  near(plotSpeed(s, plot), 1 + 0.3 * t2.slots.reduce((a, x) => a + x.power, 0), 'no combo when a slot is empty');
+  // a one-slot crop never gets a combo
+  const solo = plant(s, 'carrot', 1);
+  const pet4 = mkPet(s);
+  assignPet(s, 1, pet4.id);
+  const ts = plotTeam(s, solo);
+  assert(!ts.full || ts.slots.length === 1, 'single-slot crop');
+  near(plotSpeed(s, solo), 1 + 0.3 * ts.slots[0].power, 'single-slot crop: no combo');
+}));
+
+test('teams: a full team on a long crop beats one strong pet (growth, same ticks)', () => withFakeNow(T0, () => {
+  const solo = fresh(12); const team = fresh(12);
+  const star = mkPet(solo, { speciesId: 'hamster', stage: 3 });
+  plant(solo, 'rice');
+  assignPet(solo, 0, star.id, 0);
+  const crew = [0, 1, 2].map(() => mkPet(team, { speciesId: 'hamster', stage: 2 }));
+  plant(team, 'rice');
+  crew.forEach((p, i) => assignPet(team, 0, p.id, i));
+  tickFarm(solo, T0 + 2 * MIN); tickFarm(team, T0 + 2 * MIN);
+  assert(team.plots[0].progress > solo.plots[0].progress, `team ${team.plots[0].progress} vs solo ${solo.plots[0].progress}`);
+}));
+
+test('teams: ready snapshot sums every helper, releases them all, harvest pays XP + bond to each', () => withFakeNow(T0, () => {
+  const s = fresh(12);
+  const pets = [0, 1, 2].map(() => mkPet(s, { speciesId: 'hamster' }));
+  const crop = getCrop('rice');
+  const plot = plant(s, 'rice');
+  pets.forEach((p, i) => assert(assignPet(s, 0, p.id, i).ok, 'assign ' + i));
+  const at = tickMinutes(s, T0, () => plot.progress >= 1); // the minute the crop became ready
+  assertEq(plot.progress, 1, 'ready');
+  const expected = pets.reduce((a, p, i) => a + Math.floor(effectivePower(pw(p, 'rice', i, 3, at)) / 2)
+    + (traitEffect(p, { kind: 'plot', jobs: slotJobs(crop, i), teamSize: 3, hour: new Date(at).getHours() }).yieldBonus || 0), 0);
+  assertEq(plot.petIds, [null, null, null], 'all slots empty');
+  for (const p of pets) assertEq([p.status, p.task], ['idle', null], 'helper sent home');
+  assertEq(plot.helperBonus, expected, 'full-time team: bonus = full sum over helpers');
+  assertEq(plot.helperPetIds, pets.map(p => p.id), 'helpers remembered');
+  assert(!assignPet(s, 0, pets[0].id).ok, 'cannot assign to a ready plot');
+  const xp0 = pets.map(p => p.xp);
+  const r = harvestPlot(s, 0);
+  assert(r.ok, 'harvest');
+  const got = countItem(s, 'crop_rice');
+  assert(got >= crop.yield[0] + expected && got <= crop.yield[1] + expected, `yield ${got} includes team bonus ${expected}`);
+  pets.forEach((p, i) => {
+    assert(p.xp >= xp0[i] + 2, 'helper XP bonus');
+    assertEq(p.bond, 1, 'bond +1 per helper at harvest');
+  });
+  assertEq([plot.cropId, plot.helperBonus, plot.helperPetIds], [null, 0, []], 'plot reset');
+}));
+
+test('teams: sick / exhausted pet leaves only its own slot', () => withFakeNow(T0, () => {
+  const s = fresh(5);
+  const a = mkPet(s); const b = mkPet(s);
+  const plot = plant(s, 'strawberry');
+  assignPet(s, 0, a.id, 0); assignPet(s, 0, b.id, 1);
+  a.sick = true;
+  tickFarm(s, T0 + 10 * 1000);
+  assertEq(plot.petIds, [null, b.id], 'slot 0 freed, slot 1 stays');
+  assertEq([a.status, b.status], ['idle', 'working'], 'statuses');
+}));
+
+test('teams: slot bookkeeping survives dangling data, pre-v3 petId and a changed slot count', () => withFakeNow(T0, () => {
+  const s = fresh(5);
+  const pet = mkPet(s);
+  const plot = plant(s, 'strawberry');
+  plot.petIds = ['ghost', pet.id, 'extra'];
+  pet.status = 'working'; pet.task = { type: 'plot', plotIndex: 0, slot: 1 };
+  tickFarm(s, T0 + MIN);
+  assertEq(plot.petIds, [null, pet.id], 'trimmed to slot count, ghost cleared');
+  assert(Number.isFinite(plot.progress), 'finite progress');
+  // pet whose task points at a slot that does not list it goes home
+  pet.task = { type: 'plot', plotIndex: 0, slot: 0 };
+  tickFarm(s, T0 + 2 * MIN);
+  assertEq([pet.status, pet.task], ['idle', null], 'repaired');
+  // pre-v3 plot.petId is picked up
+  const old = plant(s, 'potato', 1);
+  const p2 = mkPet(s, { status: 'working', task: { type: 'plot', plotIndex: 1 } });
+  delete old.petIds; old.petId = p2.id;
+  tickFarm(s, T0 + 3 * MIN);
+  assertEq(old.petIds, [p2.id], 'legacy petId upgraded');
+}));
+
+test('teams: harvester trait adds yield, teamPlayer counts the team size', () => withFakeNow(T0, () => {
+  withTrait('hamster', 'harvester', () => {
+    const s = fresh(1);
+    const pet = mkPet(s, { speciesId: 'hamster' });
+    const crop = getCrop('carrot');
+    const plot = plant(s, 'carrot');
+    assertEq(traitEffect(pet, { kind: 'plot', jobs: crop.jobs, teamSize: 1, hour: 10 }).yieldBonus, 1, 'harvester gives +1 (common)');
+    assignPet(s, 0, pet.id);
+    tickFarm(s, T0 + 5 * MIN);
+    assert(plot.helperBonus >= 1, 'snapshot includes harvester bonus: ' + plot.helperBonus);
+    assertEq(plot.helperBonus, Math.floor(effectivePower(pw(pet, 'carrot')) / 2) + 1, 'power bonus + trait bonus');
+  });
+  withTrait('hamster', 'teamPlayer', () => {
+    const s = fresh(5);
+    const a = mkPet(s, { speciesId: 'hamster' }); const b = mkPet(s, { speciesId: 'hamster' });
+    plant(s, 'strawberry');
+    assignPet(s, 0, a.id, 0);
+    const alone = plotTeam(s, s.plots[0]).slots[0].power;
+    assignPet(s, 0, b.id, 1);
+    const withMate = plotTeam(s, s.plots[0]).slots[0].power;
+    assert(withMate > alone, `teamPlayer is stronger with a mate (${withMate.toFixed(2)} > ${alone.toFixed(2)})`);
+  });
+}));
+
+// ── expedition traits ───────────────────────────────────────────────────────
+function lootRolls(zone, rewards) {
+  // with Math.random pinned, every roll picks the same entry and quantity
+  const entry = (() => { let r = 0.5 * zone.loot.reduce((a, l) => a + l.weight, 0); for (const l of zone.loot) { r -= l.weight; if (r < 0) return l; } return zone.loot[zone.loot.length - 1]; })();
+  const qty = entry.min + Math.floor(0.5 * (entry.max - entry.min + 1));
+  return (rewards[entry.itemId] || 0) / qty;
+}
+
+test('expedition traits: forager adds loot rolls (extraRolls via traitEffect)', () => withFakeNow(T0, () => {
+  const zone = ZONES.find(z => z.id === 'forest');
+  const run = trait => withTrait('hamster', trait, () => {
+    const s = fresh();
+    const pet = mkPet(s, { speciesId: 'hamster' });
+    assert(startExpedition(s, pet.id, 'forest').ok, 'start');
+    const ctx = { kind: 'expedition', jobs: ['forage'], zoneId: 'forest', hour: new Date(T0).getHours() };
+    const eff = effectivePower(getWorkPower(pet, ['forage'], ctx));
+    const extra = traitEffect(pet, ctx).extraRolls;
+    const real = Math.random;
+    Math.random = () => 0.5;
+    try { tickFarm(s, T0 + 6 * MIN); } finally { Math.random = real; }
+    return { rolls: lootRolls(zone, s.expeditions[0].rewards), expected: zone.baseRolls + Math.floor(0.75 * eff + 0.5) + extra, extra };
+  });
+  const plain = run('gourmet');
+  const forager = run('forager');
+  assertEq(plain.extra, 0, 'no extra rolls without the trait');
+  assert(forager.extra >= 1, 'forager has extraRolls');
+  assertEq(plain.rolls, plain.expected, 'plain rolls');
+  assertEq(forager.rolls, forager.expected, 'forager rolls include extraRolls');
+  assert(forager.rolls > plain.rolls, 'forager brings more');
+}));
+
+test('expedition traits: lucky multiplies the egg drop chance', () => withFakeNow(T0, () => {
+  const run = trait => withTrait('hamster', trait, () => {
+    const s = fresh();
+    const pet = mkPet(s, { speciesId: 'hamster' });
+    startExpedition(s, pet.id, 'forest');
+    const real = Math.random;
+    Math.random = () => 0.059; // above the base chance (~3-5%), below the doubled one
+    try { tickFarm(s, T0 + 6 * MIN); } finally { Math.random = real; }
+    return s.expeditions[0].rewards.egg_forest || 0;
+  });
+  assertEq(run('gourmet'), 0, 'no egg at 5.9% for a normal pet');
+  assert(run('lucky') >= 1, 'lucky pet finds the egg (chance x2)');
+}));
+
+test('expedition traits: bond hearts and trait power apply to expedition power', () => withFakeNow(T0, () => {
+  const s = fresh();
+  const pet = mkPet(s, { speciesId: 'hamster' });
+  const ctx = { kind: 'expedition', jobs: ['forage'], zoneId: 'forest', hour: 10 };
+  const base = getWorkPower(pet, ['forage'], ctx);
+  pet.bond = 360; // 5 hearts = +20%
+  assertEq(bondHearts(pet), 5, 'hearts');
+  near(getWorkPower(pet, ['forage'], ctx), base * 1.2, 'bond power mult', 1e-9);
+  assert(SPECIES.length > 100, 'species data present');
+}));
+
+// ── helper bonus scales with time actually worked (C1) ──────────────────────
+test('teams: a team parked at the very end earns ~0 bonus, no XP and no bond', () => withFakeNow(T0, () => {
+  withTrait('hamster', 'harvester', () => {
+    const s = fresh(12);
+    const pets = [0, 1, 2].map(() => mkPet(s, { speciesId: 'hamster' }));
+    const plot = plant(s, 'rice');
+    const mid = tickMinutes(s, T0, () => plot.progress >= 0.97); // nobody helping: base speed
+    assert(plot.progress < 1, 'still growing');
+    pets.forEach((p, i) => assert(assignPet(s, 0, p.id, i).ok, 'park ' + i));
+    assert(plotBonusPreview(s, plot) <= 1, 'preview already knows the late team is worth ~nothing');
+    tickMinutes(s, mid, () => plot.progress >= 1);
+    assertEq(plot.progress, 1, 'ready');
+    assertEq(plot.helperBonus, 0, 'late-parked team: no yield bonus');
+    assertEq(plot.helperPetIds, [], 'nobody worked >= 25%');
+    const xp0 = pets.map(p => p.xp);
+    assert(harvestPlot(s, 0).ok, 'harvest');
+    pets.forEach((p, i) => {
+      assert(!p.bond, 'no bond for a late helper');
+      assertEq(p.xp, xp0[i], 'no harvest XP bonus for a late helper');
+    });
+  });
+}));
+
+test('teams: a full-time team with harvesters keeps the full bonus', () => withFakeNow(T0, () => {
+  withTrait('hamster', 'harvester', () => {
+    const s = fresh(12);
+    const pets = [0, 1, 2].map(() => mkPet(s, { speciesId: 'hamster' }));
+    const plot = plant(s, 'rice');
+    pets.forEach((p, i) => assignPet(s, 0, p.id, i));
+    const preview = plotBonusPreview(s, plot);
+    const at = tickMinutes(s, T0, () => plot.progress >= 1);
+    const full = pets.reduce((a, p, i) => a + Math.floor(effectivePower(pw(p, 'rice', i, 3, at)) / 2) + 1, 0);
+    assertEq(plot.helperBonus, full, 'full bonus incl. +1 harvester each');
+    assertEq(preview, full, 'preview at the start shows the full bonus');
+    assertEq(plot.helperPetIds.length, 3, 'all earn XP + bond');
+    harvestPlot(s, 0);
+    pets.forEach(p => assertEq(p.bond, 1, 'bond'));
+  });
+}));
+
+test('teams: partial shares round down per pet; >= 25% earns bond, below does not', () => withFakeNow(T0, () => {
+  const guardSp = SPECIES.find(sp => sp.jobs && sp.jobs.guard >= 3).id; // strong in the strawberry's 2nd slot job
+  const scenario = joinAt => withTrait('hamster', 'harvester', () => withTrait(guardSp, 'harvester', () => {
+    const s = fresh(5);
+    const a = mkPet(s, { speciesId: 'hamster', stage: 3 });
+    const b = mkPet(s, { speciesId: guardSp, stage: 3 });
+    const plot = plant(s, 'strawberry'); // 2 slots, 30 min
+    assignPet(s, 0, a.id, 0);
+    const mid = tickMinutes(s, T0, () => plot.progress >= joinAt);
+    assert(assignPet(s, 0, b.id, 1).ok, 'B joins');
+    const bBefore = plot.workMs[b.id] || 0;
+    assertEq(bBefore, 0, 'B had worked nothing yet');
+    const at = tickMinutes(s, mid, () => plot.progress >= 1);
+    const E = plot.growElapsedMs;
+    const shareB = (plot.workMs[b.id] || 0) / E;
+    const ja = slotJobs(getCrop('strawberry'), 0); const jb = slotJobs(getCrop('strawberry'), 1);
+    const baseOf = (p, jobs, slot) => Math.floor(effectivePower(getWorkPower(p, jobs, { kind: 'plot', jobs, teamSize: 2, hour: new Date(at).getHours() })) / 2) + 1;
+    const baseA = baseOf(a, ja, 0); const baseB = baseOf(b, jb, 1);
+    const shareA = (plot.workMs[a.id] || 0) / E;
+    assertEq(plot.helperBonus, Math.floor(shareA * baseA + 1e-9) + Math.floor(shareB * baseB + 1e-9), 'bonus = sum of floor(share x base) per pet');
+    const bond0 = b.bond || 0;
+    harvestPlot(s, 0);
+    return { shareA, shareB, baseB, bondB: (b.bond || 0) - bond0, listed: plot.helperPetIds };
+  }));
+  const early = scenario(0.1);   // joins early: worked most of the time
+  const half = scenario(0.55);   // joins about half way
+  const late = scenario(0.95);   // joins right before the end
+  assert(early.shareB > 0.5, 'early joiner share ' + early.shareB);
+  assert(half.shareB >= 0.25 && half.shareB < early.shareB, 'half-way joiner share ' + half.shareB);
+  assert(late.shareB < 0.25, 'late joiner share ' + late.shareB);
+  assertEq([early.bondB, half.bondB, late.bondB], [1, 1, 0], 'bond only for >= 25%');
+  assert(late.shareA > 0.95, 'the pet that worked all along keeps ~full share');
+  assert(late.baseB >= 2, 'test pet has a base bonus >= 2 so rounding is visible');
+}));

@@ -1,8 +1,9 @@
 // Single source of truth for game state + small economy helpers. DOM-free.
 import { now, notify } from './util.js';
 import { fastForwardQuests } from './quests.js'; // circular on purpose: only called at migration time
+import { getCrop } from './data/crops.js';
 
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 export const DEFAULT_FARM_NAME = 'ฟาร์มของฉัน';
 const PLOT_COUNT = 4;
 
@@ -15,7 +16,7 @@ const STAT_KEYS = [
 const newStats = () => Object.fromEntries(STAT_KEYS.map(k => [k, 0]));
 
 function newPlot(index) {
-  return { index, cropId: null, plantedAt: 0, progress: 0, watered: false, petId: null };
+  return { index, cropId: null, plantedAt: 0, progress: 0, watered: false, petIds: [] };
 }
 
 export function createNewState() {
@@ -46,6 +47,7 @@ export function createNewState() {
     orders: { day: null, list: [], week: null, weekly: null },
     stardust: 0,
     claimedGoals: [],
+    settings: { notify: false },
   };
 }
 
@@ -77,6 +79,7 @@ function petDefaults(t) {
     stats: { hunger: 100, happy: 100, energy: 100, clean: 100 },
     poop: 0, sick: false, zeroSince: null, lastFedAt: 0,
     status: 'idle', task: null, bornAt: t,
+    bond: 0, bondDay: null, bondToday: 0, giftDay: null,
   };
 }
 
@@ -116,7 +119,59 @@ export const MIGRATIONS = {
     s.version = 2;
     return s;
   },
+
+  // v2 -> v3: plots hold a list of helper slots (petIds), pets remember which slot, bond + settings fields.
+  2(s) {
+    const plots = (Array.isArray(s.plots) ? s.plots : []).map(p => {
+      if (!isObj(p)) return p;
+      const plot = { ...p };
+      const slots = plot.cropId ? slotCount(plot.cropId) : 0;
+      const ids = Array.isArray(plot.petIds) ? plot.petIds.slice() : plot.petId ? [plot.petId] : [];
+      while (ids.length < slots) ids.push(null);
+      plot.petIds = ids.slice(0, Math.max(slots, 0)).map(id => (typeof id === 'string' && id ? id : null));
+      delete plot.petId;
+      if (!Array.isArray(plot.helperPetIds)) plot.helperPetIds = plot.helperPetId ? [plot.helperPetId] : [];
+      delete plot.helperPetId;
+      return plot;
+    });
+    s.plots = plots;
+
+    // Keep every pet <-> plot link consistent in both directions.
+    const pets = Array.isArray(s.pets) ? s.pets : [];
+    const linked = new Set();
+    for (const pet of pets) {
+      if (!isObj(pet)) continue;
+      const task = isObj(pet.task) ? pet.task : null;
+      if (task && task.type === 'plot') {
+        const plot = plots[task.plotIndex];
+        const slot = isObj(plot) && Array.isArray(plot.petIds) ? plot.petIds.indexOf(pet.id) : -1;
+        if (slot >= 0) {
+          pet.task = { ...task, slot };
+          linked.add(`${task.plotIndex}:${slot}`);
+        } else {
+          pet.task = null;
+          if (pet.status === 'working') pet.status = 'idle';
+        }
+      }
+    }
+    plots.forEach((plot, i) => {
+      if (!isObj(plot)) return;
+      plot.petIds = plot.petIds.map((id, slot) => (id && linked.has(`${i}:${slot}`) ? id : null));
+    });
+
+    s.settings = isObj(s.settings) ? s.settings : { notify: false };
+    s.version = 3;
+    return s;
+  },
 };
+
+/** Helper slots of a crop (mirrors the rule in crops.js: <30 min 1, <2 h 2, else 3). */
+function slotCount(cropId) {
+  const crop = getCrop(cropId);
+  if (!crop) return 1;
+  if (Number.isInteger(crop.slots) && crop.slots >= 1) return crop.slots;
+  return crop.growMs < 30 * 60 * 1000 ? 1 : crop.growMs < 2 * 3600 * 1000 ? 2 : 3;
+}
 
 let warnedNewer = false;
 

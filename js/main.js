@@ -12,9 +12,13 @@ import { initAuth, signInWithGoogle, signOutUser, isFirebaseConfigured } from '.
 import { advance, MAX_OFFLINE_MS } from './tick.js';
 import { CROPS } from './data/crops.js';
 import { initQuestBar } from './ui/questBar.js';
+import { openSettings } from './ui/settings.js';
+import { createNotifyMemory, pollNotifications } from './notify.js';
+import { initInstallPrompt, registerServiceWorker, showNotice } from './pwa.js';
 
 const WELCOME_BACK_MS = 5 * 60 * 1000;
 const RENDER_EVERY_MS = 10 * 1000;
+const notifyMemory = createNotifyMemory();
 const TAB_KEY = 'nongfarm_tab';
 const VIEW_ORDER = ['barn', 'farm', 'explore', 'shop', 'bag', 'book'];
 const VIEW_MODULES = ['./ui/petsView.js', './ui/farmView.js'];
@@ -57,7 +61,18 @@ function loop() {
   advanceTo(getState(), now());
   emit('tick');
   refreshTimers(document);
-  if (ready) maybeClaimDaily();
+  if (ready) {
+    maybeClaimDaily();
+    sendNotifications();
+  }
+}
+
+/** Local notifications: only when the player is not looking at the game (see notify.js for the rules). */
+function sendNotifications() {
+  const active = document.visibilityState === 'visible' && document.hasFocus();
+  for (const notice of pollNotifications(getState(), now(), notifyMemory, { active })) {
+    void showNotice(notice, tab => showTab(tab));
+  }
 }
 
 // ---- toasts ----
@@ -201,8 +216,10 @@ function buildViews(views) {
     if (tab) showTab(tab.dataset.tab);
   });
 
-  let saved = null;
-  try { saved = localStorage.getItem(TAB_KEY); } catch { /* storage unavailable */ }
+  let saved = new URLSearchParams(location.search).get('tab'); // set by notification clicks
+  if (!panes.has(saved)) {
+    try { saved = localStorage.getItem(TAB_KEY); } catch { /* storage unavailable */ }
+  }
   showTab(panes.has(saved) ? saved : views[0].id);
 }
 
@@ -409,6 +426,15 @@ async function start() {
   subscribe(onStateEvent);
   storage.startAutosave(loadState);
   $('tab-claim').addEventListener('click', storage.claimWriter);
+
+  $('settings-btn').addEventListener('click', openSettings);
+  initInstallPrompt();
+  void registerServiceWorker();
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', e => { // a notification was clicked
+      if (e.data && e.data.type === 'open-tab') showTab(e.data.tab);
+    });
+  }
 
   setInterval(loop, 1000);
   document.addEventListener('visibilitychange', () => {

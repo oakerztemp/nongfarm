@@ -1,14 +1,16 @@
 // Pets logic tests: decay, sickness, feeding, growth, release, stardust, book goals, stats.
-import { test, assert, assertEq } from './harness.js';
+import { test, assert, assertEq, withFakeNow } from './harness.js';
 import { createNewState, addItem, countItem } from '../js/state.js';
 import { now } from '../js/util.js';
 import { SPECIES, HABITATS, getSpecies } from '../js/data/species.js';
 import { EGGS } from '../js/data/eggs.js';
 import { getItem } from '../js/data/items.js';
+import { TRAITS } from '../js/data/traits.js';
 import {
   STAGES, tickPets, putEggInIncubator, hatchReady, feedPet, foodEffect, playWithPet, cleanPet, pickPoop,
   giveToy, healPet, toggleSleep, renamePet, releasePet, addPetXp, canWork, getWorkPower,
   makeShiny, buyHabitatEgg, BOOK_GOALS, claimGoal,
+  getTrait, traitEffect, bondHearts, bondPowerMult, addBond, claimGift, bondProgress,
 } from '../js/pets.js';
 
 const HOUR = 3600 * 1000;
@@ -24,6 +26,7 @@ function setup(speciesId = 'hamster', over = {}) {
     id: 'p1', speciesId, nickname: 'ทดสอบ', shiny: false, personality: 'hardworking',
     stage: 0, xp: 0, stats: { hunger: 100, happy: 100, energy: 100, clean: 100 },
     poop: 0, sick: false, zeroSince: null, zeroMs: 0, poopTimer: null, lastFedAt: 0,
+    bond: 0, bondDay: null, bondToday: 0, giftDay: null,
     status: 'idle', task: null, bornAt: now(), ...over,
   };
   if (over.stats) pet.stats = { hunger: 100, happy: 100, energy: 100, clean: 100, ...over.stats };
@@ -405,4 +408,216 @@ test('rename trims, caps at 16 chars, rejects empty; sleep toggles', () => {
   assert(toggleSleep(s, pet.id).ok && pet.status === 'idle', 'wake');
   pet.status = 'working';
   assertEq(toggleSleep(s, pet.id).ok, false, 'cannot sleep while working');
+});
+
+// ── traits (CONTRACT_V3 §2) ─────────────────────────────────────────────────
+const petOf = sid => setup(sid).pet;
+const fx = (sid, ctx) => traitEffect(petOf(sid), ctx);
+
+test('traits: 12 defined, every species has a valid one, each used by >= 4 species', () => {
+  assertEq(Object.keys(TRAITS).length, 12, 'trait count');
+  const used = {};
+  for (const sp of SPECIES) {
+    assert(TRAITS[sp.trait], `${sp.id} has valid trait (${sp.trait})`);
+    used[sp.trait] = (used[sp.trait] || 0) + 1;
+  }
+  for (const id of Object.keys(TRAITS)) assert((used[id] || 0) >= 4, `${id} used by ${used[id] || 0}`);
+  for (const def of Object.values(TRAITS)) assert(def.nameTh && def.emoji && def.descTh, 'trait text');
+});
+
+test('getTrait: scale follows rarity', () => {
+  const scale = sid => getTrait(petOf(sid)).scale;
+  assertEq(scale('fox'), 1, 'common');
+  assertEq(scale('skunk'), 1.1, 'uncommon');
+  assertEq(scale('owl'), 1.25, 'rare');
+  assertEq(scale('leopard'), 1.5, 'epic');
+  assertEq(scale('panda'), 2, 'legendary');
+  assertEq(getTrait({ speciesId: 'nope' }), null, 'unknown species');
+});
+
+test('trait nightOwl: +30% 19:00-06:00, scaled by rarity', () => {
+  const k = h => ({ kind: 'plot', jobs: ['dig'], hour: h });
+  near(fx('fox', k(22)).power, 1.3, 'common at night');
+  near(fx('fox', k(5)).power, 1.3, '05:00 still night');
+  near(fx('fox', k(6)).power, 1, '06:00 day');
+  near(fx('fox', k(18)).power, 1, '18:00 day');
+  near(fx('fox', k(19)).power, 1.3, '19:00 night');
+  near(fx('owl', k(0)).power, 1 + 0.3 * 1.25, 'rare owl');
+  near(fx('leopard', k(0)).power, 1 + 0.3 * 1.5, 'epic');
+});
+
+test('trait earlyBird / sunLover windows', () => {
+  const k = h => ({ kind: 'plot', jobs: ['dig'], hour: h });
+  near(fx('chicken', k(5)).power, 1.3, 'earlyBird 05');
+  near(fx('chicken', k(10)).power, 1.3, 'earlyBird 10');
+  near(fx('chicken', k(11)).power, 1, 'earlyBird 11');
+  near(fx('chicken', k(4)).power, 1, 'earlyBird 04');
+  near(fx('lizard', k(11)).power, 1.25, 'sunLover 11');
+  near(fx('lizard', k(16)).power, 1.25, 'sunLover 16');
+  near(fx('lizard', k(17)).power, 1, 'sunLover 17');
+  near(fx('lion', k(12)).power, 1 + 0.25 * 2, 'legendary sunLover');
+});
+
+test('trait waterLover / digger depend on the crop jobs or the zone', () => {
+  near(fx('duck', { kind: 'plot', jobs: ['water'], hour: 12 }).power, 1.25, 'water crop');
+  near(fx('duck', { kind: 'plot', jobs: ['dig'], hour: 12 }).power, 1, 'dig crop');
+  near(fx('duck', { kind: 'expedition', jobs: ['fish'], zoneId: 'pond', hour: 12 }).power, 1.25, 'pond');
+  near(fx('duck', { kind: 'expedition', jobs: ['forage'], zoneId: 'forest', hour: 12 }).power, 1, 'forest');
+  near(fx('hamster', { kind: 'plot', jobs: ['dig'], hour: 12 }).power, 1.25, 'dig crop');
+  near(fx('hamster', { kind: 'plot', jobs: ['water'], hour: 12 }).power, 1, 'water crop');
+  near(fx('hamster', { kind: 'expedition', jobs: ['dig'], zoneId: 'mountain', hour: 12 }).power, 1.25, 'mountain');
+  near(fx('hamster', { kind: 'expedition', jobs: ['dig'], zoneId: 'pond', hour: 12 }).power, 1, 'pond');
+  near(fx('humpback', { kind: 'plot', jobs: ['water'], hour: 12 }).power, 1.5, 'legendary water lover (x2 bonus)');
+});
+
+test('trait teamPlayer / loner depend on team size', () => {
+  const k = n => ({ kind: 'plot', jobs: ['dig'], teamSize: n, hour: 12 });
+  near(fx('sheep', k(1)).power, 1, 'alone');
+  near(fx('sheep', k(2)).power, 1.1, 'one partner');
+  near(fx('sheep', k(3)).power, 1.2, 'two partners');
+  near(fx('cat', k(1)).power, 1.3, 'loner alone');
+  near(fx('cat', k(2)).power, 1, 'loner in a team');
+  near(fx('cat', { kind: 'expedition', jobs: ['forage'], hour: 12 }).power, 1, 'loner bonus is plot-only');
+});
+
+test('trait harvester / forager / lucky give integer and chance bonuses', () => {
+  const plot = { kind: 'plot', jobs: ['dig'], hour: 12 };
+  const trip = { kind: 'expedition', jobs: ['forage'], zoneId: 'forest', hour: 12 };
+  assertEq(fx('llama', plot).yieldBonus, 1, 'rare harvester +1');
+  assertEq(fx('turkey', plot).yieldBonus, 2, 'epic harvester +2');
+  assertEq(fx('unicorn', plot).yieldBonus, 2, 'legendary harvester +2');
+  assertEq(fx('llama', trip).yieldBonus, 0, 'no harvest bonus on expeditions');
+  assertEq(fx('goat', trip).extraRolls, 1, 'forager +1 roll');
+  assertEq(fx('goat', plot).extraRolls, 0, 'forager only on expeditions');
+  near(fx('ladybug', trip).eggChanceMult, 2, 'lucky x2 (common)');
+  near(fx('rabbit', trip).eggChanceMult, 2.1, 'lucky uncommon');
+  near(fx('dragon', trip).eggChanceMult, 3, 'legendary lucky');
+  near(fx('ladybug', plot).eggChanceMult, 1, 'lucky only on expeditions');
+  near(fx('hamster', trip).eggChanceMult, 1, 'others are neutral');
+});
+
+test('trait tireless slows work energy drain; gourmet boosts food happy', () => {
+  const drain = sid => {
+    const { s, pet } = setup(sid, { status: 'working', task: { type: 'plot', plotIndex: 0, slot: 0 } });
+    tickPets(s, HOUR, { offline: false });
+    return 100 - pet.stats.energy;
+  };
+  near(drain('cow'), 12 * 0.7, 'tireless common');
+  near(drain('racehorse'), 12 * 0.4, 'tireless legendary');
+  near(drain('hamster'), 12, 'no trait');
+  const potato = getItem('crop_potato');   // pig favorite
+  near(foodEffect(petOf('pig'), potato).happy, potato.food.happy * 2 * 1.5, 'gourmet common x1.5');
+  const leaf = getItem('food_leaf');       // panda favorite
+  near(foodEffect(petOf('panda'), leaf).happy, leaf.food.happy * 2 * 2, 'gourmet legendary x2');
+});
+
+test('getWorkPower: ctx adds trait + bond, no ctx stays the plain formula', () => {
+  const pet = petOf('hamster');
+  const plain = getWorkPower(pet, ['dig']);
+  near(getWorkPower(pet, ['dig'], undefined), plain, 'undefined ctx');
+  near(getWorkPower(pet, ['dig'], { kind: 'plot', jobs: ['dig'], hour: 12 }), plain * 1.25, 'digger on a dig crop');
+  near(getWorkPower(pet, ['water'], { kind: 'plot', jobs: ['water'], hour: 12 }), getWorkPower(pet, ['water']), 'no trait match, no bond');
+  pet.bond = 360;
+  near(getWorkPower(pet, ['dig']), plain, 'bond ignored without ctx');
+  near(getWorkPower(pet, ['dig'], { kind: 'plot', jobs: ['dig'], hour: 12 }), plain * 1.25 * 1.2, 'trait x bond');
+});
+
+// ── bond hearts (CONTRACT_V3 §3) ────────────────────────────────────────────
+test('bond hearts thresholds 0/20/60/120/220/360 and power multiplier', () => {
+  const h = b => bondHearts({ bond: b });
+  const table = [[0, 0], [19, 0], [20, 1], [59, 1], [60, 2], [119, 2], [120, 3], [219, 3], [220, 4], [359, 4], [360, 5], [5000, 5]];
+  for (const [b, hearts] of table) assertEq(h(b), hearts, `bond ${b}`);
+  near(bondPowerMult({ bond: 0 }), 1, '0 hearts');
+  near(bondPowerMult({ bond: 120 }), 1.12, '3 hearts');
+  near(bondPowerMult({ bond: 360 }), 1.2, '5 hearts max +20%');
+  const p = bondProgress({ bond: 30, bondDay: null });
+  assertEq([p.hearts, p.cur, p.need], [1, 10, 40], 'progress inside a heart');
+});
+
+test('addBond: 30 points per pet per day, resets next day', async () => {
+  const day1 = new Date(2026, 2, 10, 12, 0, 0).getTime();
+  await withFakeNow(day1, async clock => {
+    const { s, pet } = setup();
+    assertEq(addBond(s, pet.id, 20), 20, 'first 20');
+    assertEq(addBond(s, pet.id, 20), 10, 'capped at 30');
+    assertEq(addBond(s, pet.id, 5), 0, 'nothing left today');
+    assertEq(pet.bond, 30, 'total');
+    assertEq(addBond(s, pet.id, 0), 0, 'zero ignored');
+    assertEq(addBond(s, pet.id, -3), 0, 'negative ignored');
+    assertEq(addBond(s, 'nobody', 5), 0, 'unknown pet');
+    clock.advance(24 * HOUR);
+    assertEq(addBond(s, pet.id, 25), 25, 'new day, fresh cap');
+    assertEq(pet.bond, 55, 'total after day 2');
+    const other = setup('cat');
+    assertEq(addBond(other.s, other.pet.id, 30), 30, 'cap is per pet');
+  });
+});
+
+test('bond gains: feed +2 (favorite +5), play +3, toy +4, clean +1, pickPoop +1', () => {
+  const a = setup('hamster', { stats: { hunger: 50, happy: 50, clean: 50 }, poop: 1 });
+  addItem(a.s, 'food_milk', 1); addItem(a.s, 'care_toy', 1);
+  feedPet(a.s, a.pet.id, 'food_milk');          assertEq(a.pet.bond, 2, 'feed');
+  playWithPet(a.s, a.pet.id);                    assertEq(a.pet.bond, 5, 'play');
+  giveToy(a.s, a.pet.id);                        assertEq(a.pet.bond, 9, 'toy');
+  pickPoop(a.s, a.pet.id);                       assertEq(a.pet.bond, 10, 'pickPoop');
+  cleanPet(a.s, a.pet.id);                       assertEq(a.pet.bond, 11, 'clean');
+  const b = setup('hamster', { stats: { hunger: 50 } });
+  addItem(b.s, 'crop_corn', 1);
+  feedPet(b.s, b.pet.id, 'crop_corn');
+  assertEq(b.pet.bond, 5, 'favorite food +5');
+});
+
+test('bond cap also limits action gains and failed actions give nothing', () => {
+  const { s, pet } = setup('hamster', { stats: { hunger: 50 } });
+  s.inventory = {};
+  feedPet(s, pet.id, 'food_kibble');
+  assertEq(pet.bond, 0, 'failed feed');
+  addBond(s, pet.id, 30);
+  addItem(s, 'food_kibble', 1);
+  feedPet(s, pet.id, 'food_kibble');
+  assertEq(pet.bond, 30, 'cap reached, feed adds no bond');
+});
+
+test('claimGift: needs 3 hearts, once a day, gives 1-2 liked items', async () => {
+  const day1 = new Date(2026, 2, 10, 9, 0, 0).getTime();
+  await withFakeNow(day1, async clock => {
+    const { s, pet } = setup('hamster');
+    s.inventory = {};
+    pet.bond = 100;
+    assertEq(claimGift(s, pet.id).ok, false, '2 hearts is not enough');
+    pet.bond = 120;
+    const sp = getSpecies('hamster');
+    const r = claimGift(s, pet.id);
+    assert(r.ok, 'gift ok');
+    const total = Object.values(r.items).reduce((a, b) => a + b, 0);
+    assert(total >= 1 && total <= 2, 'gift size ' + total);
+    for (const id of Object.keys(r.items)) {
+      const it = getItem(id);
+      assert(it && it.food, id + ' is edible');
+      assert(id === sp.favorite || it.food.tags.some(tg => sp.diet.includes(tg)), id + ' matches diet');
+      assertEq(countItem(s, id), r.items[id], id + ' in inventory');
+    }
+    assertEq(claimGift(s, pet.id).ok, false, 'second claim same day');
+    clock.advance(24 * HOUR);
+    assert(claimGift(s, pet.id).ok, 'next day works again');
+  });
+});
+
+test('claimGift always draws from the diet (every species)', () => {
+  for (const sp of SPECIES) {
+    const { s, pet } = setup(sp.id, { bond: 360 });
+    const r = claimGift(s, pet.id);
+    assert(r.ok, sp.id + ' gift');
+    for (const id of Object.keys(r.items)) {
+      const it = getItem(id);
+      assert(id === sp.favorite || it.food.tags.some(tg => sp.diet.includes(tg)), `${sp.id} got ${id}`);
+    }
+  }
+});
+
+test('hatched pets start with empty bond fields', () => {
+  const s = createNewState();
+  s.incubator.push({ eggId: 'egg_farm', startAt: 0, readyAt: 0 });
+  const pet = hatchReady(s, 0).pet;
+  assertEq([pet.bond, pet.bondDay, pet.bondToday, pet.giftDay], [0, null, 0, null], 'bond fields');
 });

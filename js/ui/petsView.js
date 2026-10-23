@@ -6,10 +6,12 @@ import { update, getState, countItem } from '../state.js';
 import { getItem } from '../data/items.js';
 import { EGGS, getEgg } from '../data/eggs.js';
 import { SPECIES, HABITATS, RARITIES, JOBS, getSpecies } from '../data/species.js';
+import { getTraitDef, TRAIT_SCALE } from '../data/traits.js';
 import {
   STAGES, PERSONALITIES, petEmoji, petName, petMood, getPet,
   putEggInIncubator, hatchReady, feedPet, playWithPet, cleanPet, pickPoop,
   giveToy, healPet, toggleSleep, renamePet, releasePet, foodEffect,
+  getTrait, bondProgress, giftAvailable, claimGift, BOND_DAILY_CAP, GIFT_MIN_HEARTS,
   STARDUST_BY_RARITY, BOOK_GOALS, getGoal, isGoalClaimed, claimGoal, makeShiny, buyHabitatEgg,
 } from '../pets.js';
 
@@ -76,6 +78,23 @@ function statusLabel(pet, state) {
     }
     default: return pet.sick ? '🤒 ป่วย' : '🟢 ว่าง';
   }
+}
+
+function heartsHtml(hearts) {
+  return Array.from({ length: 5 }, (_, i) => (i < hearts ? '❤️' : '🤍')).join('');
+}
+
+function traitBadge(species) {
+  const def = species && getTraitDef(species.trait);
+  return def ? `<span class="pet-trait" title="${e(def.descTh)}">${def.emoji} ${def.nameTh}</span>` : '';
+}
+
+function traitBlock(species) {
+  const def = getTraitDef(species.trait);
+  if (!def) return '';
+  const scale = TRAIT_SCALE[species.rarity] || 1;
+  return `<div class="pet-trait-box"><b>${def.emoji} ${def.nameTh}</b><br><small>${def.descTh}</small>` +
+    `${scale > 1 ? `<br><small class="muted">โบนัสตามความหายาก x${scale}</small>` : ''}</div>`;
 }
 
 function dietChips(species) {
@@ -177,6 +196,7 @@ function renderPetCard(pet, state) {
   const sleeping = pet.status === 'sleeping';
   const working = pet.status === 'working';
   const notIdle = pet.status !== 'idle';
+  const bond = bondProgress(pet);
 
   const careBlock = away ? 'ออกสำรวจอยู่' : sleeping ? 'หลับอยู่ ปลุกก่อนนะ' : '';
   const playBlock = away ? 'ออกสำรวจอยู่' : sleeping ? 'หลับอยู่' : working ? 'กำลังทำงาน' : pet.sick ? 'ป่วยอยู่' : '';
@@ -210,8 +230,10 @@ function renderPetCard(pet, state) {
       <span>${sp ? e(sp.nameTh) : ''}</span>
       ${sp ? rarityBadge(sp) : ''}
       ${pet.shiny ? '<span class="pet-shiny-tag">✨ ไชนี่</span>' : ''}
+      ${traitBadge(sp)}
     </div>
     <div class="pet-status">${statusLabel(pet, state)}</div>
+    <div class="pet-hearts" title="ความผูกพัน ${bond.hearts}/5">${heartsHtml(bond.hearts)}${bond.hearts >= 5 ? ' <span class="pet-bond-badge" title="สนิทสุดๆ">💖</span>' : ''}</div>
     <div class="pet-stats">
       ${statBar('🍖', 'อิ่ม', pet.stats.hunger)}
       ${statBar('💖', 'สุข', pet.stats.happy)}
@@ -225,6 +247,7 @@ function renderPetCard(pet, state) {
       ${actionBtn('toy', pet.id, '🧸 ของเล่น', playBlock)}
       ${pet.sick ? actionBtn('heal', pet.id, '💊 รักษา', '') : ''}
       ${actionBtn('sleep', pet.id, sleeping ? '☀️ ตื่น' : '💤 นอน', sleepBlock)}
+      ${giftAvailable(pet) ? actionBtn('gift', pet.id, '🎁 ของขวัญ', '') : ''}
       ${actionBtn('details', pet.id, '📋 รายละเอียด', '')}
     </div>
   </article>`;
@@ -340,6 +363,7 @@ function openDetails(petId) {
   const xp = xpProgress(pet);
   const st = stageOf(pet);
   const busy = pet.status === 'working' || pet.status === 'expedition';
+  const bond = bondProgress(pet);
 
   const html = `<div class="pet-detail">
     <div class="pet-detail-top${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
@@ -358,6 +382,16 @@ function openDetails(petId) {
     <div class="pet-detail-xp">
       <span class="pet-bar"><span class="pet-bar-fill pet-lv-high" style="width:${xp.pct}%"></span></span>
       <small class="muted">${xp.text}</small>
+    </div>
+    <h4 class="pet-detail-h">ความสามารถพิเศษ</h4>
+    ${traitBlock(sp)}
+    <h4 class="pet-detail-h">ความผูกพัน ${heartsHtml(bond.hearts)}${bond.hearts >= 5 ? ' 💖' : ''}</h4>
+    <div class="pet-detail-xp">
+      <span class="pet-bar"><span class="pet-bar-fill pet-bond-fill" style="width:${bond.pct}%"></span></span>
+      <small class="muted">${bond.max ? 'สนิทสุดๆ แล้ว (+20% พลังงาน)' : `อีก ${bond.need - bond.cur} แต้มถึงหัวใจดวงถัดไป`} · วันนี้ได้อีก ${bond.remainingToday}/${BOND_DAILY_CAP} แต้ม · โบนัสงาน +${bond.hearts * 4}%</small>
+      ${giftAvailable(pet)
+        ? '<button type="button" class="btn btn-sm btn-primary pet-gift-btn" data-action="gift">🎁 รับของขวัญจากน้อง</button>'
+        : `<small class="muted">${bond.hearts >= GIFT_MIN_HEARTS ? '🎁 วันนี้รับของขวัญแล้ว' : `🎁 สนิทถึง ${GIFT_MIN_HEARTS} หัวใจ จะมีของขวัญให้ทุกวัน`}</small>`}
     </div>
     <h4 class="pet-detail-h">ความถนัดงาน</h4>
     ${jobsHtml(sp)}
@@ -391,6 +425,10 @@ function openDetails(petId) {
       };
       if (input) input.addEventListener('keydown', ev => { if (ev.key === 'Enter') save(); });
       delegate(el, {
+        gift: () => {
+          const r = run(s => claimGift(s, petId));
+          if (r && r.ok) close();
+        },
         'rename-save': save,
         'release-ask': () => { confirmBox.hidden = false; askBtn.hidden = true; },
         'release-no': () => { confirmBox.hidden = true; askBtn.hidden = false; },
@@ -432,6 +470,7 @@ function bindBarn(root) {
     sleep: withPet(id => run(s => toggleSleep(s, id))),
     poop: withPet(id => run(s => pickPoop(s, id))),
     details: withPet(id => openDetails(id)),
+    gift: withPet(id => run(s => claimGift(s, id))),
     'put-egg': () => openEggPicker(),
     hatch: btn => {
       const r = run(s => hatchReady(s, Number(btn.dataset.slot)));
@@ -449,6 +488,7 @@ function speciesInfoHtml(sp, entry) {
         <div class="muted">${HABITATS[sp.habitat].emoji} ถิ่น${HABITATS[sp.habitat].nameTh} · ฟักได้แล้ว ${entry.owned} ตัว${entry.shiny ? ' · ✨ เคยได้ร่างไชนี่' : ''}</div></div>
     </div>
     <p class="pet-detail-desc">${e(sp.desc)}</p>
+    <h4 class="pet-detail-h">ความสามารถพิเศษ</h4>${traitBlock(sp)}
     <h4 class="pet-detail-h">ความถนัดงาน</h4>${jobsHtml(sp)}
     <h4 class="pet-detail-h">อาหาร</h4>
     <div class="pet-detail-diet">${dietChips(sp)} <span class="pet-fav">⭐ ของโปรด: ${favoriteLabel(sp)}</span></div></div>`;

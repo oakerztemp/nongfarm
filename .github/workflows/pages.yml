@@ -35,7 +35,7 @@ jobs:
       - name: Assemble site (game files only)
         run: |
           mkdir _site
-          cp -r index.html css js _site/
+          cp -r index.html sw.js manifest.webmanifest css js icons _site/
       - name: Version assets (one deploy = one consistent set of files)
         run: python3 .github/scripts/version_assets.py _site "${GITHUB_SHA::8}"
       - uses: actions/configure-pages@v5

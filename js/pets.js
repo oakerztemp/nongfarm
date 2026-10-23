@@ -1,11 +1,12 @@
 // Pet logic: stats decay, care actions, incubator, growth.
 // DOM-free. Mutates the state passed in; actions return { ok, msg } or { ok:false, reason }.
 
-import { now, clamp, uid, pickWeighted, notify, addLog } from './util.js';
+import { now, clamp, uid, randInt, pickWeighted, notify, addLog, todayKey } from './util.js';
 import { addItem, removeItem, countItem, addCoins, addPlayerXp, bumpStat } from './state.js';
-import { getItem } from './data/items.js';
+import { getItem, ITEMS } from './data/items.js';
 import { EGGS, getEgg } from './data/eggs.js';
 import { SPECIES, HABITATS, RARITIES, getSpecies } from './data/species.js';
+import { getTraitDef, TRAIT_SCALE } from './data/traits.js';
 
 const HOUR = 3600 * 1000;
 
@@ -115,7 +116,7 @@ export function canWork(pet) {
   return { ok: true, reason: '' };
 }
 
-export function getWorkPower(pet, jobs) {
+export function getWorkPower(pet, jobs, ctx) {
   const sp = getSpecies(pet.speciesId);
   let apt = 0;
   if (sp) for (const j of jobs || []) apt = Math.max(apt, sp.jobs[j] || 0);
@@ -123,7 +124,130 @@ export function getWorkPower(pet, jobs) {
   const happy = pet.stats.happy;
   const moodMult = happy >= 70 ? 1.2 : happy >= 30 ? 1.0 : 0.7;
   const persMult = (PERSONALITIES[pet.personality] || PERSONALITIES.cheerful).work;
-  return (0.5 + apt) * stageMult * moodMult * persMult * (pet.shiny ? 1.1 : 1);
+  let power = (0.5 + apt) * stageMult * moodMult * persMult * (pet.shiny ? 1.1 : 1);
+  // With a context (CONTRACT_V3) the species trait and bond hearts apply too.
+  if (ctx) power *= traitEffect(pet, { jobs, ...ctx }).power * bondPowerMult(pet);
+  return power;
+}
+
+// ── Traits (CONTRACT_V3 §2) ─────────────────────────────────────────────────
+/** The pet's species trait with its rarity scale, or null. */
+export function getTrait(pet) {
+  const sp = pet && getSpecies(pet.speciesId);
+  const def = sp && sp.trait ? getTraitDef(sp.trait) : null;
+  return def ? { id: sp.trait, ...def, scale: TRAIT_SCALE[sp.rarity] || 1 } : null;
+}
+
+/**
+ * Effect of the trait in a context { kind:'plot'|'expedition', jobs, zoneId, teamSize, hour }.
+ * Rarity scales only the bonus part. Integer bonuses are +1, or +2 for epic/legendary.
+ */
+export function traitEffect(pet, ctx = {}) {
+  const out = { power: 1, yieldBonus: 0, extraRolls: 0, eggChanceMult: 1 };
+  const tr = getTrait(pet);
+  if (!tr) return out;
+  const hour = Number.isFinite(ctx.hour) ? ctx.hour : new Date(now()).getHours();
+  const jobs = ctx.jobs || [];
+  const plot = ctx.kind === 'plot';
+  const trip = ctx.kind === 'expedition';
+  const s = tr.scale;
+  const whole = s >= 1.5 ? 2 : 1;
+  switch (tr.id) {
+    case 'nightOwl': if (hour >= 19 || hour < 6) out.power += 0.30 * s; break;
+    case 'earlyBird': if (hour >= 5 && hour < 11) out.power += 0.30 * s; break;
+    case 'sunLover': if (hour >= 11 && hour < 17) out.power += 0.25 * s; break;
+    case 'waterLover': if ((plot && jobs.includes('water')) || (trip && ctx.zoneId === 'pond')) out.power += 0.25 * s; break;
+    case 'digger': if ((plot && jobs.includes('dig')) || (trip && ctx.zoneId === 'mountain')) out.power += 0.25 * s; break;
+    case 'teamPlayer': if (plot && (ctx.teamSize || 1) > 1) out.power += 0.10 * (ctx.teamSize - 1) * s; break;
+    case 'loner': if (plot && (ctx.teamSize || 1) <= 1) out.power += 0.30 * s; break;
+    case 'harvester': if (!trip) out.yieldBonus = whole; break;
+    case 'forager': if (trip) out.extraRolls = whole; break;
+    case 'lucky': if (trip) out.eggChanceMult = 1 + s; break;
+    default: break; // tireless / gourmet act in tickPets / foodEffect
+  }
+  return out;
+}
+
+// ── Bond hearts (CONTRACT_V3 §3) ────────────────────────────────────────────
+export const BOND_THRESHOLDS = [0, 20, 60, 120, 220, 360];
+export const BOND_DAILY_CAP = 30;
+export const GIFT_MIN_HEARTS = 3;
+
+export function bondHearts(pet) {
+  const b = (pet && pet.bond) || 0;
+  let h = 0;
+  for (let i = 0; i < BOND_THRESHOLDS.length; i++) if (b >= BOND_THRESHOLDS[i]) h = i;
+  return h;
+}
+
+export function bondPowerMult(pet) {
+  return 1 + 0.04 * bondHearts(pet);
+}
+
+/** Bond points that can still be earned today. */
+export function bondRemainingToday(pet) {
+  return pet.bondDay === todayKey() ? Math.max(0, BOND_DAILY_CAP - (pet.bondToday || 0)) : BOND_DAILY_CAP;
+}
+
+/** For the UI: hearts, points into the current heart, points needed for the next one. */
+export function bondProgress(pet) {
+  const hearts = bondHearts(pet);
+  const points = pet.bond || 0;
+  const remainingToday = bondRemainingToday(pet);
+  if (hearts >= BOND_THRESHOLDS.length - 1) return { hearts, points, cur: 1, need: 1, pct: 100, max: true, remainingToday };
+  const lo = BOND_THRESHOLDS[hearts];
+  const need = BOND_THRESHOLDS[hearts + 1] - lo;
+  const cur = points - lo;
+  return { hearts, points, cur, need, pct: clamp((cur / need) * 100, 0, 100), max: false, remainingToday };
+}
+
+/** Adds bond points (daily cap 30 per pet). Returns the points actually gained. */
+export function addBond(state, petId, n) {
+  const pet = getPet(state, petId);
+  if (!pet || !(n > 0)) return 0;
+  const day = todayKey();
+  if (pet.bondDay !== day) { pet.bondDay = day; pet.bondToday = 0; }
+  const gain = Math.min(Math.floor(n), BOND_DAILY_CAP - (pet.bondToday || 0));
+  if (gain <= 0) return 0;
+  const before = bondHearts(pet);
+  pet.bond = (pet.bond || 0) + gain;
+  pet.bondToday = (pet.bondToday || 0) + gain;
+  const after = bondHearts(pet);
+  if (after > before) {
+    const msg = `❤️ ${nong(pet)} สนิทกับคุณมากขึ้น (${after} หัวใจ)`;
+    notify(msg, 'success');
+    addLog(state, msg);
+  }
+  return gain;
+}
+
+export function giftAvailable(pet) {
+  return bondHearts(pet) >= GIFT_MIN_HEARTS && pet.giftDay !== todayKey();
+}
+
+/** Once a day, a pet with 3+ hearts gives 1-2 items it likes (diet match, favorite more likely). */
+export function claimGift(state, petId) {
+  const pet = getPet(state, petId);
+  if (!pet) return fail('ไม่พบน้องตัวนี้');
+  if (bondHearts(pet) < GIFT_MIN_HEARTS) return fail(`ต้องสนิทถึง ${GIFT_MIN_HEARTS} หัวใจก่อนถึงจะมีของขวัญ`);
+  if (pet.giftDay === todayKey()) return fail('วันนี้รับของขวัญจากน้องไปแล้ว พรุ่งนี้มาใหม่นะ');
+  const sp = getSpecies(pet.speciesId);
+  if (!sp) return fail('ไม่พบข้อมูลสายพันธุ์');
+  const pool = Object.values(ITEMS).filter(it => it.food && it.type !== 'egg' &&
+    (it.id === sp.favorite || ((it.sell || 0) <= 60 && (it.food.tags || []).some(t => sp.diet.includes(t)))));
+  if (!pool.length) return fail('น้องยังไม่มีของขวัญให้');
+  const got = {};
+  const n = randInt(1, 2);
+  for (let i = 0; i < n; i++) {
+    const it = pickWeighted(pool, x => (x.id === sp.favorite ? 6 : 1));
+    got[it.id] = (got[it.id] || 0) + 1;
+  }
+  for (const [id, c] of Object.entries(got)) addItem(state, id, c);
+  pet.giftDay = todayKey();
+  const text = Object.entries(got).map(([id, c]) => `${getItem(id).emoji} ${getItem(id).nameTh}${c > 1 ? ` ×${c}` : ''}`).join(', ');
+  const msg = `🎁 ${nong(pet)} ให้ของขวัญ: ${text}`;
+  addLog(state, msg);
+  return { ok: true, msg, items: got };
 }
 
 // ── Tick ────────────────────────────────────────────────────────────────────
@@ -131,6 +255,11 @@ export function tickPets(state, dtMs, { offline = false } = {}) {
   const dt = Math.max(0, dtMs || 0);
   if (dt > 0) for (const pet of state.pets) tickOnePet(pet, dt, offline);
   tickIncubator(state, now());
+}
+
+function tirelessFactor(pet) {
+  const tr = getTrait(pet);
+  return tr && tr.id === 'tireless' ? Math.max(0.3, 1 - 0.3 * tr.scale) : 1;
 }
 
 function tickOnePet(pet, dt, offline) {
@@ -146,7 +275,7 @@ function tickOnePet(pet, dt, offline) {
   st.clean -= (RATE.clean + RATE.cleanPerPoop * pet.poop) * h * decay * calm;
 
   if (pet.status === 'working' || pet.status === 'expedition') {
-    st.energy -= RATE.energyWork * h * decay * p.energyDrain;
+    st.energy -= RATE.energyWork * h * decay * p.energyDrain * tirelessFactor(pet);
   } else if (sleeping) {
     st.energy += RATE.energySleep * h;
   } else {
@@ -240,6 +369,10 @@ export function hatchReady(state, slotIndex) {
     zeroMs: 0,
     poopTimer: null,
     lastFedAt: 0,
+    bond: 0,
+    bondDay: null,
+    bondToday: 0,
+    giftDay: null,
     status: 'idle',
     task: null,
     bornAt: t,
@@ -275,6 +408,11 @@ function careBlocker(pet, { allowWorking = true, allowSleeping = false } = {}) {
  * What feeding `item` would do to `pet` (single source of truth, also used for the UI preview).
  * Diet match = full effect, otherwise half; favorite = happy x2; glutton etc. via personality.
  */
+function gourmetFactor(pet) {
+  const tr = getTrait(pet);
+  return tr && tr.id === 'gourmet' ? 1 + 0.5 * tr.scale : 1;
+}
+
 export function foodEffect(pet, item) {
   const sp = getSpecies(pet.speciesId);
   const p = PERSONALITIES[pet.personality] || PERSONALITIES.cheerful;
@@ -287,7 +425,7 @@ export function foodEffect(pet, item) {
     favorite,
     match,
     hunger: (food.hunger || 0) * mult,
-    happy: (food.happy || 0) * mult * p.foodHappy * (favorite ? 2 : 1),
+    happy: (food.happy || 0) * mult * p.foodHappy * (favorite ? 2 : 1) * gourmetFactor(pet),
   };
 }
 
@@ -308,6 +446,7 @@ export function feedPet(state, petId, itemId) {
   if (typeof pet.poopTimer !== 'number') pet.poopTimer = 0;
   addPetXp(state, petId, 2);
   bumpStat(state, 'fed');
+  addBond(state, petId, favorite ? 5 : 2);
 
   const note = favorite ? ' ของโปรดเลย! ⭐' : match ? ' ถูกปากมาก' : ' กินพอได้ (ไม่ใช่อาหารถนัด)';
   return ok(`${item.emoji} ${nong(pet)} กิน${item.nameTh}${note}`);
@@ -325,6 +464,7 @@ export function playWithPet(state, petId) {
   pet.stats.energy = clamp(pet.stats.energy - 8, 0, 100);
   addPetXp(state, petId, 2);
   bumpStat(state, 'played');
+  addBond(state, petId, 3);
   return ok(`🎾 ${nong(pet)} เล่นสนุกมาก! สุขเพิ่มขึ้น`);
 }
 
@@ -346,6 +486,7 @@ export function cleanPet(state, petId) {
   }
   addPetXp(state, petId, 1);
   bumpStat(state, 'cleaned');
+  addBond(state, petId, 1);
   return ok(msg);
 }
 
@@ -359,6 +500,7 @@ export function pickPoop(state, petId) {
   pet.poop = 0;
   pet.stats.clean = clamp(pet.stats.clean + 5 * n, 0, 100);
   bumpStat(state, 'cleaned');
+  addBond(state, petId, 1);
   return ok(`💩 เก็บอึของ${nong(pet)}แล้ว ${n} ก้อน`);
 }
 
@@ -373,6 +515,7 @@ export function giveToy(state, petId) {
   pet.stats.happy = clamp(pet.stats.happy + 40 * p.playHappy, 0, 100);
   addPetXp(state, petId, 2);
   bumpStat(state, 'played');
+  addBond(state, petId, 4);
   return ok(`🧸 ${nong(pet)} ได้ของเล่นใหม่ ดีใจสุดๆ!`);
 }
 

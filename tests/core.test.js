@@ -1,7 +1,7 @@
 // Core/platform tests: state, migration (v1 fixtures), util, quests, storage merge (mock Firestore).
 import { test, assert, assertEq, withFakeNow, freshState } from './harness.js';
 import {
-  STATE_VERSION, createNewState, migrate, isNewerSave, bumpStat, replaceState, getState,
+  STATE_VERSION, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
   addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, xpForLevel,
 } from '../js/state.js';
 import { QUESTS, currentQuest, claimQuest } from '../js/quests.js';
@@ -49,6 +49,25 @@ test('createNewState: v2 start kit', () => {
   assertEq(s.claimedGoals, [], 'claimedGoals');
   assertEq(s.stats.hatched, 0, 'stats.hatched');
   assertEq(s.orders, { day: null, list: [], week: null, weekly: null }, 'orders');
+});
+
+test('isPristine: an untouched farm stays pristine through migration; real play does not', () => {
+  assert(isPristine(createNewState()), 'fresh');
+  const migrated = migrate(JSON.parse(JSON.stringify({ ...createNewState(), version: 2 })));
+  assert(isPristine(migrated), 'untouched v2 guest migrated to v3');
+  const rewarded = createNewState();
+  rewarded.player.coins += 50;
+  rewarded.inventory.seed_corn = 3;
+  assert(isPristine(rewarded), 'daily reward alone');
+  const hatched = createNewState();
+  hatched.incubator.push({ eggId: 'egg_farm', startAt: 0, readyAt: 1 });
+  assert(!isPristine(hatched), 'egg in incubator');
+  const planted = createNewState();
+  planted.plots[0].cropId = 'carrot';
+  assert(!isPristine(planted), 'planted');
+  const leveled = createNewState();
+  leveled.player.xp = 5;
+  assert(!isPristine(leveled), 'xp');
 });
 
 test('inventory + coin helpers', () => {

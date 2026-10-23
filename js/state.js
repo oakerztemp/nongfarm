@@ -234,11 +234,15 @@ function migrateUnsafe(raw) {
  * brand-new guest save look "newer" than a real cloud save.
  */
 export function isPristine(s) {
+  // Compare what the player did, not the exact shape: migrations add empty fields
+  // (e.g. plot.helperPetIds) that must not turn an untouched farm into "real progress".
   const fresh = createNewState();
-  const sig = x => JSON.stringify([
-    x.player.level, x.player.xp, x.pets, x.incubator, x.plots, x.expeditions, x.collection,
-  ]);
-  return sig(s) === sig(fresh);
+  const plots = Array.isArray(s.plots) ? s.plots : [];
+  const empty = x => !Array.isArray(x) || x.length === 0;
+  return s.player.level === fresh.player.level && s.player.xp === fresh.player.xp
+    && empty(s.pets) && empty(s.incubator) && empty(s.expeditions)
+    && Object.keys(s.collection || {}).length === 0
+    && plots.length === fresh.plots.length && plots.every(p => !p || !p.cropId);
 }
 
 // ---- store ----

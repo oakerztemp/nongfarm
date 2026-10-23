@@ -385,3 +385,7 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .b3-sheet:focus { outline: none; }
 .b3-reveal { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--rar, var(--border)); background: var(--surface-2); }
 .b3-reveal.is-shiny { border-color: var(--accent); }
+.b3-nametag.is-legend {
+  color: #fff3c4; border-color: #f2a516; font-weight: 800; letter-spacing: 0.02em;
+  background: linear-gradient(180deg, #5a3a0a, #2e1d05); box-shadow: 0 0 14px rgba(242, 165, 22, 0.75), var(--shadow);
+}

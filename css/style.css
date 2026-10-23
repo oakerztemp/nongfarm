@@ -286,11 +286,20 @@ body.tab-syncing .tab-banner { animation: fade-in 0.2s 0.4s both; }
   -webkit-tap-highlight-color: transparent;
 }
 .world3d-canvas {
+  position: relative;       /* above the dim overlay below */
   display: block;
   width: 100%;
   height: 100%;
   touch-action: pan-y;
   outline: none;
+}
+.world3d-host::before {     /* fx.dimScene darkens the sky behind the canvas through --world-dim */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: var(--world-dim, 0);
+  pointer-events: none;
 }
 
 .hdr-user { display: flex; align-items: center; gap: 6px; min-width: 0; }

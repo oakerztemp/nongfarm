@@ -13,7 +13,8 @@ import {
   getTrait, traitEffect, bondHearts, bondPowerMult, addBond, claimGift, bondProgress,
   patPet, patsLeftToday, PAT_DAILY_MAX,
 } from '../js/pets.js';
-import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor } from '../js/petBehaviour.js';
+import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor,
+  signatureFor, NAP_CAP, pickTarget, ceremonyKind, partBases, applyPartPose, canStartCeremony } from '../js/petBehaviour.js';
 
 const HOUR = 3600 * 1000;
 const MIN = 60 * 1000;
@@ -843,4 +844,130 @@ test('action loop: walking reaches the target, calls onArrive once, and callback
   assertEq(decided, 0, 'decide skipped because onArrive began a new action');
   assertEq(A.act.type, 'hop', 'hop started by the callback');
   assert(Math.hypot(A.x - 2, A.z - 1) < 0.2, 'stands at the target');
+});
+
+// ── CONTRACT_V5: legendary presence, nap cap, crowd spreading, ceremony choice ──
+const SIGNATURE_STARTS = new Set(['flyCircle', 'gallop', 'soar', 'breach', 'roar', 'munch', 'snowPuff', 'shimmer', 'sprint', 'flourish']);
+const countTypes = (pet, actor, n = 800) => {
+  const t = {};
+  for (let i = 0; i < n; i++) { const a = nextAction(pet, actor, makeRng(i * 31 + 7), 0); t[a.type] = (t[a.type] || 0) + 1; }
+  return t;
+};
+
+test('signature moves: one per legendary species, none for common pets, a smaller one for epic', () => {
+  const expected = { dragon: 'flyCircle', unicorn: 'gallop', eagle: 'soar', humpback: 'breach', lion: 'roar',
+    panda: 'munch', polarbear: 'snowPuff', beetle: 'shimmer', racehorse: 'sprint' };
+  for (const [id, type] of Object.entries(expected)) {
+    assertEq(signatureFor(id), { type, tier: 'legendary' }, id);
+  }
+  assertEq(SPECIES.filter(sp => sp.rarity === 'legendary').length, 9, 'nine legendary species');
+  for (const sp of SPECIES) {
+    const sig = signatureFor(sp.id);
+    if (sp.rarity === 'legendary') assertEq(sig.tier, 'legendary', sp.id);
+    else if (sp.rarity === 'epic') assertEq(sig.tier, 'epic', sp.id);
+    else assertEq(sig, null, sp.id + ' has no signature move');
+  }
+  const actor = { x: 0, z: 0, others: [], last: 'idle' };
+  for (const sp of SPECIES.filter(x => x.rarity !== 'legendary' && x.rarity !== 'epic').slice(0, 40)) {
+    const t = countTypes(bpet({ speciesId: sp.id }), actor, 150);
+    for (const k of Object.keys(t)) assert(!SIGNATURE_STARTS.has(k), `${sp.id} (common) must never start ${k}`);
+  }
+  const dragon = countTypes(bpet({ speciesId: 'dragon' }), actor);
+  assert((dragon.flyCircle || 0) > 20, 'the dragon flies sometimes: ' + JSON.stringify(dragon));
+  assert((dragon.flyCircle || 0) < 400, 'but only occasionally');
+  const epic = countTypes(bpet({ speciesId: 'dragonhead' }), actor);
+  const small = nextAction(bpet({ speciesId: 'dragonhead' }), actor, (() => { const r = makeRng(3); return () => r(); })(), 0);
+  assert((epic.flyCircle || 0) > 0 && (epic.flyCircle || 0) < (dragon.flyCircle || 0), 'epic does it less often: ' + JSON.stringify([epic, dragon]));
+  void small;
+  // sleeping / sick / hungry pets are never interrupted by a show-off move
+  for (const over of [{ status: 'sleeping' }, { sick: true }, { stats: { hunger: 10, happy: 80, energy: 80, clean: 80 } }]) {
+    const t = countTypes(bpet({ speciesId: 'dragon', ...over }), actor, 200);
+    for (const k of Object.keys(t)) assert(!SIGNATURE_STARTS.has(k), `dragon ${JSON.stringify(over)} must not start ${k}`);
+  }
+  // signature actions last their full duration and carry the epic flag
+  const a = nextAction(bpet({ speciesId: 'dragonhead' }), actor, () => 0.999, 0);
+  if (SIGNATURE_STARTS.has(a.type)) assertEq(a.small, true, 'epic version is small');
+});
+
+test('nap cap: nobody starts a nap while 25% of the awake pets already nap; lazy pets still nap more', () => {
+  const lazy = bpet({ personality: 'lazy', stats: { hunger: 80, happy: 60, energy: 60, clean: 80 } });
+  const other = bpet({ personality: 'hardworking', stats: { hunger: 80, happy: 60, energy: 60, clean: 80 } });
+  const base = { x: 0, z: 0, others: [], last: 'idle' };
+  assertEq(countTypes(lazy, { ...base, napRatio: 0.25 }).sleep || 0, 0, 'capped (lazy)');
+  assertEq(countTypes(lazy, { ...base, napRatio: 0.6 }).sleep || 0, 0, 'capped (lazy, more)');
+  assertEq(countTypes(other, { ...base, napRatio: 0.3 }).sleep || 0, 0, 'capped (other)');
+  const lz = countTypes(lazy, { ...base, napRatio: 0.1 }).sleep || 0, ot = countTypes(other, { ...base, napRatio: 0.1 }).sleep || 0;
+  assert(lz > 0 && lz > ot * 3, `below the cap lazy still naps far more: ${lz} vs ${ot}`);
+  assertEq(NAP_CAP, 0.25, 'cap constant');
+});
+
+test('crowd: wander targets avoid other pets and where they are heading (no clumping)', () => {
+  const others = [];
+  const rp = makeRng(1234);
+  for (let i = 0; i < 14; i++) {
+    const a = rp() * Math.PI * 2, r = Math.sqrt(rp()) * 3.2;
+    others.push({ id: 'o' + i, x: Math.cos(a) * r, z: Math.sin(a) * r, tx: Math.cos(a + 1) * r * 0.8, tz: Math.sin(a + 1) * r * 0.8 });
+  }
+  const rng = makeRng(99);
+  let sum = 0, close = 0, n = 0;
+  const dists = (x, z) => Math.min(...others.map(o => Math.min(Math.hypot(x - o.x, z - o.z), Math.hypot(x - o.tx, z - o.tz))));
+  for (let i = 0; i < 400; i++) {
+    const t = pickTarget(rng, 0, 0, others, false);
+    assert(inYard(t), 'inside the yard');
+    const d = dists(t.x, t.z);
+    sum += d; n++; if (d < 0.5) close++;
+  }
+  // baseline: uniformly random yard points
+  const rb = makeRng(5);
+  let base = 0;
+  for (let i = 0; i < 400; i++) { const a = rb() * Math.PI * 2, r = Math.sqrt(rb()) * YARD.walkRadius; base += dists(Math.cos(a) * r, Math.sin(a) * r); }
+  assert(sum / n > (base / 400) * 1.25, `targets are farther from the crowd than random ones: ${(sum / n).toFixed(2)} vs ${(base / 400).toFixed(2)}`);
+  assert(close / n < 0.05, 'fewer than 5% of the targets land within 0.5 of a pet or its target: ' + close);
+});
+
+test('hatch ceremony is chosen from the real hatchReady result', () => {
+  const s = createNewState();
+  s.barnCapacity = 10;
+  s.incubator.push({ eggId: 'egg_mystic', startAt: 0, readyAt: 0 }, { eggId: 'egg_farm', startAt: 0, readyAt: 0 });
+  const realRandom = Math.random;
+  let legend;
+  try { Math.random = () => 0.9999; legend = hatchReady(s, 0); } finally { Math.random = realRandom; }
+  assert(legend.ok, 'hatched');
+  assertEq(getSpecies(legend.pet.speciesId).rarity, 'legendary', 'forced a legendary result');
+  assertEq(ceremonyKind(legend.pet), 'legendary', 'legendary ceremony');
+  let common;
+  try { Math.random = () => 0; common = hatchReady(s, 0); } finally { Math.random = realRandom; }
+  assert(common.ok, 'hatched common');
+  assertEq(ceremonyKind(common.pet), 'common', 'normal ceremony for a common result');
+  assertEq(ceremonyKind({ speciesId: 'hamster' }), 'common', 'plain pet');
+  assertEq(ceremonyKind(null), 'common', 'no pet');
+});
+
+test('part animator: moves wings/tailTip/trunk/mane when present and tolerates missing parts', () => {
+  const part = (x = 0, y = 0, z = 0) => ({ rotation: { x, y, z } });
+  const P = { wing: 0.5, tail: 0.2, tailTip: 0.3, trunk: -0.4, mane: 0.1 };
+  const full = { wingL: part(0, 0, 0.2), wingR: part(0, 0, -0.2), tail: part(0, 0.1, 0), tailTip: part(), trunk: part(0.3, 0, 0), mane: part() };
+  const base = partBases(full);
+  applyPartPose(full, base, P);
+  assertEq([full.wingL.rotation.z, full.wingR.rotation.z], [0.7, -0.7], 'wings flap symmetrically around their rest pose');
+  assertEq([full.tailTip.rotation.y, full.mane.rotation.z], [0.3, 0.1], 'tailTip + mane');
+  assert(Math.abs(full.trunk.rotation.x - (-0.1)) < 1e-9 && Math.abs(full.tail.rotation.y - 0.3) < 1e-9, 'trunk + tail');
+  applyPartPose(full, base, P); // idempotent: offsets, not accumulation
+  assertEq(full.wingL.rotation.z, 0.7, 'no drift');
+  // billboards / species without those parts
+  for (const parts of [undefined, null, {}, { eyes: [part()] }, { wingL: part() }, { trunk: {} }]) {
+    const b = partBases(parts);
+    applyPartPose(parts, b, P);
+  }
+  applyPartPose({ wingL: part() }, undefined, P);
+  applyPartPose({ wingL: part() }, {}, undefined);
+  const half = { wingL: part() };
+  applyPartPose(half, partBases(half), { wing: NaN });
+  assertEq(half.wingL.rotation.z, 0, 'NaN pose values are ignored');
+});
+
+test('hatch ceremony lock: only an unfinished ceremony blocks the next hatch', () => {
+  assertEq(canStartCeremony(null), true, 'idle');
+  for (const phase of ['pending', 'wobble', 'legend']) assertEq(canStartCeremony({ phase }), false, phase + ' blocks');
+  assertEq(canStartCeremony({ phase: 'burst' }), true, 'after the burst another egg may hatch (newborn still walking)');
 });

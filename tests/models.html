@@ -23,6 +23,9 @@
     <label>stage
       <select id="stage"><option value="0">0 baby</option><option value="1">1 child</option><option value="2" selected>2 adult</option><option value="3">3 master</option></select>
     </label>
+    <label>set
+      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="legendary">legendary row</option></select>
+    </label>
     <label><input type="checkbox" id="shiny"> shiny</label>
     <label><input type="checkbox" id="spin" checked> turntable</label>
     <label><input type="checkbox" id="bob" checked> squash demo</label>
@@ -41,6 +44,9 @@
     const q = new URLSearchParams(location.search);
     const $ = id => document.getElementById(id);
     if (q.get('stage')) $('stage').value = q.get('stage');
+    const setName = q.get('set') || 'all';
+    $('set').value = setName;
+    $('set').addEventListener('change', () => { q.set('set', $('set').value); location.search = q.toString(); });
     if (q.get('shiny')) $('shiny').checked = true;
     if (q.get('spin') === '0') $('spin').checked = false;
     if (q.get('bob') === '0') $('bob').checked = false;
@@ -60,12 +66,14 @@
     scene.add(sun);
 
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
-    const ids = q.get('only') ? q.get('only').split(',') : Object.keys(MODEL_SPECS);
-    const cells = ids.map(id => ({ id, label: id })).concat(q.get('only') ? [] : [
-      { id: '_bb1', label: 'billboard \u{1F981} lion', emoji: '\u{1F981}' },
-      { id: '_bb2', label: 'fallback: dolphin (species)', species: 'dolphin' },
-    ]);
-    const cols = Math.min(cells.length, q.get('only') ? cells.length : 6), gap = 1.9;
+    const isFarm = id => getSpecies(id).habitat === 'farm';
+    const ids = q.get('only') ? q.get('only').split(',')
+      : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || (setName === 'farm') === isFarm(id));
+    const extras = [];
+    if (setName !== 'legendary') extras.push({ id: '_bb1', label: 'billboard \u{1F981}', emoji: '\u{1F981}' }, { id: '_bb2', label: 'fallback: dolphin', species: 'dolphin' });
+    if (setName !== 'farm') extras.push({ id: '_bb3', label: 'eagle (legendary billboard)', species: 'eagle' });
+    const cells = ids.map(id => ({ id, label: id + (getSpecies(id).rarity === 'legendary' ? ' \u2726' : '') })).concat(q.get('only') ? [] : extras);
+    const cols = Math.min(cells.length, q.get('only') ? cells.length : 6), gap = q.get('only') ? 2.6 : 1.9;
     const rows = Math.ceil(cells.length / cols);
 
     const holders = [];
@@ -104,7 +112,7 @@
         h.calls = drawCalls(m.root);
         totalTris += h.tris;
         h.holder.add(m.root);
-        h.tag.textContent = `${c.label} · ${m.kind === 'model' ? h.tris + ' tris · ' + h.calls + ' calls' : 'sprite'}`;
+        h.tag.textContent = `${c.label} · ${m.kind === 'model' ? h.tris + ' tris · ' + h.calls + ' calls' : 'sprite' + (m.shinyStyle ? ' \u00b7 halo' : '')}`;
       }
       window.__gallery = { cells: holders.map(h => ({ id: h.c.id, tris: h.tris, calls: h.calls, kind: h.model.kind, height: h.model.height, radius: h.model.radius })), totalTris };
     }

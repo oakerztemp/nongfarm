@@ -126,22 +126,55 @@ function randomYardPoint(rng) {
   return { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
 }
 
-/** Picks a wander target. Shy pets choose the sample farthest from everyone else. */
-function pickTarget(rng, ax, az, others, shy) {
+/**
+ * Picks a wander target by occupancy: several random yard points are scored by their distance to every other pet
+ * (and to where the others are heading: `tx`,`tz`), so the crowd spreads out instead of clumping in the middle.
+ * Shy pets only look at the distance; everyone else adds a little randomness so paths do not look planned.
+ */
+export function pickTarget(rng, ax, az, others, shy) {
   let best = null, bestScore = -Infinity;
-  const tries = shy ? 7 : 4;
+  const tries = shy ? 8 : 7;
   for (let i = 0; i < tries; i++) {
     const c = randomYardPoint(rng);
     if (!validTarget(c.x, c.z, ax, az)) continue;
-    if (!shy) return c;
-    const nearest = others.length ? Math.min(...others.map(o => dist(c.x, c.z, o.x, o.z))) : 9;
-    if (nearest > bestScore) { bestScore = nearest; best = c; }
+    let nearest = 9;
+    for (const o of others) {
+      let d = dist(c.x, c.z, o.x, o.z);
+      if (Number.isFinite(o.tx) && Number.isFinite(o.tz)) d = Math.min(d, dist(c.x, c.z, o.tx, o.tz));
+      if (d < nearest) nearest = d;
+    }
+    const score = Math.min(nearest, 3) + (shy ? 0 : rng() * 0.6);
+    if (score > bestScore) { bestScore = score; best = c; }
   }
   if (best) return best;
   // fallback: a guaranteed-valid point on the opposite side of the yard
   const away = clampToYard(-ax * 0.8 + 0.4, -az * 0.8 + 0.4);
   return validTarget(away.x, away.z, ax, az) ? away : { x: 1.2, z: -0.4 };
 }
+
+// Signature idle moves (CONTRACT_V5): legendary pets get the full version, epic pets a smaller one.
+export const SIGNATURE = {
+  dragon: 'flyCircle', unicorn: 'gallop', eagle: 'soar', humpback: 'breach', lion: 'roar',
+  panda: 'munch', polarbear: 'snowPuff', beetle: 'shimmer', racehorse: 'sprint',
+};
+const EPIC_SIGNATURE = {
+  dragonhead: 'flyCircle', mammoth: 'roar', tiger: 'roar', gorilla: 'roar', shark: 'breach', dolphin: 'breach',
+  peacock: 'shimmer', flamingo: 'shimmer', leopard: 'sprint', poodle: 'flourish', turkey: 'flourish',
+  spider: 'shimmer', scorpion: 'flourish', rhino: 'sprint', yak: 'snowPuff', arcticwolf: 'snowPuff',
+};
+export const SIGNATURE_TYPES = new Set(['flyCircle', 'gallop', 'soar', 'breach', 'roar', 'munch', 'snowPuff', 'shimmer', 'sprint', 'flourish']);
+
+/** { type, tier:'legendary'|'epic' } for rare species, null for everyone else. */
+export function signatureFor(speciesId) {
+  const sp = getSpecies(speciesId);
+  if (!sp) return null;
+  if (sp.rarity === 'legendary') return { type: SIGNATURE[speciesId] || 'flourish', tier: 'legendary' };
+  if (sp.rarity === 'epic') return { type: EPIC_SIGNATURE[speciesId] || 'flourish', tier: 'epic' };
+  return null;
+}
+
+/** Share of awake pets that may nap at the same time (keeps the yard from being full of 💤). */
+export const NAP_CAP = 0.25;
 
 const pause = (rng, mult, lo = 3, hi = 8) => (lo + rng() * (hi - lo)) * mult;
 
@@ -151,8 +184,11 @@ const pause = (rng, mult, lo = 3, hi = 8) => (lo + rng() * (hi - lo)) * mult;
  *   actorState  { x, z, others:[{id,x,z}], last:'wander'|'idle'|... }   (positions are cosmetic, may be missing)
  *   rng         () => [0,1)
  *   now         ms (reserved for time-of-day flavour; not needed today)
- * Returns { type, duration, target?, speed?, reason?, otherId?, nap? } where type is one of
+ * Returns { type, duration, target?, speed?, reason?, otherId?, nap?, small? } where type is one of
  *   wander | idle | sleep | eat | poop | sick | lookAtCamera | hop | approach
+ * or (legendary / epic species only, chosen occasionally) a signature move: flyCircle | gallop | soar | breach |
+ * roar | munch | snowPuff | shimmer | sprint | flourish.
+ * actorState may also carry napRatio (share of awake pets already napping) and others[].tx/tz (their targets).
  * and every `target` is a finite point inside the walkable yard. `eat` and `poop` are never chosen here:
  * barn3d plays them as reactions (feedPet result / a poop appearing).
  */
@@ -216,18 +252,25 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
     hop: (pers.hop + (happy >= 80 ? 1.6 : 0)) * (sad ? 0 : 1) * (last === 'hop' ? 0.2 : 1),
     nap: (pers.nap + (energy < 30 ? 1.5 : 0)) * (energy >= 95 ? 0.15 : 1) * (last === 'sleep' ? 0.2 : 1),
     approach: others.length && !sad ? pers.approach : 0,
+    signature: 0,
   };
+  // staggered naps: when a quarter of the awake pets already nap, nobody starts another one
+  if ((Number(actorState.napRatio) || 0) >= NAP_CAP) w.nap = 0;
+  const sig = signatureFor(pet && pet.speciesId);
+  if (sig && !sad && !SIGNATURE_TYPES.has(last)) w.signature = sig.tier === 'legendary' ? 0.75 : 0.35;
   const choice = weightedPick(Object.entries(w), rng);
 
   switch (choice) {
     case 'wander':
       return { type: 'wander', target: pickTarget(rng, ax, az, others, pet && pet.personality === 'shy'), speed: pace, duration: 0 };
+    case 'signature':
+      return { type: sig.type, duration: DEFAULT_DUR[sig.type], small: sig.tier === 'epic', tier: sig.tier };
     case 'lookAtCamera':
       return { type: 'lookAtCamera', duration: 2 + rng() * 2.5 };
     case 'hop':
       return { type: 'hop', duration: 1.6, hops: 2 + Math.floor(rng() * 3) };
     case 'nap':
-      return { type: 'sleep', nap: true, duration: 8 + rng() * 10 };
+      return { type: 'sleep', nap: true, duration: 6 + rng() * 6 };
     case 'approach': {
       const o = others[Math.floor(rng() * others.length)];
       const ang = rng() * Math.PI * 2;
@@ -245,7 +288,10 @@ export const WALK_BASE = 1.25;   // world units / second at pace 1
 export const TURN_RATE = 9;      // heading smoothing (1/s)
 const WALKS = new Set(['wander', 'approach', 'walkTo']);
 /** Fallback durations (s) for timed actions that do not carry one. */
-export const DEFAULT_DUR = { idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3 };
+export const DEFAULT_DUR = {
+  idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3,
+  flyCircle: 9, soar: 8, gallop: 6, sprint: 5, breach: 2.2, roar: 2.6, munch: 5, snowPuff: 3, shimmer: 2.4, flourish: 1.4,
+};
 
 /** Shortest signed angle from a to b. */
 export function angDiff(a, b) {
@@ -293,4 +339,43 @@ export function advanceActor(A, dt, decide) {
     return { moving: false, decided: true };
   }
   return { moving: false, decided: false };
+}
+
+/** Which hatch ceremony a freshly hatched pet gets (decided from the real hatchReady() result). */
+export function ceremonyKind(pet) {
+  const sp = pet && getSpecies(pet.speciesId);
+  return sp && sp.rarity === 'legendary' ? 'legendary' : 'common';
+}
+
+// ── Animated model parts (critters kit): wingL/wingR, tail, tailTip, trunk, mane. Every part is optional. ─────
+const rot = o => (o && o.rotation && Number.isFinite(o.rotation.x) ? { x: o.rotation.x, y: o.rotation.y, z: o.rotation.z } : null);
+
+/** Remembers the resting rotation of the optional parts so animations are offsets from it. */
+export function partBases(parts) {
+  const p = parts || {};
+  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane) };
+}
+
+/**
+ * Applies pose offsets (P.wing flap, P.tail / P.tailTip swish, P.trunk swing, P.mane shake) to whatever parts a
+ * model has. Missing parts (billboards, other species) are simply skipped.
+ */
+export function applyPartPose(parts, base, P) {
+  if (!parts || !base || !P) return;
+  const set = (name, axis, value) => {
+    const part = parts[name], b = base[name];
+    if (part && part.rotation && b && Number.isFinite(value)) part.rotation[axis] = b[axis] + value;
+  };
+  const w = P.wing || 0;
+  set('wingL', 'z', w);
+  set('wingR', 'z', -w);
+  set('tail', 'y', P.tail || 0);
+  set('tailTip', 'y', P.tailTip || 0);
+  set('trunk', 'x', P.trunk || 0);
+  set('mane', 'z', P.mane || 0);
+}
+
+/** A new hatch ceremony may start unless another one is still before its burst (egg still in the nest). */
+export function canStartCeremony(h) {
+  return !h || h.phase === 'burst';
 }

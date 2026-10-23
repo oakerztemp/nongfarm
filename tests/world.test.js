@@ -368,3 +368,227 @@ test('world: shadows are one instanced draw call, tier + stats exposed', async (
     host.remove();
   }
 });
+
+// ---------------------------------------------------------------- V5 fx primitives (aura, particles, trail, beam, dim, shake, halo)
+
+test('fx v5: pure helpers (caps, policy, envelopes, ramps)', () => {
+  assertEq([fx.particleCapForTier('high'), fx.particleCapForTier('medium'), fx.particleCapForTier('low')], [300, 180, 0]);
+  assertEq([fx.particleRateScale('high'), fx.particleRateScale('low')], [1, 0]);
+  const low = fx.fxPolicy('low', false);
+  assert(!low.particles && !low.trails && !low.runeRing, 'low tier: no particles / trails / rune ring');
+  const reduced = fx.fxPolicy('high', true);
+  assert(!reduced.shake && !reduced.trails && !reduced.runeSpin && !reduced.pulse, 'reduced motion: calm');
+  const high = fx.fxPolicy('high', false);
+  assert(high.particles && high.trails && high.shake && high.runeRing, 'high tier: everything on');
+  for (const kind of ['motes', 'embers', 'stars', 'petals']) {
+    for (let u = 0; u <= 1.0001; u += 0.05) {
+      const e = fx.particleEnvelope(kind, u);
+      assert(e >= 0 && e <= 1.0001, `${kind} envelope out of range at ${u}: ${e}`);
+    }
+    assert(fx.particleEnvelope(kind, 1) < 1e-9, `${kind} fades out fully`);
+  }
+  assertEq(fx.colorRamp([[1, 0, 0], [0, 0, 1]], 0.5), [0.5, 0, 0.5]);
+  assertEq(fx.colorRamp([[1, 0, 0], [0, 0, 1]], 5), [0, 0, 1]);
+  assertEq(fx.colorRamp([[0.2, 0.2, 0.2]], 0.5), [0.2, 0.2, 0.2]);
+  assertEq(fx.trailHalfWidth(0, 10, 1), 0.5);
+  assertEq(fx.trailHalfWidth(9, 10, 1), 0, 'tail tapers to a point');
+  assertEq(fx.dimEnvelope(0, 0.3, 1, 0.5), 0);
+  assertEq(fx.dimEnvelope(0.8, 0.3, 1, 0.5), 1);
+  const mid = fx.dimEnvelope(1.6, 0.3, 1, 0.5);
+  assert(mid > 0 && mid < 1, 'easing out');
+  assertEq(fx.dimEnvelope(5, 0.3, 1, 0.5), 0, 'restored at the end');
+  assertEq(fx.shakeAmplitude(0, 1, 0.2), 0.2);
+  assertEq(fx.shakeAmplitude(1, 1, 0.2), 0);
+});
+
+async function withWorld(opts, fn) {
+  const host = document.createElement('div');
+  host.style.cssText = 'width:360px;height:420px;position:fixed;left:0;top:0;';
+  document.body.appendChild(host);
+  const world = engine.createWorld(host, {}, opts);
+  try { await fn(world, host); } finally { world.dispose(); host.remove(); fx.setReducedMotionOverride(null); }
+}
+function addPets(world, n, meshesEach = 6) {
+  const { THREE } = world;
+  const geo = new THREE.SphereGeometry(0.2, 6, 4);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x88aa88 });
+  for (let i = 0; i < n; i++) {
+    const g = new THREE.Group();
+    for (let k = 0; k < meshesEach; k++) { const m = new THREE.Mesh(geo, mat); m.position.y = 0.2 + k * 0.05; g.add(m); }
+    const a = (i / n) * Math.PI * 2;
+    g.position.set(Math.sin(a) * 3, 0, Math.cos(a) * 3);
+    world.addActor(`p${i}`, g, { radius: 0.4, height: 0.8 });
+  }
+  return () => { geo.dispose(); mat.dispose(); };
+}
+async function frames(world, n) {
+  let c = 0;
+  const off = world.onFrame(() => { c++; });
+  world.boost(4000);
+  for (let i = 0; i < 100 && c < n; i++) await wait(30);
+  off();
+  return c;
+}
+const hasGL = () => engine.detectWebGL({ allowSoftware: true });
+
+test('fx v5: 20 pets with 9 legendary stay within the draw-call budget; auras cost 2 calls in total', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto' }, async world => {
+    const free = addPets(world, 20);
+    await frames(world, 3);
+    world.renderer.render(world.scene, world.camera);
+    const base = world.renderer.info.render.calls;
+    for (let i = 0; i < 9; i++) {
+      assert(fx.aura(world, `p${i}`, { color: 0x9b6bff }).active, 'aura handle');
+      fx.particles(world, `p${i}`, { kind: i % 2 ? 'motes' : 'embers', rate: 30 });
+    }
+    for (let i = 0; i < 6; i++) fx.trail(world, `p${i}`);
+    for (let i = 9; i < 12; i++) { fx.glowHalo(world, `p${i}`); fx.twinkle(world, `p${i}`); }
+    await frames(world, 30);
+    world.renderer.render(world.scene, world.camera);
+    const withFx = world.renderer.info.render.calls;
+    const st = fx.fxStats(world);
+    assertEq([st.auras, st.halos], [9, 3]);
+    assert(st.trails <= fx.MAX_TRAILS, `trails capped at ${fx.MAX_TRAILS}, got ${st.trails}`);
+    assert(st.particles <= fx.particleCapForTier(world.tier), `particle pool over cap: ${st.particles}`);
+    assert(withFx - base <= fx.fxDrawCalls(world) + 1, `fx cost ${withFx - base} calls but fxDrawCalls says ${fx.fxDrawCalls(world)}`);
+    assert(fx.fxDrawCalls(world) <= 2 + 1 + fx.MAX_TRAILS + 3, 'auras must not scale draw calls');
+    assert(withFx <= 200, `draw calls ${withFx} over the 200 budget`);
+    free();
+  });
+});
+
+test('fx v5: particle pool is capped, handles end with the actor, remove() stops emission', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto' }, async world => {
+    const free = addPets(world, 12);
+    const handles = [];
+    for (let i = 0; i < 12; i++) handles.push(fx.particles(world, `p${i}`, { kind: 'motes', rate: 400 }));
+    assertEq(fx.particles(world, 'p0', { kind: 'confetti' }).active, false, 'unknown kind -> noop handle');
+    assertEq(fx.particles(world, 'ghost', { kind: 'motes' }).active, false, 'unknown actor -> noop handle');
+    await frames(world, 20);
+    const cap = fx.particleCapForTier(world.tier);
+    assert(fx.fxStats(world).particles <= cap, `pool ${fx.fxStats(world).particles} > cap ${cap}`);
+    if (cap > 0) assert(fx.fxStats(world).particles > 0, 'emitters should have produced particles');
+    world.removeActor('p3');
+    handles[5].remove();
+    await frames(world, 3);
+    assertEq(handles[3].active, false, 'emitter ends when its actor is removed');
+    assertEq(handles[5].active, false);
+    assertEq(fx.fxStats(world).emitters, 10);
+    free();
+  });
+});
+
+test('fx v5: low tier is calm (no particles, no trails, flat aura only)', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'low' }, async world => {
+    assertEq(world.tier, 'low');
+    const free = addPets(world, 4);
+    fx.aura(world, 'p0');
+    fx.particles(world, 'p0', { kind: 'embers', rate: 100 });
+    assertEq(fx.trail(world, 'p0').active, false, 'no trails on low');
+    await frames(world, 10);
+    assertEq(fx.fxStats(world).particles, 0);
+    assertEq(fx.fxStats(world).trails, 0);
+    assertEq(fx.fxDrawCalls(world), 1, 'flat aura = 1 call');
+    free();
+  });
+});
+
+test('fx v5: reduced motion -> no trail, no shake; normal motion shakes then settles', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto' }, async world => {
+    const free = addPets(world, 2);
+    await frames(world, 3);
+    const base = world.camera.position.clone();
+    fx.setReducedMotionOverride(true);
+    assertEq(fx.trail(world, 'p0').active, false);
+    fx.shake(world, 300, 0.5);
+    await frames(world, 5);
+    assert(world.camera.position.distanceTo(base) < 1e-6, 'reduced motion must not shake the camera');
+    fx.setReducedMotionOverride(false);
+    fx.shake(world, 400, 0.5);
+    let moved = false;
+    const off = world.onFrame(() => { if (world.camera.position.distanceTo(base) > 0.01) moved = true; });
+    await frames(world, 8);
+    off();
+    assert(moved, 'shake should move the camera');
+    await wait(500);
+    await frames(world, 3);
+    assert(world.camera.position.distanceTo(base) < 1e-6, 'camera back to rest after the shake');
+    free();
+  });
+});
+
+test('fx v5: dimScene restores automatically; lightBeam and faded trail free their meshes', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto' }, async (world, host) => {
+    const free = addPets(world, 2);
+    const before = world.scene.children.length;
+    const base = world.lights.hemi.intensity;
+    fx.dimScene(world, 0.8, 100);
+    fx.lightBeam(world, { x: 0, y: 0, z: 0 }, { duration: 0.4 });
+    const tr = fx.trail(world, 'p0', { length: 6 });
+    await frames(world, 6);
+    assert(world.lights.hemi.intensity < base, 'scene should be dimmer');
+    assert(host.style.getPropertyValue('--world-dim') !== '', 'css dim overlay set');
+    assertEq(fx.fxStats(world).timed, 1, 'beam active');
+    tr.remove();
+    for (let i = 0; i < 60 && (fx.fxStats(world).timed || fx.fxStats(world).trails || world.lights.hemi.intensity < base - 1e-6); i++) await frames(world, 5);
+    assertEq(fx.fxStats(world).timed, 0, 'beam freed');
+    assertEq(fx.fxStats(world).trails, 0, 'faded trail freed');
+    assert(Math.abs(world.lights.hemi.intensity - base) < 1e-6, 'light restored');
+    assertEq(world.scene.children.length, before, 'beam + trail meshes removed from the scene');
+    free();
+  });
+});
+
+test('fx v5: dispose frees every effect mesh', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  const host = document.createElement('div');
+  host.style.cssText = 'width:300px;height:300px;position:fixed;left:0;top:0;';
+  document.body.appendChild(host);
+  const world = engine.createWorld(host, {}, { quality: 'auto' });
+  const free = addPets(world, 3);
+  const before = world.scene.children.length;
+  fx.aura(world, 'p0'); fx.particles(world, 'p0', { kind: 'stars' }); fx.trail(world, 'p0'); fx.glowHalo(world, 'p1');
+  fx.lightBeam(world, { x: 0, y: 0, z: 0 }); fx.dimScene(world, 0.5, 5000); fx.shake(world, 5000, 0.1);
+  await frames(world, 4);
+  assert(world.scene.children.length > before, 'effects should add scene objects');
+  const scene = world.scene;
+  world.dispose();
+  assertEq(fx.fxStats(world), { auras: 0, emitters: 0, particles: 0, trails: 0, halos: 0, timed: 0 });
+  assert(scene.children.length <= before - 3, 'effect meshes and actors must leave the scene on dispose');
+  free();
+  host.remove();
+});
+
+test('fx: sprite effect caps and confetti scale with the tier; a legendary-hatch burst stays inside the call budget', async () => {
+  assertEq([fx.effectCapForTier('high'), fx.effectCapForTier('medium'), fx.effectCapForTier('low')], [80, 48, 24]);
+  assertEq(fx.confettiCountForTier('low', 56), 16);
+  assertEq(fx.confettiCountForTier('medium', 56), 28);
+  assertEq(fx.confettiCountForTier('high', 56), 40);
+  assertEq(fx.confettiCountForTier('low'), 12);
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  for (const quality of ['low', 'auto']) {
+    await withWorld({ quality }, async world => {
+      const free = addPets(world, 23);
+      await frames(world, 3);
+      world.renderer.render(world.scene, world.camera);
+      const base = world.renderer.info.render.calls;
+      fx.confetti(world, { x: 0, y: 0, z: 0 }, 56);
+      fx.sparkleAt(world, { x: 0, y: 1, z: 0 });
+      fx.heart(world, { x: 0, y: 1, z: 0 });
+      fx.emojiPop(world, { x: 0, y: 1, z: 0 }, '🥚');
+      fx.flyEmoji(world, { x: 0, y: 3, z: 0 }, { x: 1, y: 1, z: 0 }, '✨');
+      await frames(world, 2);
+      world.renderer.render(world.scene, world.camera);
+      const extra = world.renderer.info.render.calls - base;
+      const cap = fx.effectCapForTier(world.tier);
+      assert(fx.activeCount(world) <= cap, `${world.tier}: ${fx.activeCount(world)} effects over cap ${cap}`);
+      assert(extra <= cap + 1, `${world.tier}: burst cost ${extra} draw calls, cap ${cap}`);
+      free();
+    });
+  }
+});

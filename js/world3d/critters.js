@@ -13,6 +13,7 @@
 import { MODEL_SPECS } from '../data/models.js';
 
 export const STAGE_SCALE = [0.7, 0.85, 1.0, 1.15];
+export const LEGENDARY_SCALE = 1.25;
 const EYE = '#2a2024';
 const NOSE = '#3a2a2e';
 const BLUSH = '#ff8fa3';
@@ -88,42 +89,44 @@ export function kitStats(T) {
   return { geometries: k.geo.size, materials: k.mat.size, textures: k.tex.size, templates: k.tpl.size };
 }
 
-// ── colour handling (shiny = hue rotate) ────────────────────────────────────
+// ── colour handling (shiny = curated per-species palette, else a gentle pastel shift) ──
 function hashStr(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
 
-function makePalette(T, shiny, seed) {
+/** curated: { '#from': '#to' } from the spec's shinyPalette. Unlisted colours stay as they are when a palette exists. */
+function makePalette(T, shiny, seed, curated) {
   if (!shiny) return hex => hex;
-  const deg = 130 + (hashStr(seed) % 70);
   const cs = T.SRGBColorSpace;
+  const deg = 28 + (hashStr(seed) % 28);                     // gentle fallback: 28..55 degrees, never more
   const cache = new Map();
   return hex => {
-    let out = cache.get(hex);
+    const key = String(hex).toLowerCase();
+    if (curated) return curated[key] || hex;
+    let out = cache.get(key);
     if (!out) {
-      const c = new T.Color(hex);
+      const c = new T.Color(key);
       const hsl = { h: 0, s: 0, l: 0 };
       c.getHSL(hsl, cs);
-      if (hsl.s < 0.3) { hsl.s = 0.5; hsl.l = Math.min(hsl.l, 0.78); }
       hsl.h = (hsl.h + deg / 360) % 1;
-      hsl.s = Math.min(1, hsl.s * 1.1);
+      hsl.s = Math.max(hsl.s * 0.95, 0.28);
+      hsl.l = hsl.l + (1 - hsl.l) * 0.16;                    // a touch lighter / sparklier
       c.setHSL(hsl.h, hsl.s, hsl.l, cs);
       out = '#' + c.getHexString(cs);
-      cache.set(hex, out);
+      cache.set(key, out);
     }
     return out;
   };
 }
 
 // ── emoji sprites / billboards ──────────────────────────────────────────────
-function emojiTexture(T, emoji, shiny) {
+function emojiTexture(T, emoji) {
   const k = kit(T);
-  const key = emoji + (shiny ? '|s' : '');
+  const key = emoji;
   let tex = k.tex.get(key);
   if (!tex) {
     const size = 128;
     const cv = document.createElement('canvas');
     cv.width = cv.height = size;
     const ctx = cv.getContext('2d');
-    if (shiny && 'filter' in ctx) ctx.filter = 'hue-rotate(150deg) saturate(1.5) brightness(1.08)';
     ctx.font = '96px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -134,12 +137,12 @@ function emojiTexture(T, emoji, shiny) {
   }
   return tex;
 }
-function spriteMat(T, emoji, shiny) {
+function spriteMat(T, emoji) {
   const k = kit(T);
-  const key = 's' + emoji + (shiny ? '|s' : '');
+  const key = 's' + emoji;
   let m = k.mat.get(key);
   if (!m) {
-    m = new T.SpriteMaterial({ map: emojiTexture(T, emoji, shiny), transparent: true, depthWrite: false });
+    m = new T.SpriteMaterial({ map: emojiTexture(T, emoji), transparent: true, depthWrite: false });
     k.mat.set(key, m);
   }
   return m;
@@ -147,33 +150,46 @@ function spriteMat(T, emoji, shiny) {
 
 function applyStage(T, m, stage) {
   const st = Math.max(0, Math.min(3, stage | 0));
-  const s = STAGE_SCALE[st];
+  const stageScale = STAGE_SCALE[st];
+  const s = stageScale * (m.legendary ? LEGENDARY_SCALE : 1);
   m.stage = st;
-  m.stageScale = s;
+  m.stageScale = stageScale;
+  m.scale = s;
   m.root.scale.setScalar(s);
   if (m.head && m.kind === 'model' && st === 0) m.head.scale.setScalar(1.1); // babies: bigger head
   if (st === 3) {
-    const crown = new T.Sprite(spriteMat(T, '\u{1F451}', false));
-    crown.scale.set(0.38, 0.38, 1);
+    const crown = new T.Sprite(spriteMat(T, '\u{1F451}'));
     crown.center.set(0.5, 0);
-    crown.position.set(0, m.baseHeight + 0.02, 0);
     crown.name = 'crown';
-    m.root.add(crown);
+    if (m.head && m.anchor) {
+      // rides on the head (follows nods / roars), just above the head-top anchor; compensate the head's own scale
+      const hs = m.head.scale.y || 1;
+      crown.scale.set(0.38 / hs, 0.38 / hs, 1);
+      crown.position.set(0, (m.anchor.position.y + 0.02 + (m.crownLift || 0)) / hs, 0);
+      m.head.add(crown);
+    } else {
+      crown.scale.set(0.38, 0.38, 1);
+      crown.position.set(0, m.baseHeight + 0.02, 0);                // billboards: centred above the sprite
+      m.root.add(crown);
+    }
     m.parts.crown = crown;
   }
-  m.height = (m.baseHeight + (st === 3 ? 0.36 : 0)) * s;
+  m.height = (st === 3 ? Math.max(m.baseHeight, (m.crownY ?? m.baseHeight) + 0.4) : m.baseHeight) * s;
   m.radius = m.baseRadius * s;
   return m;
 }
 
-/** Emoji on a camera-facing sprite; same return shape as buildPetModel. opts: { stage, shiny }. */
+/**
+ * Emoji on a camera-facing sprite; same return shape as buildPetModel. opts: { stage, shiny, rarity }.
+ * Never applies a colour filter: shiny billboards just report shinyStyle 'halo' (the scene adds glowHalo + twinkle).
+ */
 export function buildBillboard(T, emoji, opts = {}) {
   const root = new T.Group();
   root.name = 'billboard';
   const body = new T.Group();
   body.name = 'body';
   root.add(body);
-  const sprite = new T.Sprite(spriteMat(T, emoji || '❓', !!opts.shiny));
+  const sprite = new T.Sprite(spriteMat(T, emoji || '❓'));
   sprite.center.set(0.5, 0.04);
   sprite.scale.set(0.95, 0.95, 1);
   body.add(sprite);
@@ -181,7 +197,8 @@ export function buildBillboard(T, emoji, opts = {}) {
   anchor.position.set(0, 0.95, 0);
   body.add(anchor);
   const m = {
-    root, body, head: null, kind: 'billboard', shiny: !!opts.shiny, anchor, parts: {},
+    root, body, head: null, kind: 'billboard', shiny: !!opts.shiny, shinyStyle: opts.shiny ? 'halo' : null, anchor, parts: {},
+    rarity: opts.rarity || 'common', legendary: opts.rarity === 'legendary',
     baseHeight: 0.95, baseRadius: 0.4, height: 0.95, radius: 0.4, stage: 2, stageScale: 1,
   };
   return applyStage(T, m, opts.stage ?? 2);
@@ -198,19 +215,22 @@ export function buildPetModel(T, pet, species, opts = {}) {
   const shiny = !!(pet && pet.shiny);
   const id = (species && species.id) || (pet && pet.speciesId);
   const spec = id && hasModel(id) ? MODEL_SPECS[id] : null;
-  if (!spec) return buildBillboard(T, (species && species.emoji) || '❓', { stage, shiny });
+  const rarity = (species && species.rarity) || 'common';
+  if (!spec) return buildBillboard(T, (species && species.emoji) || '❓', { stage, shiny, rarity });
   const tpl = template(T, spec, shiny, id, opts.toonGradient || null);
   const root = tpl.root.clone(true); // Mesh.clone shares geometry + material: no new buffers
   const find = n => root.getObjectByName(n) || null;
   const eyes = find('eyes');
   const earL = find('earL'), earR = find('earR');
   const m = {
-    root, body: find('body'), head: find('head'), kind: 'model', shiny, anchor: find('anchor'),
+    root, body: find('body'), head: find('head'), kind: 'model', shiny, shinyStyle: shiny ? 'palette' : null, anchor: find('anchor'),
+    rarity, legendary: rarity === 'legendary',
     parts: {
       eyes: eyes ? [eyes] : [], ears: [earL, earR].filter(Boolean), earL, earR,
-      tail: find('tail'), wingL: find('wingL'), wingR: find('wingR'), crown: null,
+      tail: find('tail'), tailTip: find('tailTip'), wingL: find('wingL'), wingR: find('wingR'),
+      trunk: find('trunk'), mane: find('mane'), breath: find('breath'), crown: null,
     },
-    baseHeight: tpl.baseHeight, baseRadius: tpl.baseRadius, height: tpl.baseHeight, radius: tpl.baseRadius,
+    crownY: tpl.crownY, crownLift: tpl.crownLift, baseHeight: tpl.baseHeight, baseRadius: tpl.baseRadius, height: tpl.baseHeight, radius: tpl.baseRadius,
     stage: 2, stageScale: 1,
   };
   return applyStage(T, m, stage);
@@ -228,7 +248,7 @@ function template(T, spec, shiny, id, grad) {
 const TAU = Math.PI * 2;
 
 function assemble(T, spec, shiny, seed, grad) {
-  const pal = makePalette(T, shiny, seed);
+  const pal = makePalette(T, shiny, seed, spec.shinyPalette);
   const tm = hex => ({ hex: pal(hex) });   // body-like colour (shifted when shiny); baked into vertex colours
   const fm = hex => ({ hex });             // fixed colour
   const bm = hex => ({ hex });
@@ -384,8 +404,10 @@ function assemble(T, spec, shiny, seed, grad) {
         default: break;
       }
       headG.add(outer);
-      pivot.name = side > 0 ? 'earL' : 'earR';
-      pivot.userData.anim = true;
+      if (!Ea.static) { // static ears fold into the head mesh (saves a draw call each)
+        pivot.name = side > 0 ? 'earL' : 'earR';
+        pivot.userData.anim = true;
+      }
     }
   }
 
@@ -463,12 +485,19 @@ function assemble(T, spec, shiny, seed, grad) {
         for (let i = 0; i < n; i++) {
           const g = new T.Group();
           if (i > 0) { g.position.y = len; g.rotation.x = Ta.curve ?? 0.35; }
+          if (Ta.tip !== undefined && i === Ta.tip) { g.name = 'tailTip'; g.userData.anim = true; } // swings on its own
           parent.add(g);
-          const rr = r * (1 - i * 0.12);
-          put(g, 'cylT', mat, rr, len * 1.05, rr);
+          const rr = r * (1 - i * (Ta.taper ?? 0.12));
+          const col = Ta.colors ? tm(Ta.colors[i % Ta.colors.length]) : mat;
+          if (Ta.blob) put(g, 'sphL', col, rr * Ta.blob, len * 0.72, rr * Ta.blob * 0.8, 0, len * 0.5, 0);
+          else put(g, 'cylT', col, rr, len * 1.05, rr);
           parent = g;
         }
         if (Ta.tuft) put(parent, 'sphL', tm(Ta.tuft), r * 2.4, r * 3.2, r * 2.4, 0, len, 0);
+        if (Ta.flame) {
+          put(parent, 'cone', tm('#ff7a1a'), r * 1.9, r * 4.4, r * 1.9, 0, len * 0.9, 0);
+          put(parent, 'cone', tm('#ffd84a'), r * 1.1, r * 2.8, r * 1.1, 0, len * 0.9, 0);
+        }
         break;
       }
       case 'fluffy': {
@@ -517,7 +546,7 @@ function assemble(T, spec, shiny, seed, grad) {
         let parent = g;
         for (let i = 0; i < segs; i++) {
           const sg = new T.Group();
-          if (i > 0) { sg.position.y = s / segs; sg.rotation[o.axis || 'z'] = -side * (o.axis === 'x' ? -1 : 1) * (o.bend ?? 0.4); }
+          if (i > 0) { sg.position.y = s / segs; sg.rotation[o.axis || 'z'] = o.sym ? -(o.bend ?? 0.4) : -side * (o.axis === 'x' ? -1 : 1) * (o.bend ?? 0.4); }
           parent.add(sg);
           const k = 1 - i / segs * 0.75;
           put(sg, 'cone', mat, s * 0.3 * k * (o.thick ?? 1), s / segs * 1.15, s * 0.3 * k * (o.thick ?? 1));
@@ -527,12 +556,13 @@ function assemble(T, spec, shiny, seed, grad) {
     },
     mane(o) {
       const n = o.n ?? 5, s = o.s ?? 0.1, mat = tm(o.color || '#6b4a2e');
+      const band = i => (o.colors ? tm(o.colors[i % o.colors.length]) : mat);   // rainbow = colour bands
       const a = V3(0, hy + hry * 0.92, hz - hrz * 0.25), b = V3(0, by + B.h * 0.95, B.d * (o.endZ ?? -0.1));
       for (let i = 0; i < n; i++) {
         const p = a.clone().lerp(b, i / (n - 1));
-        put(bodyG, 'sphL', mat, s * 0.7, s * 1.05, s * 0.8, 0, p.y, p.z);
+        put(bodyG, o.lo ? 'sphP' : 'sphL', band(i), s * 0.7, s * 1.05, s * 0.8, 0, p.y, p.z);
       }
-      if (o.fore !== false) { const { p } = hs(0, 1.15, -s * 0.2); put(headG, 'sphL', mat, s * 0.7, s * 0.9, s * 0.75, 0, p.y + s * 0.2, p.z + s * 0.2); }
+      if (o.fore !== false) { const { p } = hs(0, 1.15, -s * 0.2); put(headG, 'sphL', band(n), s * 0.7, s * 0.9, s * 0.75, 0, p.y + s * 0.2, p.z + s * 0.2); }
     },
     spots(o) {
       const mat = tm(o.color || '#3a3238');
@@ -645,6 +675,117 @@ function assemble(T, spec, shiny, seed, grad) {
       const { p } = hs(0, 1.2, -s * 0.2);
       put(headG, 'sphL', tm(o.color || B.color), s * 0.6, s, s * 0.6, p.x, p.y + s * 0.3, p.z);
     },
+    // ── legendary kit ──
+    /** Spiral unicorn horn: stacked striped cones on the forehead. */
+    horn(o) {
+      const cols = o.colors || ['#fff1b8', '#ffd45a'];
+      const n = o.n ?? 6, s = hr * (o.s ?? 1.1), w = hr * (o.w ?? 0.16);
+      const { p, n: nn } = hs(0, o.el ?? 1.0, -hr * 0.05);
+      const g = new T.Group();
+      g.position.copy(p);
+      along(g, nn.clone().lerp(AX_Y, 0.25).add(V3(0, 0, o.fwd ?? 0.55)).normalize());
+      headG.add(g);
+      let parent = g;
+      for (let i = 0; i < n; i++) {
+        const sg = new T.Group();
+        if (i > 0) { sg.position.y = s / n * 0.92; sg.rotation.z = (i % 2 ? 1 : -1) * 0.05; }
+        parent.add(sg);
+        const k = 1 - i / n * 0.85;
+        put(sg, 'cone', tm(cols[i % cols.length]), w * k, s / n * 1.25, w * k);
+        parent = sg;
+      }
+    },
+    /** Bat wings: arm bone + 3 membrane fingers; one pivot per wing (parts.wingL/wingR) rotates to flap. */
+    batwings(o) {
+      const s = o.s ?? 0.5, bone = tm(o.bone || o.color), memb = tm(o.color);
+      for (const side of [1, -1]) {
+        const pivot = new T.Group();
+        pivot.position.set(side * B.w * (o.x ?? 0.7), by + B.h * (o.y ?? 0.62), B.d * (o.z ?? -0.05));
+        pivot.rotation.z = side * (o.rest ?? 0.45);
+        pivot.rotation.y = side * (o.sweep ?? 0.25);
+        pivot.name = side > 0 ? 'wingL' : 'wingR';
+        pivot.userData.anim = true;
+        bodyG.add(pivot);
+        const armDir = V3(side * 0.8, 0.5, -0.2).normalize();
+        const arm = put(pivot, 'cyl', bone, s * 0.05, s * 0.55, s * 0.05);
+        along(arm, armDir);
+        const wrist = armDir.clone().multiplyScalar(s * 0.55);
+        for (const [dx, dy, dz, len, wd] of [[0.95, 0.25, -0.25, 0.85, 0.3], [0.9, -0.15, -0.5, 0.8, 0.3], [0.6, -0.5, -0.65, 0.65, 0.26]]) {
+          const f = put(pivot, 'cone', memb, s * 0.035, s * len, s * wd, wrist.x, wrist.y, wrist.z);
+          along(f, V3(side * dx, dy, dz));
+        }
+      }
+    },
+    /** Trunk on a pivot (parts.trunk): rotate .x to swing. */
+    trunk(o) {
+      const n = o.n ?? 4, len = hr * (o.len ?? 1.5) / n, r0 = hr * (o.r ?? 0.24);
+      const { p } = hs(0, o.el ?? -0.25, -hr * 0.05);
+      const pivot = new T.Group();
+      pivot.name = 'trunk';
+      pivot.userData.anim = true;
+      pivot.position.copy(p);
+      pivot.rotation.x = Math.PI - (o.drop ?? 0.55);
+      headG.add(pivot);
+      let parent = pivot;
+      const mat = tm(o.color || headColor);
+      for (let i = 0; i < n; i++) {
+        const g = new T.Group();
+        if (i > 0) { g.position.y = len * 0.95; g.rotation.x = -(o.bend ?? 0.5); }
+        parent.add(g);
+        const r = r0 * (1 - i * 0.16);
+        put(g, 'cylT', mat, r, len * 1.08, r);
+        parent = g;
+      }
+      put(parent, 'sphL', mat, r0 * 0.6, r0 * 0.6, r0 * 0.6, 0, len * 0.98, 0);
+    },
+    /** Curved tusks (cream) from the muzzle sides. */
+    tusks(o) {
+      const s = hr * (o.s ?? 0.9), mat = tm(o.color || '#f7efd8'), segs = o.segs ?? 3;
+      for (const side of [-1, 1]) {
+        const { p } = hs(side * (o.az ?? 0.5), o.el ?? -0.3, -hr * 0.1);
+        const g = new T.Group();
+        g.position.copy(p);
+        along(g, V3(side * (o.out ?? 0.55), o.up ?? 0.1, 1));
+        headG.add(g);
+        let parent = g;
+        for (let i = 0; i < segs; i++) {
+          const sg = new T.Group();
+          if (i > 0) { sg.position.y = s / segs * 0.95; sg.rotation.x = -(o.bend ?? 0.5); }
+          parent.add(sg);
+          const k = 1 - i / segs * 0.7;
+          put(sg, 'cone', mat, s * 0.17 * k, s / segs * 1.2, s * 0.17 * k);
+          parent = sg;
+        }
+      }
+    },
+    /** Lion mane: rings of puffs behind the face on a pivot group (parts.mane). */
+    lionMane(o) {
+      const g = new T.Group();
+      g.name = 'mane';
+      g.userData.anim = true;
+      g.position.set(0, hry * (o.dy ?? -0.02), -hrz * (o.dz ?? 0.28));
+      headG.add(g);
+      const cols = o.colors || ['#9a5a26', '#c27a34'];
+      const rings = o.rings || [[10, 1.02, 0.5, 0], [8, 0.66, 0.46, -0.16]];
+      rings.forEach(([n, rad, size, dz], ri) => {
+        for (let i = 0; i < n; i++) {
+          const a = (i + (ri % 2) * 0.5) / n * Math.PI * 2;
+          put(g, 'sphP', tm(cols[ri % cols.length]), hr * size, hr * size, hr * size * 0.85, Math.cos(a) * hrx * rad, Math.sin(a) * hry * rad * 0.95, hrz * dz);
+        }
+      });
+    },
+    /** Spikes down the back / head crest. */
+    spikes(o) {
+      const n = o.n ?? 6, s = o.s ?? 0.1, cols = o.colors || [o.color || '#e8b04a'];
+      for (let i = 0; i < n; i++) {
+        const f = o.from + (o.to - o.from) * (n === 1 ? 0 : i / (n - 1));   // f in -1 (tail) .. 1 (head), as fraction of body length
+        const z = f * B.d * 0.9, y = by + B.h * Math.sqrt(Math.max(0, 1 - (z / B.d) ** 2));
+        const nn = V3(0, y - by, z / (B.d * B.d) * B.h * B.h).normalize();
+        const k = 1 - Math.abs(f) * 0.25;
+        const c = put(bodyG, 'cone', tm(cols[i % cols.length]), s * 0.55 * k, s * 1.4 * k, s * 0.4 * k, 0, y - s * 0.15, z);
+        along(c, nn.add(V3(0, 0, -0.35)));
+      }
+    },
   };
   for (const ex of spec.extras || []) {
     const fn = EX[ex.t];
@@ -698,6 +839,10 @@ function assemble(T, spec, shiny, seed, grad) {
     }
   })(root);
 
+  const breath = new T.Object3D();       // nostril / mouth point for flame + smoke puffs
+  breath.name = 'breath';
+  breath.position.set(0, hry * -0.2, hrz * (spec.snout && spec.snout.type === 'muzzle' ? 1.35 : 1.15));
+  headG.add(breath);
   const anchor = new T.Object3D();
   anchor.name = 'anchor';
   anchor.position.set(0, hry * 1.02, 0);
@@ -710,7 +855,7 @@ function assemble(T, spec, shiny, seed, grad) {
     while (bodyG.children.length) inner.add(bodyG.children[0]);
     bodyG.add(inner);
   }
-  return { root, baseHeight: size.y * S, baseRadius: Math.max(size.x, size.z) * 0.5 * S };
+  return { root, baseHeight: size.y * S, baseRadius: Math.max(size.x, size.z) * 0.5 * S, crownY: (hy + hry * 1.02) * S + (spec.crownLift || 0), crownLift: spec.crownLift || 0 };
 }
 
 function mixHex(a, b, t) {

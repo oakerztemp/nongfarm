@@ -421,10 +421,12 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     sun.position.set(-4, 9, 6);
     scene.add(hemi, sun, blobMesh);
     const darkMq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
+    let lightScale = 1;            // fx.dimScene tweens this (1 = normal, lower = dimmer scene)
+    const shakeOffset = { x: 0, y: 0, z: 0 }; // fx.shake jitters the camera by this much (world units)
     const applyMood = () => {
       const dark = !!(darkMq && darkMq.matches);
-      hemi.intensity = dark ? 1.35 : 1.9;
-      sun.intensity = dark ? 1.3 : 1.9;
+      hemi.intensity = (dark ? 1.35 : 1.9) * lightScale;
+      sun.intensity = (dark ? 1.3 : 1.9) * lightScale;
     };
     applyMood();
     if (darkMq && darkMq.addEventListener) darkMq.addEventListener('change', applyMood);
@@ -491,6 +493,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       const p = orbitPosition(view.yaw, view.pitch, baseDist * view.zoom, target);
       camera.position.set(p.x, p.y, p.z);
       camera.lookAt(target.x, target.y, target.z);
+      camera.position.x += shakeOffset.x; camera.position.y += shakeOffset.y; camera.position.z += shakeOffset.z;
     }
 
     function resize() {
@@ -801,6 +804,17 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         if (v.zoom != null) view.zoomT = clampZoom(v.zoom);
       },
       getView: () => ({ yaw: view.yawT, pitch: view.pitchT, zoom: view.zoomT }),
+      /** Scene dimming for ceremonies: k 0 (normal) .. 1 (very dark). Dims both lights and the CSS sky behind the canvas. */
+      setDim(k) {
+        const d = Math.min(1, Math.max(0, Number(k) || 0));
+        lightScale = 1 - 0.75 * d;
+        applyMood();
+        hostEl.style.setProperty('--world-dim', String(d * 0.6));
+      },
+      /** Camera jitter in world units (fx.shake drives this; 0,0,0 restores). */
+      setShakeOffset(x = 0, y = 0, z = 0) { shakeOffset.x = x; shakeOffset.y = y; shakeOffset.z = z; },
+      /** Lights, for fx that need to tint the scene. */
+      lights: { hemi, sun },
       pick, worldToScreen,
       getStats() {
         return {

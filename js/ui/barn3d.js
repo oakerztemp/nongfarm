@@ -7,7 +7,7 @@
 // ctx (from petsView.js): { run, esc, petSheetHtml(pet, state, mode), foodTrayHtml(state, pet, selectedId),
 //                           openDetails(petId), openEggPicker(), onFatal(err) }
 
-import { getState, subscribe } from '../state.js';
+import { getState, subscribe, update } from '../state.js';
 import { morph, now, notify, formatDuration } from '../util.js';
 import { getSpecies } from '../data/species.js';
 import { getEgg } from '../data/eggs.js';
@@ -16,7 +16,8 @@ import {
   getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop,
   hatchReady, foodEffect,
 } from '../pets.js';
-import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, beginAction, advanceActor, angDiff } from '../petBehaviour.js';
+import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, beginAction, advanceActor, angDiff,
+  signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony } from '../petBehaviour.js';
 import { createWorld } from '../world3d/engine.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
@@ -26,6 +27,20 @@ const HOLD_AFTER_TAP = 8;    // seconds a patted pet stays put even without the 
 const SELECT_HOLD = 1e9;     // while the bottom sheet is open
 const INITIAL_ZOOM = 0.56;
 const TAU = Math.PI * 2;
+
+// legendary aura colour per habitat (CONTRACT_V5)
+const HABITAT_AURA = {
+  mystic: '#b388ff', sky: '#ffd54f', water: '#4dd0e1', savanna: '#ffb300',
+  forest: '#66bb6a', polar: '#b3e5fc', bug: '#2ecc71', farm: '#ffca28',
+};
+const FLY_TYPES = new Set(['flyCircle', 'soar']);
+const RUN_TYPES = new Set(['gallop', 'sprint']);
+const TRAIL_TYPES = new Set(['flyCircle', 'gallop']);
+const smooth = u => { const x = Math.min(1, Math.max(0, u)); return x * x * (3 - 2 * x); };
+/** Optional fx primitive (aura, particles, trail, ...): a missing or failing one never breaks the barn. */
+const fxo = (name, ...args) => {
+  try { return typeof fx[name] === 'function' ? fx[name](...args) : null; } catch (err) { console.warn('fx.' + name + ' failed', err); return null; }
+};
 
 const ease = {
   outBack(u) { const x = Math.min(1, Math.max(0, u)); const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2; },
@@ -171,11 +186,15 @@ export function mountBarn3d(host, ctx) {
       hold: 0, curl: 0, phase: Math.random() * TAU, seed: (hashId(pet.id) % 1000) / 100, feeding: false,
       stage: pet.stage, poop: pet.poop || 0, bubble: null, bubbleEmoji: '', blinkAt: 1 + Math.random() * 4, blink: 0,
       spawn: null, pose: null, headBase: model.head ? model.head.rotation.clone() : null,
-      tailBase: model.parts && model.parts.tail ? model.parts.tail.rotation.clone() : null, pinned: false,
+      pinned: false,
+      deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, sparkleAt: 4 + Math.random() * 8,
     };
-    if (opts.spawn) A.spawn = { t: 0, dur: opts.spawn.dur || 0.7, arc: opts.spawn.arc ?? 0.5, from: opts.spawn.from || null };
+    A.partBase = partBases(model.parts);
+    if (opts.spawn) A.spawn = { t: 0, dur: opts.spawn.dur || 0.7, arc: opts.spawn.arc ?? 0.5, drop: opts.spawn.drop || 0, from: opts.spawn.from || null };
+    if (A.hidden) holder.visible = false;
     world.addActor(pet.id, holder, { radius: Math.max(0.35, model.radius), height: Math.max(0.5, model.height) });
     actors.set(pet.id, A);
+    if (!A.hidden) decorate(A);
     return A;
   }
 
@@ -185,10 +204,11 @@ export function mountBarn3d(host, ctx) {
     A.model = buildModel(pet);
     A.holder.add(A.model.root);
     A.headBase = A.model.head ? A.model.head.rotation.clone() : null;
-    A.tailBase = A.model.parts && A.model.parts.tail ? A.model.parts.tail.rotation.clone() : null;
     A.sig = modelSig(pet);
+    A.partBase = partBases(A.model.parts);
     world.addActor(A.id, A.holder, { radius: Math.max(0.35, A.model.radius), height: Math.max(0.5, A.model.height) });
     if (A.bubble) { const e = A.bubbleEmoji; A.bubble = null; A.bubbleEmoji = ''; setBubble(A, e); }
+    if (!A.hidden) decorate(A);
     if (grew) {
       A.spawn = { t: 0, dur: 0.6, arc: 0.35, from: null };
       fx.sparkle(world, A.id);
@@ -198,7 +218,38 @@ export function mountBarn3d(host, ctx) {
     A.stage = pet.stage;
   }
 
+  const lowTier = () => (world.tier || (world.getStats ? world.getStats().tier : '')) === 'low';
+  /** Legendary aura + particles, shiny billboard halo + twinkle (no colour filters). Tier `low` keeps it calm. */
+  function decorate(A) {
+    undecorate(A);
+    const sp = getSpecies(A.pet.speciesId);
+    const rar = sp && sp.rarity;
+    const low = lowTier();
+    if (rar === 'legendary') {
+      A.deco.push(fxo('aura', world, A.id, { color: HABITAT_AURA[sp.habitat] || '#ffd54f', intensity: 1 }));
+      if (!low) A.deco.push(fxo('particles', world, A.id, { kind: A.pet.speciesId === 'dragon' ? 'embers' : 'motes', rate: 5 }));
+    }
+    const billboard = A.model.kind === 'billboard' || A.model.shinyStyle === 'halo';
+    if (A.pet.shiny && billboard) {
+      A.deco.push(fxo('glowHalo', world, A.id, { color: '#ffe27a' }));
+      if (!low) A.deco.push(fxo('twinkle', world, A.id));
+    }
+  }
+
+  function undecorate(A) {
+    for (const h of A.deco) if (h && typeof h.remove === 'function') { try { h.remove(); } catch { /* gone */ } }
+    A.deco.length = 0;
+    stopTrail(A);
+  }
+
+  function stopTrail(A) {
+    if (A.trail && typeof A.trail.remove === 'function') { try { A.trail.remove(); } catch { /* gone */ } }
+    A.trail = null;
+  }
+
   function removeActorRec(A) {
+    undecorate(A);
+    dropTag(A.selTag); A.selTag = null;
     fx.clearBubble(world, A.id);
     world.removeActor(A.id);
     actors.delete(A.id);
@@ -227,8 +278,16 @@ export function mountBarn3d(host, ctx) {
   function decide(A) {
     if (A.hold > 0) { begin(A, { type: 'idle', dur: Math.min(1.5, A.hold), reason: 'hold' }); return; }
     const others = [];
-    for (const o of actors.values()) if (o !== A) others.push({ id: o.id, x: o.x, z: o.z });
-    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last }, Math.random, now());
+    let awake = 0, napping = 0;
+    for (const o of actors.values()) {
+      if (o.hidden) continue;
+      if (o.pet.status !== 'sleeping') { awake++; if (o !== A && o.act.type === 'sleep' && o.act.nap) napping++; }
+      if (o === A) continue;
+      const tg = (o.act.type === 'wander' || o.act.type === 'approach' || o.act.type === 'walkTo') ? o.act.target : null;
+      others.push({ id: o.id, x: o.x, z: o.z, tx: tg ? tg.x : undefined, tz: tg ? tg.z : undefined });
+    }
+    const napRatio = awake > 0 ? napping / awake : 0;
+    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio }, Math.random, now());
     if (act.type === 'approach') {
       const o = actors.get(act.otherId);
       if (o) act.target = clampToYard(o.x + (A.x - o.x) * 0.3, o.z + (A.z - o.z) * 0.3);
@@ -247,8 +306,9 @@ export function mountBarn3d(host, ctx) {
     const pet = A.pet;
     const P = A.pose || (A.pose = {});
     P.hop = 0; P.sy = 1; P.sx = 1; P.roll = 0; P.pitch = 0; P.yaw = 0; P.shake = 0;
-    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1;
+    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0;
     if (A.hold > 0 && A.hold < SELECT_HOLD / 2) A.hold = Math.max(0, A.hold - dt);
+    if (A.hidden) return P; // a newborn waiting for its hatch ceremony
 
     // pop-in (hatching, returning from work, growing up)
     if (A.spawn) {
@@ -256,7 +316,7 @@ export function mountBarn3d(host, ctx) {
       S.t += dt;
       const u = Math.min(1, S.t / S.dur);
       P.scale = Math.max(0.02, ease.outBack(u));
-      P.hop = Math.sin(u * Math.PI) * S.arc;
+      P.hop = S.drop ? S.drop * (1 - ease.outCubic(u)) : Math.sin(u * Math.PI) * S.arc;
       if (u >= 1) { A.spawn = null; if (A.onSpawned) { const f = A.onSpawned; A.onSpawned = null; f(A); } }
       A.curl = 0;
       return P;
@@ -265,7 +325,9 @@ export function mountBarn3d(host, ctx) {
     const act = A.act;
     const sleeping = pet.status === 'sleeping';
     const held = A.hold > 0 && act.type !== 'eat' && act.type !== 'no' && act.type !== 'hop' && act.type !== 'play' && act.type !== 'bathe';
-    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo')) begin(A, { type: 'idle', dur: 1 });
+    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type))) begin(A, { type: 'idle', dur: 1 });
+    if (!TRAIL_TYPES.has(A.act.type) && A.trail) stopTrail(A);
+    A.scripted = FLY_TYPES.has(A.act.type) || RUN_TYPES.has(A.act.type);
 
     let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) ? 1 : 0;
     if (!sleeping && pet.sick) curlTarget = 0;
@@ -274,6 +336,14 @@ export function mountBarn3d(host, ctx) {
 
     switch (A.act.type) {
       case 'wander': case 'approach': case 'walkTo': break;
+      case 'flyCircle': case 'soar': flightPose(A, P, t); break;
+      case 'gallop': case 'sprint': runPose(A, P, t, dt); break;
+      case 'breach': breachPose(A, P); break;
+      case 'roar': roarPose(A, P, t); break;
+      case 'munch': munchPose(A, P, t); break;
+      case 'snowPuff': snowPose(A, P, t); break;
+      case 'shimmer': shimmerPose(A, P, t); break;
+      case 'flourish': flourishPose(A, P); break;
       case 'idle': {
         const target = A.act.reason === 'hungry' ? Math.atan2(YARD.bowl.x - A.x, YARD.bowl.z - A.z) : A.heading;
         A.heading += angDiff(A.heading, target) * Math.min(1, dt * 4);
@@ -361,12 +431,152 @@ export function mountBarn3d(host, ctx) {
       P.roll = Math.sin(A.phase) * 0.07;
       P.tail = Math.sin(A.phase * 2) * 0.45;
     }
+    // part flavour (only has an effect on models that own the part)
+    P.tailTip = moving ? Math.sin(A.phase * 2.2) * 0.55 : Math.sin(t * 1.6 + A.seed) * 0.16;
+    if (A.act.type === 'idle' || A.act.type === 'lookAtCamera') P.trunk = Math.sin(t * 0.9 + A.seed) * 0.12;
     const c = A.curl;
     if (c > 0.001) {
       P.sy *= 1 - 0.34 * c; P.sx *= 1 + 0.1 * c; P.hPitch += 0.55 * c; P.roll += 0.1 * c; P.hop *= 1 - c;
     }
     if (pet.sick) { P.sy *= 0.96; }
     return P;
+  }
+
+  // ── signature moves (legendary full size, epic `small`) ────────────────
+  const at = (act, key, time) => { if (act.t >= time && !act[key]) { act[key] = 1; return true; } return false; };
+  const popAt = (A, emoji, dx = 0, dy = 0) => fxo('emojiPop', world, { x: A.x + dx, y: A.y + A.model.height * 0.8 + dy, z: A.z }, emoji);
+
+  /** Fire puff from the model's `breath` anchor (falls back to the head). Calm tiers skip it. */
+  function breathPuff(A) {
+    if (lowTier()) return;
+    const anchor = A.model.parts && A.model.parts.breath;
+    let pos = headPos(A);
+    if (anchor && typeof anchor.getWorldPosition === 'function') {
+      A.holder.updateMatrixWorld(true);
+      const v = anchor.getWorldPosition(new THREE.Vector3());
+      if (Number.isFinite(v.x + v.y + v.z)) pos = v;
+    }
+    fxo('emojiPop', world, pos, '🔥');
+    fxo('sparkleAt', world, pos);
+  }
+
+  /** dragon / eagle: take off, fly a slow circle above the yard, land. */
+  function flightPose(A, P, t) {
+    const act = A.act, soar = act.type === 'soar', k = act.small ? 0.5 : 1;
+    if (!act.init) {
+      const a0 = Math.hypot(A.x, A.z - 0.2) > 0.6 ? Math.atan2(A.z - 0.2, A.x) : Math.random() * TAU;
+      act.init = { x: A.x, z: A.z, a0, dir: Math.random() < 0.5 ? 1 : -1 };
+      if (!soar && !act.small && !lowTier() && !A.trail) {
+        A.trail = fxo('trail', world, A.id, { colors: ['#ff3d00', '#ff9100', '#ffd740'], width: 0.4, length: 26 });
+      }
+      if (!soar) breathPuff(A);
+    }
+    const I = act.init, up = 1.3, down = 1.5, T = act.dur;
+    const R = (soar ? 2.7 : 2.3) * k + 0.3, om = soar ? 0.55 : 0.85, H = (soar ? 2.3 : 1.7) * k;
+    const ang = I.a0 + I.dir * om * act.t;
+    const cx = Math.cos(ang) * R, cz = 0.2 + Math.sin(ang) * R;
+    const takeoff = smooth(act.t / up), land = smooth((T - act.t) / down), lift = Math.min(takeoff, land);
+    A.x = I.x + (cx - I.x) * takeoff; A.z = I.z + (cz - I.z) * takeoff;
+    const tx = -Math.sin(ang) * I.dir, tz = Math.cos(ang) * I.dir;
+    A.heading += angDiff(A.heading, Math.atan2(tx, tz)) * Math.min(1, 0.2);
+    P.hop = H * lift + Math.sin(t * 2.1) * 0.1 * lift;
+    P.pitch = 0.2 * lift; P.roll = -I.dir * 0.32 * lift;
+    P.wing = Math.sin(t * (soar ? 5 : 13)) * (soar ? 0.35 : 0.75) * lift;
+    P.tail = Math.sin(t * 5) * 0.4 * lift;
+  }
+
+  /** unicorn gallop loop with a rainbow trail + rear up, racehorse sprint lap. */
+  function runPose(A, P, t, dt) {
+    const act = A.act, sprint = act.type === 'sprint', k = act.small ? 0.7 : 1;
+    const R = sprint ? 2.5 : 2.0, speed = (sprint ? 5.4 : 3.6) * k, lead = 0.6;
+    if (!act.init) {
+      const a0 = Math.hypot(A.x, A.z - 0.3) > 0.6 ? Math.atan2(A.z - 0.3, A.x) : Math.random() * TAU;
+      act.init = { x: A.x, z: A.z, a0, dir: Math.random() < 0.5 ? 1 : -1 };
+      if (!sprint && !act.small && !lowTier() && !A.trail) {
+        A.trail = fxo('trail', world, A.id, { colors: ['#ff5252', '#ffb74d', '#fff176', '#81c784', '#64b5f6', '#ba68c8'], width: 0.45, length: 30 });
+      }
+    }
+    const I = act.init;
+    const runT = Math.max(1, Math.min((sprint ? 1.05 : 1.1) * TAU * R / speed, act.dur - lead - 1.2));
+    const tt = Math.min(act.t, lead + runT);
+    const ang = I.a0 + I.dir * (speed / R) * Math.max(0, tt);
+    const cx = Math.cos(ang) * R, cz = 0.3 + Math.sin(ang) * R;
+    const blend = smooth(tt / lead);
+    A.x = I.x + (cx - I.x) * blend; A.z = I.z + (cz - I.z) * blend;
+    if (act.t < lead + runT) {
+      A.heading += angDiff(A.heading, Math.atan2(-Math.sin(ang) * I.dir, Math.cos(ang) * I.dir)) * Math.min(1, dt * 10);
+      const b = Math.abs(Math.sin(act.t * 9));
+      P.hop = b * 0.15; P.sy = 0.95 + 0.1 * b; P.pitch = 0.1; P.roll = -I.dir * 0.08; P.tail = Math.sin(t * 20) * 0.5;
+      if (sprint && act.t > lead && Math.floor(act.t * 3) !== act.puff) { act.puff = Math.floor(act.t * 3); popAt(A, '💨', 0, -0.3); }
+    } else {
+      const u = (act.t - lead - runT) / Math.max(0.1, act.dur - lead - runT);
+      const rear = Math.sin(Math.min(1, u * 1.25) * Math.PI);
+      if (!sprint) { P.pitch = -0.8 * rear; P.hop = 0.22 * rear; if (at(act, 'rearPop', lead + runT + 0.1)) { popAt(A, '🌈', 0, 0.2); fxo('sparkle', world, A.id); } }
+      else { P.pitch = -0.15 * rear; P.sy = 1 - 0.05 * rear; if (at(act, 'stopPop', lead + runT + 0.05)) popAt(A, '💨', 0, -0.2); }
+    }
+  }
+
+  /** humpback: breach with a splash. */
+  function breachPose(A, P) {
+    const act = A.act, k = act.small ? 0.5 : 1;
+    const u = Math.min(1, Math.max(0, (act.t - 0.3) / 1.4));
+    if (act.t < 0.3) { P.sy = 0.88; P.sx = 1.08; return; }
+    P.hop = Math.sin(u * Math.PI) * 1.7 * k;
+    P.pitch = -0.7 + 1.4 * u;
+    P.sy = 1 + 0.12 * Math.sin(u * Math.PI);
+    if (at(act, 'splash1', 0.35)) popAt(A, '💦', 0, -0.2);
+    if (at(act, 'splash2', 1.7)) { popAt(A, '💦', 0.3, -0.2); popAt(A, '🌊', -0.3, -0.1); }
+  }
+
+  /** lion & co: head up, roar bubble, a tiny shake. */
+  function roarPose(A, P, t) {
+    const act = A.act, k = act.small ? 0.6 : 1;
+    const r = smooth(act.t / 0.4) * smooth((act.dur - act.t) / 0.4);
+    A.heading += angDiff(A.heading, Math.atan2(camPos.x - A.x, camPos.z - A.z)) * 0.1;
+    P.hPitch = -0.55 * r * k; P.pitch = -0.12 * r * k; P.sy = 1 + 0.05 * r;
+    P.shake = Math.sin(t * 46) * 0.02 * r * k;
+    const pr = A.model.parts || {};
+    if (pr.mane) P.mane = Math.sin(t * 38) * 0.14 * r;        // lion: mane shake
+    if (pr.trunk) P.trunk = -0.75 * r;                         // mammoth: trunk raised
+    if (at(act, 'bub', 0.45)) { popAt(A, pr.trunk ? '🎺' : '🗯️', 0, 0.3); if (!act.small) fxo('sparkle', world, A.id); }
+  }
+
+  /** panda: sits and munches bamboo. */
+  function munchPose(A, P, t) {
+    const act = A.act;
+    const sit = smooth(act.t / 0.5) * smooth((act.dur - act.t) / 0.5);
+    P.sy = 1 - 0.2 * sit; P.sx = 1 + 0.08 * sit; P.pitch = -0.2 * sit;
+    P.hPitch = (0.25 + Math.sin(t * 12) * 0.1) * sit;
+    if (at(act, 'b1', 0.3)) popAt(A, '🎋', 0.2, 0);
+    if (at(act, 'b2', 2.6)) popAt(A, '🎋', -0.2, 0);
+  }
+
+  /** polar bear: shakes a puff of snow. */
+  function snowPose(A, P, t) {
+    const act = A.act;
+    const s = smooth(act.t / 0.3) * smooth((act.dur - act.t) / 0.3);
+    P.roll = Math.sin(t * 18) * 0.12 * s; P.hop = Math.max(0, Math.sin(t * 9)) * 0.08 * s;
+    if (at(act, 's1', 0.3)) popAt(A, '🌨️', 0, 0.2);
+    if (at(act, 's2', 1.0)) popAt(A, '❄️', 0.4, 0);
+    if (at(act, 's3', 1.7)) popAt(A, '❄️', -0.4, 0.1);
+  }
+
+  /** beetle / peacock: shimmering wing flick. */
+  function shimmerPose(A, P, t) {
+    const act = A.act;
+    const f = act.t > 0.3 && act.t < 1.7 ? 1 : 0;
+    P.wing = Math.sin(t * 30) * 0.9 * f;
+    P.sy = 1 + 0.06 * Math.sin(t * 20) * f; P.sx = 1 + 0.06 * Math.sin(t * 20) * f;
+    if (at(act, 'sp1', 0.4)) fxo('sparkle', world, A.id);
+    if (at(act, 'sp2', 1.2)) { fxo('sparkle', world, A.id); popAt(A, '✨', 0, 0.1); }
+  }
+
+  /** generic epic flourish: a couple of hops and a sparkle. */
+  function flourishPose(A, P) {
+    const act = A.act;
+    const per = act.dur / 2, h = Math.sin(((act.t % per) / per) * Math.PI);
+    P.hop = h * 0.3; P.sy = 1 + 0.1 * h;
+    if (at(act, 'sp', 0.2)) fxo('sparkle', world, A.id);
   }
 
   function applyPose(A, t, dt) {
@@ -381,8 +591,7 @@ export function mountBarn3d(host, ctx) {
     m.body.rotation.set(P.pitch, P.yaw, P.roll);
     m.body.position.x = P.shake;
     if (m.head && A.headBase) m.head.rotation.set(A.headBase.x + P.hPitch, A.headBase.y + P.hYaw, A.headBase.z + P.hRoll);
-    const tail = m.parts && m.parts.tail;
-    if (tail && A.tailBase) tail.rotation.y = A.tailBase.y + P.tail;
+    applyPartPose(m.parts, A.partBase, P); // wings, tail, tailTip, trunk, mane (each optional)
     // blink / closed eyes
     const eyes = m.parts && m.parts.eyes;
     if (eyes && eyes.length) {
@@ -399,15 +608,20 @@ export function mountBarn3d(host, ctx) {
     const obstacles = world.obstacles || [];
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
+      if (a.hidden) continue;
       const ra = a.model.radius * 0.8;
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
-        const min = (ra + b.model.radius * 0.8);
+        if (b.hidden || a.scripted || b.scripted) continue; // flying / galloping pets pass over the crowd
+        const hard = (ra + b.model.radius * 0.8);
         const dx = b.x - a.x, dz = b.z - a.z;
         const d = Math.hypot(dx, dz);
+        // soft personal space (a gentle drift apart) on top of the hard minimum distance
+        const soft = hard * 1.35 + 0.15;
+        const min = d < hard ? hard : soft;
         if (d >= min) continue;
         const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
-        const push = (min - d);
+        const push = d < hard ? (hard - d) : (soft - d) * Math.min(1, dt * 1.6);
         const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0;
         const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0;
         if (aFixed && bFixed) continue;
@@ -456,6 +670,12 @@ export function mountBarn3d(host, ctx) {
     }
   }
 
+  // The ceremony owns its nest's egg only until the egg bursts; after that the next egg
+  // (shifted into this slot by hatchReady) must show up and be tappable right away.
+  function ceremonyOwnsNest(i) {
+    return !!hatching && hatching.nest === i && hatching.phase !== 'burst' && hatching.phase !== 'done';
+  }
+
   function syncNests(state) {
     const want = Math.max(1, Math.min(MAX_NESTS, Number(state.incubatorCapacity) || 1));
     if (want !== nestCount) buildNests(want);
@@ -463,7 +683,7 @@ export function mountBarn3d(host, ctx) {
     for (const n of nests) {
       const slot = state.incubator[n.i];
       const key = slot ? `${slot.eggId}` : '';
-      if (key !== n.eggKey && !(hatching && hatching.nest === n.i && hatching.phase !== 'done')) {
+      if (key !== n.eggKey && !ceremonyOwnsNest(n.i)) {
         if (n.egg) { n.group.remove(n.egg); n.egg = null; }
         if (slot) {
           const eggDef = getEgg(slot.eggId);
@@ -477,7 +697,7 @@ export function mountBarn3d(host, ctx) {
       }
       n.ready = !!slot && t >= slot.readyAt;
       n.slot = slot || null;
-      const wantBubble = n.ready && !(hatching && hatching.nest === n.i);
+      const wantBubble = n.ready && !ceremonyOwnsNest(n.i);
       if (wantBubble) fx.bubble(world, n.id, '🐣'); else fx.clearBubble(world, n.id);
     }
   }
@@ -488,7 +708,7 @@ export function mountBarn3d(host, ctx) {
       const el = labelEls.get(n.id);
       if (!el) continue;
       let text = '';
-      if (hatching && hatching.nest === n.i && hatching.phase !== 'done') text = '';
+      if (ceremonyOwnsNest(n.i)) text = '';
       else if (n.slot) text = t >= n.slot.readyAt ? '' : `⏳ ${formatDuration(n.slot.readyAt - t)}`;
       else text = '➕';
       if (el.textContent !== text) el.textContent = text;
@@ -507,7 +727,7 @@ export function mountBarn3d(host, ctx) {
     for (let i = tags.length - 1; i >= 0; i--) {
       const tg = tags[i];
       const A = actors.get(tg.petId);
-      if (!A || performance.now() > tg.until) { tg.el.remove(); tags.splice(i, 1); continue; }
+      if (!A || performance.now() > tg.until) { tg.el.remove(); tags.splice(i, 1); if (A && A.selTag === tg) A.selTag = null; continue; }
       const p = world.worldToScreen({ x: A.x, y: A.y + A.model.height + 0.95, z: A.z });
       tg.el.style.transform = `translate(${p.x.toFixed(0)}px, ${p.y.toFixed(0)}px) translate(-50%, -100%)`;
     }
@@ -517,7 +737,7 @@ export function mountBarn3d(host, ctx) {
     for (const n of nests) {
       const egg = n.egg;
       if (!egg) continue;
-      if (hatching && hatching.nest === n.i) continue; // the ceremony drives this egg
+      if (ceremonyOwnsNest(n.i)) continue; // the ceremony drives this egg
       if (n.ready) {
         const k = Math.sin(t * 9 + n.seed);
         egg.rotation.z = k * 0.22; egg.position.y = 0.45 + Math.max(0, Math.sin(t * 4.5 + n.seed)) * 0.07;
@@ -593,11 +813,11 @@ export function mountBarn3d(host, ctx) {
       let A = actors.get(pet.id);
       if (!A) {
         if (hatching && hatching.spawning && !hatching.petId) {
+          // the real hatchReady() result: the newborn exists now but stays hidden until the ceremony reveals it
           hatching.petId = pet.id;
           const n = nests[hatching.nest];
-          A = createActor(pet, { at: n ? { x: n.x, z: n.z + 0.5 } : null, spawn: { dur: 0.8, arc: 0.9 } });
+          A = createActor(pet, { at: n ? { x: n.x, z: n.z + 0.5 } : null, hidden: true });
           A.pinned = true;
-          A.onSpawned = ceremonyWalk;
         } else {
           const edge = synced ? clampToYard(-2.6, 3.0) : null;
           A = createActor(pet, synced ? { at: edge, spawn: { dur: 0.5, arc: 0.3 } } : {});
@@ -607,6 +827,7 @@ export function mountBarn3d(host, ctx) {
         rebuildModel(A, pet);
       }
       A.pet = pet;
+      if (A.hidden) continue;
       // a new poop while in the yard -> squat animation
       const np = pet.poop | 0;
       if (np > A.poop && synced && pet.status !== 'sleeping' && !A.spawn && A.hold <= 0 && !A.feeding) begin(A, { type: 'poop', dur: 1.1 });
@@ -735,6 +956,7 @@ export function mountBarn3d(host, ctx) {
     const A = actors.get(petId);
     if (!pet || !A) return;
     if (armedFood) { feedWith(petId, armedFood); return; }
+    if (hatching && hatching.petId === petId && hatching.phase === 'burst') { revealId = petId; hatching.revealShown = true; endHatch(); }
     const r = ctx.run(s => patPet(s, petId));
     if (r && r.ok) {
       fx.heart(world, headPos(A));
@@ -746,17 +968,24 @@ export function mountBarn3d(host, ctx) {
   }
 
   function selectPet(petId) {
-    if (selected && selected !== petId) { const o = actors.get(selected); if (o) o.hold = HOLD_AFTER_TAP; }
+    if (selected && selected !== petId) { const o = actors.get(selected); if (o) { o.hold = HOLD_AFTER_TAP; dropTag(o.selTag); o.selTag = null; } }
     if (selected !== petId) revealId = revealId === petId ? petId : null;
     selected = petId;
     sheetMode = 'main';
     const A = actors.get(petId);
-    if (A) A.hold = SELECT_HOLD;
+    if (A) {
+      A.hold = SELECT_HOLD;
+      const sp = getSpecies(A.pet.speciesId);
+      if (sp && sp.rarity === 'legendary' && !A.selTag) A.selTag = addTag(A, `✦ ตำนาน ${petName(A.pet)}`, 'is-legend', Infinity);
+    }
     refreshUi();
   }
 
   function closeSheet() {
-    if (selected) { const A = actors.get(selected); if (A) A.hold = 1.2; }
+    if (selected) {
+      const A = actors.get(selected);
+      if (A) { A.hold = 1.2; dropTag(A.selTag); A.selTag = null; }
+    }
     selected = null;
     revealId = null;
     sheetMode = 'main';
@@ -829,58 +1058,115 @@ export function mountBarn3d(host, ctx) {
   }
 
   // ── hatch ceremony ─────────────────────────────────────────────────────
+  /** Ends the ceremony (any path): releases the lock, frees the cloned glow material, unpins the newborn. */
+  function endHatch() {
+    const h = hatching;
+    hatching = null;
+    if (!h) return;
+    if (h.glow) { try { h.glow.dispose(); } catch { /* already disposed */ } h.glow = null; }
+    const baby = h.petId && actors.get(h.petId);
+    if (baby) { baby.pinned = false; if (baby.hidden) { baby.hidden = false; baby.holder.visible = true; decorate(baby); } }
+  }
+
+  /** The "ฟักออกมาเป็น..." toast is held back for the reveal; this shows it exactly once, whenever we must stop early. */
+  function announceHatch() {
+    const h = hatching;
+    if (!h || h.announced || !h.msg) return;
+    h.announced = true;
+    notify(h.msg, 'success');
+  }
+
   function startHatch(i) {
-    if (hatching) return;
+    if (!canStartCeremony(hatching)) return;
+    if (hatching) endHatch(); // the previous newborn is already out and walking: its ceremony is over
     const state = getState();
     const n = nests[i];
     if (!n || !n.egg) return;
     if (state.pets.length >= state.barnCapacity) { ctx.run(s => hatchReady(s, i)); return; } // shows "barn is full"
     if (selected) closeSheet();
-    hatching = { nest: i, t: 0, phase: 'wobble', spawning: false, petId: null, halves: null };
-    fx.clearBubble(world, n.id);
-    world.boost(4500);
+    // The real hatchReady() result decides everything (legendary or not). The newborn is created hidden by sync().
+    hatching = { nest: i, t: 0, phase: 'pending', spawning: true, petId: null, legendary: false, msg: '', pet: null, announced: false, revealShown: false };
+    let started = false;
+    try {
+      let r = null;
+      try { r = update(s => hatchReady(s, i)); } finally { hatching.spawning = false; }
+      if (!r || !r.ok || !r.pet) {
+        if (r) notify(r.reason || 'ฟักไม่สำเร็จ', 'warn');
+        const ghost = hatching.petId && actors.get(hatching.petId);
+        if (ghost) removeActorRec(ghost);
+        return;
+      }
+      hatching.pet = r.pet;
+      hatching.msg = r.msg || '';
+      hatching.legendary = ceremonyKind(r.pet) === 'legendary';
+      hatching.phase = hatching.legendary ? 'legend' : 'wobble';
+      fx.clearBubble(world, n.id);
+      world.boost(hatching.legendary ? 8000 : 4500);
+      if (hatching.legendary) {
+        fxo('dimScene', world, 0.55, 3600);
+        // glowing copy of the egg material (the shared one stays untouched; endHatch() disposes the copy)
+        const glow = n.egg.material.clone();
+        glow.emissive = new THREE.Color(0xffd24a);
+        glow.emissiveIntensity = 0;
+        hatching.glow = glow;
+        n.egg.material = glow;
+      }
+      started = true;
+    } finally {
+      if (!started) endHatch(); // whatever went wrong, the lock never stays behind
+    }
   }
 
-  function crack() {
-    const n = nests[hatching.nest];
-    hatching.phase = 'burst';
-    hatching.t = 0;
-    hatching.spawning = true;
-    const r = ctx.run(s => hatchReady(s, hatching.nest));
-    hatching.spawning = false;
-    if (!r || !r.ok || !r.pet) { // failed: put the egg back to rest
-      hatching = null;
-      return;
-    }
+  /** The egg bursts: shells fly, confetti, and the (already existing) newborn appears. */
+  function reveal() {
+    const h = hatching;
+    const n = nests[h.nest];
+    const legend = h.legendary;
+    h.phase = 'burst';
+    h.t = 0;
+    announceHatch();
     const base = { x: n.x, y: 0.5, z: n.z };
-    // egg halves fly apart
     const eggColor = n.egg ? n.egg.material : eggMat('#f6e7b0');
     if (n.egg) { n.group.remove(n.egg); n.egg = null; n.eggKey = ''; }
     const top = new THREE.Mesh(G.half, eggColor);
-    top.scale.set(0.85, 1.1, 0.85); top.position.set(n.x, 0.5, n.z);
+    top.scale.set(0.85, 1.1, 0.85); top.position.set(n.x, legend ? 1.8 : 0.5, n.z);
     const bottom = new THREE.Mesh(G.half, eggColor);
-    bottom.scale.set(0.85, -0.8, 0.85); bottom.position.set(n.x, 0.5, n.z);
+    bottom.scale.set(0.85, -0.8, 0.85); bottom.position.set(n.x, legend ? 1.8 : 0.5, n.z);
     top.userData.noPick = bottom.userData.noPick = true;
     world.scene.add(top, bottom);
-    temps.push({ mesh: top, vx: 0.5, vy: 3.2, vz: -0.4, spin: 5, t: 0, life: 1.4 });
-    temps.push({ mesh: bottom, vx: -0.15, vy: 0.2, vz: 0.1, spin: 0, t: 0, life: 1.6 });
-    fx.confetti(world, base, 28);
-    fx.sparkleAt(world, base);
-    if (r.pet.shiny) later(500, () => fx.sparkleAt(world, base));
+    temps.push({ mesh: top, vx: 0.9, vy: 3.2, vz: -0.4, spin: 5, t: 0, life: 1.4 });
+    temps.push({ mesh: bottom, vx: -0.4, vy: 1.2, vz: 0.3, spin: -3, t: 0, life: 1.6 });
+    const burst = legend ? { x: n.x, y: 1.8, z: n.z } : base;
+    fx.confetti(world, burst, legend ? 56 : 28);
+    fx.sparkleAt(world, burst);
+    if (legend) { later(250, () => fx.sparkleAt(world, burst)); later(550, () => fx.sparkleAt(world, base)); fxo('shake', world, 500, 0.35); }
+    else if (h.pet.shiny) later(500, () => fx.sparkleAt(world, base));
+    const A = h.petId && actors.get(h.petId);
+    if (!A) { endHatch(); return; }
+    A.hidden = false;
+    A.holder.visible = true;
+    A.spawn = legend ? { t: 0, dur: 1.8, arc: 0, drop: 2.4, from: null } : { t: 0, dur: 0.8, arc: 0.9, drop: 0, from: null };
+    A.onSpawned = ceremonyWalk;
+    decorate(A);
+    setBubble(A, '');
   }
 
   function ceremonyWalk(A) {
     A.pinned = false;
     const pet = A.pet;
+    const mine = hatching;
+    const legend = !!(mine && mine.legendary);
     const tx = Math.max(-1.6, Math.min(1.6, A.x * 0.5)), tz = 1.5;
     begin(A, {
       type: 'walkTo', target: { x: tx, z: tz }, speed: 1.1,
       onArrive: AA => {
         begin(AA, { type: 'hop', dur: 1.3, hops: 2 });
         AA.hold = 4.5;
-        showNameTag(AA, `🐣 ${petName(pet)}`);
+        if (!legend) addTag(AA, `🐣 ${petName(pet)}`, '', 4500); // legendary pets get the ✦ tag from selectPet()
         fx.heart(world, headPos(AA));
-        hatching = null;
+        if (legend) fxo('sparkle', world, AA.id);
+        if (mine) mine.revealShown = true;
+        if (hatching === mine) endHatch(); // (a newer ceremony may already own the lock)
         revealId = AA.id;     // same info as the list's reveal: rarity, personality, trait, shiny
         selectPet(AA.id);
       },
@@ -888,12 +1174,21 @@ export function mountBarn3d(host, ctx) {
     A.hold = 0;
   }
 
-  function showNameTag(A, text) {
+  function addTag(A, text, cls, ms) {
     const el = document.createElement('div');
-    el.className = 'b3-nametag';
+    el.className = 'b3-nametag' + (cls ? ' ' + cls : '');
     el.textContent = text;
     labelsEl.appendChild(el);
-    tags.push({ el, petId: A.id, until: performance.now() + 4500 });
+    const tag = { el, petId: A.id, until: performance.now() + ms };
+    tags.push(tag);
+    return tag;
+  }
+
+  function dropTag(tag) {
+    if (!tag) return;
+    tag.el.remove();
+    const i = tags.indexOf(tag);
+    if (i >= 0) tags.splice(i, 1);
   }
 
   function stepHatch(dt) {
@@ -901,7 +1196,7 @@ export function mountBarn3d(host, ctx) {
     const h = hatching;
     h.t += dt;
     const n = nests[h.nest];
-    if (!n) { hatching = null; return; }
+    if (!n) { endHatch(); return; }
     if (h.phase === 'wobble') {
       const u = Math.min(1, h.t / 1.4);
       if (n.egg) {
@@ -911,11 +1206,32 @@ export function mountBarn3d(host, ctx) {
         n.egg.scale.set(0.85 * s, 1.12 * s, 0.85 * s);
       }
       if (h.t > 0.5 && !h.pre) { h.pre = true; fx.emojiPop(world, { x: n.x, y: 0.9, z: n.z }, '❗'); }
-      if (h.t >= 1.4) crack();
+      if (h.t >= 1.4) reveal();
+    } else if (h.phase === 'legend') {
+      // dim the scene, the egg glows and rises, light beam + shake, then the burst
+      const T = 2.6;
+      const u = Math.min(1, h.t / T);
+      if (n.egg) {
+        const e = smooth(u);
+        n.egg.position.y = 0.45 + 1.35 * e + Math.sin(h.t * 3) * 0.04;
+        n.egg.rotation.z = Math.sin(h.t * (8 + u * 24)) * (0.1 + u * 0.3);
+        n.egg.rotation.y = h.t * (1 + u * 6);
+        const s = 1 + 0.25 * e + Math.sin(h.t * 26) * 0.03 * u;
+        n.egg.scale.set(0.85 * s, 1.12 * s, 0.85 * s);
+        if (h.glow) h.glow.emissiveIntensity = 0.2 + 1.3 * e;
+      }
+      if (h.t > 0.2 && !h.p1) { h.p1 = true; fx.emojiPop(world, { x: n.x, y: 1.1, z: n.z }, '✨'); }
+      if (h.t > 1.5 && !h.p2) {
+        h.p2 = true;
+        fxo('lightBeam', world, { x: n.x, y: 0, z: n.z }, { color: '#fff0a0', duration: 1.8 });
+        fxo('shake', world, 900, 0.5);
+      }
+      if (h.t >= T) reveal();
     } else if (h.phase === 'burst') {
+      if (h.glow) { try { h.glow.dispose(); } catch { /* ignore */ } h.glow = null; }
       // safety net: the newborn was tapped / removed before its walk finished
       const baby = h.petId && actors.get(h.petId);
-      if (h.t > 12 || (h.t > 1.5 && !baby)) { if (baby) baby.pinned = false; hatching = null; }
+      if (h.t > 14 || (h.t > 1.5 && !baby)) endHatch();
     }
   }
 
@@ -1012,6 +1328,21 @@ export function mountBarn3d(host, ctx) {
       const s = rec.group.scale.x;
       if (s < 1) rec.group.scale.setScalar(Math.min(1, s + dt * 4));
     }
+    for (const A of actors.values()) {
+      if (A.hidden) continue;
+      A.puffAt -= dt;
+      if (A.puffAt < 0) {
+        A.puffAt = 10 + Math.random() * 8;
+        if ((A.pet.speciesId === 'dragon' || A.pet.speciesId === 'dragonhead') && A.act.type === 'idle' && !A.spawn) breathPuff(A);
+      }
+      A.sparkleAt -= dt;
+      if (A.sparkleAt < 0) {
+        A.sparkleAt = 7 + Math.random() * 9;
+        const sp = getSpecies(A.pet.speciesId);
+        const epic = sp && sp.rarity === 'epic';
+        if ((A.pet.shiny || epic) && A.pet.status !== 'sleeping' && !lowTier()) fxo('sparkle', world, A.id);
+      }
+    }
     animateNests(t, dt);
     stepHatch(dt);
     stepTemps(dt);
@@ -1044,11 +1375,17 @@ export function mountBarn3d(host, ctx) {
       // Called from a MutationObserver in petsView (our own DOM updates trigger it): must be idempotent.
       if (disposed || on === isOn) return;
       isOn = !!on;
+      if (!isOn) announceHatch(); // the world pauses: do not keep the player waiting for the toast
       world.setActive(isOn);
       if (isOn) sync(getState());
     },
     dispose() {
       if (disposed) return;
+      if (hatching) { // toggled to the list / left mid-ceremony: never lose the news
+        announceHatch();
+        if (hatching.pet && !hatching.revealShown && ctx.revealHatch) ctx.revealHatch(hatching.pet);
+        endHatch();
+      }
       disposed = true;
       unsub();
       unFrame();

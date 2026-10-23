@@ -378,14 +378,14 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
       ${mode === 'feed' ? '<button type="button" class="btn btn-sm btn-ghost" data-b3="back" aria-label="กลับ">‹</button>' : ''}
       <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
       <div class="b3-sheet-title"><b>${e(petName(pet))}</b>
-        <small>${sp ? e(sp.nameTh) : ''} · ${st.icon} ${st.nameTh}${pet.shiny ? ' · ✨' : ''}</small></div>
+        <small>${sp ? e(sp.nameTh) : ''} · ${st.icon} ${st.nameTh}${pet.shiny ? ' · ✨' : ''}${sp && sp.rarity === 'legendary' ? ' · ✦ ตำนาน' : ''}</small></div>
       <button type="button" class="b3-sheet-close" data-b3="close" aria-label="ปิด">✕</button></div>`;
   if (mode === 'feed') {
     return `${head}<div class="b3-sheet-body">${foodListHtml(pet, state, 'data-b3')}</div>`;
   }
   const pers = persOf(pet);
   const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
-      <b>${pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
+      <b>${sp.rarity === 'legendary' ? '✦ ตำนานปรากฏตัว!' : pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
       <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
   return `${head}<div class="b3-sheet-body">${reveal}
@@ -415,6 +415,7 @@ const barnCtx = {
   run, esc: e, petSheetHtml, foodTrayHtml,
   openDetails: id => openDetails(id),
   openEggPicker: () => openEggPicker(),
+  revealHatch: pet => openHatchReveal(pet), // the list's normal reveal, used when the 3D ceremony is cut short
   onFatal(err) {
     console.error('3D barn failed, falling back to the list view', err);
     worldDeps = false;

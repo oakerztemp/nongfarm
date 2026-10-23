@@ -11,7 +11,9 @@ import {
   giveToy, healPet, toggleSleep, renamePet, releasePet, addPetXp, canWork, getWorkPower,
   makeShiny, buyHabitatEgg, BOOK_GOALS, claimGoal,
   getTrait, traitEffect, bondHearts, bondPowerMult, addBond, claimGift, bondProgress,
+  patPet, patsLeftToday, PAT_DAILY_MAX,
 } from '../js/pets.js';
+import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor } from '../js/petBehaviour.js';
 
 const HOUR = 3600 * 1000;
 const MIN = 60 * 1000;
@@ -620,4 +622,225 @@ test('hatched pets start with empty bond fields', () => {
   s.incubator.push({ eggId: 'egg_farm', startAt: 0, readyAt: 0 });
   const pet = hatchReady(s, 0).pet;
   assertEq([pet.bond, pet.bondDay, pet.bondToday, pet.giftDay], [0, null, 0, null], 'bond fields');
+});
+
+// ── patPet (CONTRACT_V4 §3) ─────────────────────────────────────────────────
+test('patPet: +1 bond +3 happy, max 5 rewarded pats a day, resets next day', async () => {
+  const day1 = new Date(2026, 5, 10, 9, 0, 0).getTime();
+  await withFakeNow(day1, async clock => {
+    const { s, pet } = setup('hamster', { stats: { happy: 50 } });
+    for (let i = 1; i <= PAT_DAILY_MAX; i++) {
+      const r = patPet(s, pet.id);
+      assert(r.ok && r.rewarded, 'pat ' + i);
+      assertEq(r.left, PAT_DAILY_MAX - i, 'left after ' + i);
+    }
+    near(pet.stats.happy, 50 + 3 * PAT_DAILY_MAX, 'happy');
+    assertEq(pet.bond, 5, 'bond');
+    const extra = patPet(s, pet.id);
+    assert(extra.ok && !extra.rewarded && extra.bond === 0, 'sixth pat gives nothing');
+    near(pet.stats.happy, 65, 'happy unchanged by the 6th');
+    assertEq(pet.bond, 5, 'bond unchanged by the 6th');
+    assertEq(patsLeftToday(pet), 0, 'none left');
+    clock.advance(24 * HOUR);
+    assertEq(patsLeftToday(pet), PAT_DAILY_MAX, 'fresh next day');
+    assert(patPet(s, pet.id).rewarded, 'rewarded again next day');
+    assertEq(pet.bond, 6, 'bond next day');
+  });
+});
+
+test('patPet: respects the daily bond cap, happy clamps at 100, caps are per pet', () => {
+  const { s, pet } = setup('hamster', { stats: { happy: 99 } });
+  addBond(s, pet.id, 30); // bond cap already reached today
+  const r = patPet(s, pet.id);
+  assert(r.ok && r.rewarded && r.bond === 0, 'pat counted but no bond left');
+  assertEq(pet.bond, 30, 'bond stays at the cap');
+  assertEq(pet.stats.happy, 100, 'happy clamped');
+  assertEq(patsLeftToday(pet), PAT_DAILY_MAX - 1, 'pat still counted');
+  const o = setup('cat');
+  assertEq(patsLeftToday(o.pet), PAT_DAILY_MAX, 'other pet untouched');
+});
+
+test('patPet: sleeping pets can be patted, expedition pets and unknown ids cannot', () => {
+  const a = setup('hamster', { status: 'sleeping' });
+  assert(patPet(a.s, a.pet.id).ok, 'sleeping ok');
+  assertEq(a.pet.status, 'sleeping', 'does not wake');
+  const b = setup('hamster', { status: 'expedition' });
+  assertEq(patPet(b.s, b.pet.id).ok, false, 'expedition blocked');
+  assertEq(patPet(b.s, 'nobody').ok, false, 'unknown pet');
+});
+
+// ── petBehaviour (DOM-free idle brain) ──────────────────────────────────────
+const bpet = (over = {}) => ({
+  id: 'bp1', speciesId: 'hamster', personality: 'hardworking', status: 'idle', sick: false, poop: 0,
+  stats: { hunger: 80, happy: 60, energy: 80, clean: 80 }, ...over,
+});
+const inYard = p => Number.isFinite(p.x) && Number.isFinite(p.z) && Math.hypot(p.x, p.z) <= YARD.walkRadius + 1e-6;
+const decide = (pet, actor, seed) => nextAction(pet, actor, makeRng(seed), 0);
+const tally = (pet, actor, n = 600) => {
+  const t = {};
+  for (let i = 0; i < n; i++) { const a = decide(pet, actor, i + 1); t[a.type] = (t[a.type] || 0) + 1; }
+  return t;
+};
+
+test('petBehaviour: sleeping pets sleep, sick pets shiver', () => {
+  for (let i = 1; i < 30; i++) {
+    assertEq(decide(bpet({ status: 'sleeping' }), { x: 1, z: 1 }, i).type, 'sleep', 'sleeping');
+    assertEq(decide(bpet({ sick: true }), { x: 1, z: 1 }, i).type, 'sick', 'sick');
+  }
+});
+
+test('petBehaviour: hungry pets walk to their spot at the food bowl, then wait there', () => {
+  const pet = bpet({ stats: { hunger: 10, happy: 60, energy: 80, clean: 80 } });
+  const spot = bowlSpot(pet.id);
+  assert(Math.hypot(spot.x - YARD.bowl.x, spot.z - YARD.bowl.z) < 1.4, 'spot is next to the bowl');
+  for (let i = 1; i < 30; i++) {
+    const far = decide(pet, { x: -3, z: -1 }, i);
+    assertEq([far.type, far.reason], ['wander', 'hungry'], 'walks to bowl');
+    assertEq([far.target.x, far.target.z], [spot.x, spot.z], 'target is the bowl spot');
+    const there = decide(pet, { x: spot.x, z: spot.z }, i);
+    assertEq([there.type, there.reason], ['idle', 'hungry'], 'waits at bowl');
+  }
+});
+
+test('petBehaviour: bubbles - sick > sleep > favorite food > flies > sad', () => {
+  const hungry = { hunger: 10, happy: 10, energy: 80, clean: 10 };
+  assertEq(bubbleFor(bpet({ sick: true, stats: hungry })).kind, 'sick', 'sick first');
+  assertEq(bubbleFor(bpet({ status: 'sleeping', stats: hungry })).kind, 'sleep', 'sleep next');
+  const food = bubbleFor(bpet({ stats: hungry }));
+  assertEq(food.kind, 'food', 'hungry');
+  assertEq(food.emoji, getItem(getSpecies('hamster').favorite).emoji, 'favorite food emoji');
+  assertEq(bubbleFor(bpet({ stats: { hunger: 80, happy: 80, energy: 80, clean: 10 } })).emoji, '🪰', 'dirty');
+  assertEq(bubbleFor(bpet({ poop: 2 })).emoji, '🪰', 'two poops');
+  assertEq(bubbleFor(bpet({ stats: { hunger: 80, happy: 10, energy: 80, clean: 80 } })).kind, 'sad', 'sad');
+  assertEq(bubbleFor(bpet()), null, 'content pets show nothing');
+});
+
+test('petBehaviour: personalities bias the choices', () => {
+  const actor = { x: 0, z: 0, others: [{ id: 'o', x: 2, z: 1 }], last: 'idle' };
+  const lazy = tally(bpet({ personality: 'lazy', stats: { hunger: 80, happy: 60, energy: 60, clean: 80 } }), actor);
+  const cheer = tally(bpet({ personality: 'cheerful', stats: { hunger: 80, happy: 90, energy: 90, clean: 80 } }), actor);
+  const work = tally(bpet({ personality: 'hardworking', stats: { hunger: 80, happy: 60, energy: 90, clean: 80 } }), actor);
+  const shy = tally(bpet({ personality: 'shy' }), actor);
+  assert((lazy.sleep || 0) > (work.sleep || 0) * 4, 'lazy naps far more: ' + JSON.stringify([lazy, work]));
+  assert((cheer.hop || 0) > (work.hop || 0) * 2, 'cheerful hops more: ' + JSON.stringify([cheer, work]));
+  assertEq(shy.approach || 0, 0, 'shy never approaches');
+  assert((cheer.approach || 0) > 0, 'cheerful approaches sometimes');
+  assert((work.wander || 0) > (lazy.wander || 0) * 1.5, 'hardworking wanders more');
+  assert(paceOf(bpet({ personality: 'naughty' })) > paceOf(bpet({ personality: 'lazy' })) * 2, 'naughty runs, lazy plods');
+});
+
+test('petBehaviour: shy pets walk away from a neighbour', () => {
+  const shy = bpet({ personality: 'shy' });
+  let fled = 0;
+  for (let i = 1; i <= 100; i++) {
+    const a = decide(shy, { x: 0, z: 0, others: [{ id: 'o', x: 0.8, z: 0.5 }], last: 'idle' }, i);
+    if (a.reason === 'shy') { fled++; assertEq(a.type, 'wander', 'flee is a walk'); }
+  }
+  assert(fled > 60, 'most of the time it flees: ' + fled);
+});
+
+test('petBehaviour: every target is finite and inside the yard, whatever the state', () => {
+  const personalities = ['hardworking', 'lazy', 'glutton', 'cheerful', 'shy', 'naughty'];
+  const levels = [0, 10, 24, 50, 100];
+  const actors = [
+    { x: 0, z: 0, others: [] }, { x: 3.5, z: 1, others: [{ id: 'a', x: 1, z: 1 }, { id: 'b', x: -2, z: 2 }] },
+    { x: NaN, z: undefined }, { x: 99, z: -99, others: [{ id: 'n', x: NaN, z: 1 }] }, {},
+  ];
+  const types = new Set(['wander', 'idle', 'sleep', 'eat', 'poop', 'sick', 'lookAtCamera', 'hop', 'approach']);
+  let n = 0;
+  for (const personality of personalities) for (const h of levels) for (const hp of levels) for (const actor of actors) {
+    for (let seed = 1; seed <= 6; seed++) {
+      const pet = bpet({ personality, sick: seed === 6, status: seed === 5 ? 'sleeping' : 'idle', poop: seed % 4,
+        stats: { hunger: h, happy: hp, energy: 100 - h, clean: 100 - hp } });
+      const last = ['idle', 'wander', 'hop', 'sleep', 'sick'][seed % 5];
+      const a = nextAction(pet, { ...actor, last }, makeRng(seed * 7919 + n++), 123);
+      assert(types.has(a.type), 'known type ' + a.type);
+      assert(Number.isFinite(a.duration) && a.duration >= 0, 'finite duration for ' + a.type);
+      if (a.target) assert(inYard(a.target), `target in yard (${a.type}): ${JSON.stringify(a.target)}`);
+      if (a.speed != null) assert(Number.isFinite(a.speed) && a.speed > 0, 'speed');
+    }
+  }
+  assert(n > 1000, 'covered many cases');
+  assert(inYard(clampToYard(50, -50)), 'clampToYard');
+});
+
+test('petBehaviour: calm - after a walk, pauses dominate and last several seconds', () => {
+  const pet = bpet({ personality: 'hardworking' });
+  const t = tally(pet, { x: 1, z: 1, others: [], last: 'wander' }, 500);
+  assert((t.idle || 0) > (t.wander || 0), 'idle beats wander right after a walk: ' + JSON.stringify(t));
+  let min = Infinity;
+  for (let i = 1; i < 200; i++) {
+    const a = decide(pet, { x: 1, z: 1, last: 'wander' }, i);
+    if (a.type === 'idle') min = Math.min(min, a.duration);
+  }
+  assert(min >= 2, 'idle pauses are long: ' + min);
+});
+
+// ── action loop (what barn3d.js runs every frame) ───────────────────────────
+test('beginAction: nextAction() says `duration`, the loop reads `dur` (regression: idle used to end after one frame)', () => {
+  const idle = beginAction({ type: 'idle', duration: 5 });
+  assertEq([idle.dur, idle.t], [5, 0], 'duration mapped to dur');
+  assertEq(beginAction({ type: 'hop', dur: 0.7 }).dur, 0.7, 'explicit dur wins');
+  assertEq(beginAction({ type: 'idle' }).dur, 3, 'default per type');
+  assertEq(beginAction({ type: 'wander', duration: 0 }).dur, 0, 'walks have no timer');
+});
+
+/** Runs advanceActor at 30 fps for `seconds` and reports how many times decide() ran. */
+function runLoop(pet, seconds, { seed = 5, start = { x: 0, z: 0 } } = {}) {
+  const rng = makeRng(seed);
+  const A = { x: start.x, z: start.z, heading: 0, phase: 0, last: 'idle', act: null };
+  const log = [];
+  const decide = a => {
+    const act = nextAction(pet, { x: a.x, z: a.z, others: [], last: a.last }, rng, 0);
+    a.act = beginAction(act);
+    a.last = act.type === 'walkTo' ? 'wander' : act.type;
+    log.push({ at: frames * dt, type: act.type, dur: a.act.dur });
+  };
+  const dt = 1 / 30;
+  let frames = 0;
+  decide(A);
+  for (; frames < seconds * 30; frames++) {
+    advanceActor(A, dt, decide);
+    assert(Number.isFinite(A.x) && Number.isFinite(A.z), 'finite position');
+  }
+  return { log, A };
+}
+
+test('action loop: idle lasts its full duration, decide() is not called every frame', () => {
+  const act = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'idle', duration: 4 }) };
+  let calls = 0;
+  const decide = a => { calls++; a.act = beginAction({ type: 'idle', duration: 4 }); };
+  for (let f = 0; f < 119; f++) advanceActor(act, 1 / 30, decide); // 3.97 s
+  assertEq(calls, 0, 'still idling after 3.97s');
+  for (let f = 0; f < 3; f++) advanceActor(act, 1 / 30, decide);
+  assertEq(calls, 1, 'decided exactly once after 4s');
+  for (const type of ['sleep', 'lookAtCamera', 'sick']) {
+    const a = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type, duration: 2 }) };
+    let n = 0;
+    for (let f = 0; f < 59; f++) advanceActor(a, 1 / 30, () => { n++; });
+    assertEq(n, 0, type + ' lasts its duration');
+  }
+});
+
+test('action loop: a sleeping pet re-decides about every 12 s, an awake one rarely more than once a second', () => {
+  const sleepy = runLoop(bpet({ status: 'sleeping' }), 120);
+  assert(sleepy.log.length <= 12, 'sleeping decisions in 2 min: ' + sleepy.log.length);
+  assert(sleepy.log.every(e => e.type === 'sleep'), 'all sleep');
+  for (const personality of ['hardworking', 'lazy', 'cheerful', 'shy', 'naughty', 'glutton']) {
+    const r = runLoop(bpet({ personality }), 180, { seed: 11 });
+    assert(r.log.length < 180 * 0.9, `${personality}: ${r.log.length} decisions in 3 min (decide every frame would be 5400)`);
+    const idles = r.log.filter(e => e.type === 'idle');
+    assert(idles.length > 0 && idles.every(e => e.dur >= 1.4), personality + ': idle pauses last seconds');
+  }
+});
+
+test('action loop: walking reaches the target, calls onArrive once, and callbacks may start the next action', () => {
+  let arrived = 0, decided = 0;
+  const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'walkTo', target: { x: 2, z: 1 }, speed: 1,
+    onArrive: a => { arrived++; a.act = beginAction({ type: 'hop', duration: 1 }); } }) };
+  for (let f = 0; f < 30 * 6 && A.act.type === 'walkTo'; f++) advanceActor(A, 1 / 30, () => { decided++; });
+  assertEq(arrived, 1, 'arrived once');
+  assertEq(decided, 0, 'decide skipped because onArrive began a new action');
+  assertEq(A.act.type, 'hop', 'hop started by the callback');
+  assert(Math.hypot(A.x - 2, A.z - 1) < 0.2, 'stands at the target');
 });

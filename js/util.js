@@ -182,7 +182,10 @@ export function refreshTimers(root) {
 // ---- DOM morph ----
 
 const keyOf = n => (n.nodeType === 1 ? n.getAttribute('data-key') : null);
-const sameKind = (a, b) => a.nodeType === b.nodeType && a.nodeName === b.nodeName;
+const isSkip = n => n.nodeType === 1 && n.getAttribute('data-morph') === 'skip';
+// Elements marked data-morph="skip" (persistent hosts such as the 3D canvas) only ever match another skip
+// element of the same tag, and are then left completely untouched (attributes and children).
+const sameKind = (a, b) => a.nodeType === b.nodeType && a.nodeName === b.nodeName && isSkip(a) === isSkip(b);
 
 function syncAttributes(el, fresh) {
   for (const { name } of [...el.attributes]) {
@@ -206,6 +209,7 @@ function syncFormValue(el, fresh) {
 }
 
 function morphNode(el, fresh) {
+  if (isSkip(el)) return; // data-morph="skip": keep as-is
   if (el.nodeType !== 1) {
     if (el.nodeValue !== fresh.nodeValue) el.nodeValue = fresh.nodeValue;
     return;
@@ -258,6 +262,8 @@ function morphChildren(parent, source) {
 /**
  * Updates rootEl's content to match `html` while keeping existing nodes (so CSS animations keep running
  * and focused inputs keep their state). Optional data-key attributes pin identity across reorders.
+ * An element with data-morph="skip" is kept exactly as it is (children and attributes untouched) as long as the
+ * new html also has a skip element of the same tag at that spot; give it a data-key so it survives reorders.
  */
 export function morph(rootEl, html) {
   const tpl = document.createElement('template');

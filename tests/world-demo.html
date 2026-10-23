@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NongFarm world3d demo</title>
+  <link rel="stylesheet" href="../css/style.css">
+  <style>
+    body { padding: 12px; }
+    #host { height: 60vh; }
+    #log { font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <!-- Manual demo / smoke page for js/world3d/engine.js + fx.js: ?n=12 pets, ?quality=low, ?soft3d=1 allows software GL -->
+  <div id="host" data-morph="skip"></div>
+  <div class="row">
+    <button class="btn" id="b-heart">❤️ heart</button>
+    <button class="btn" id="b-bubble">💭 bubble</button>
+    <button class="btn" id="b-fly">🍎 fly</button>
+    <button class="btn" id="b-sparkle">✨ sparkle</button>
+    <button class="btn" id="b-confetti">🎉 confetti</button>
+    <button class="btn" id="b-pause">⏸ pause</button>
+    <button class="btn" id="b-dispose">dispose</button>
+  </div>
+  <div id="log"></div>
+  <script type="module">
+    import { isWorldSupported, createWorld } from '../js/world3d/engine.js';
+    import * as fx from '../js/world3d/fx.js';
+    const q = new URLSearchParams(location.search);
+    const log = m => { document.getElementById('log').textContent = m + '\n' + document.getElementById('log').textContent.slice(0, 600); };
+    log('supported: ' + isWorldSupported());
+    const world = createWorld(document.getElementById('host'), {
+      onTap: (id, info) => { log('tap ' + id); fx.heart(world, world.getActor(id).object.position); },
+      onTapGround: p => log('ground ' + p.x.toFixed(2) + ',' + p.z.toFixed(2)),
+    }, q.get('quality') ? { quality: q.get('quality') } : {});
+    window.world = world; window.fx = fx;
+    const { THREE } = world;
+    const n = Number(q.get('n') || 12);
+    const colors = [0xf2a65a, 0xffd0d8, 0xe8e0d0, 0xb7e4c7, 0xcdb4db, 0xa0c4ff];
+    const pets = [];
+    for (let i = 0; i < n; i++) {
+      const g = new THREE.Group();
+      const mat = new THREE.MeshToonMaterial({ color: colors[i % colors.length], gradientMap: world.toonGradient });
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.4, 16, 12), mat);
+      body.position.y = 0.4;
+      g.add(body);
+      const a = (i / n) * Math.PI * 2;
+      g.position.set(Math.sin(a) * 3, 0, Math.cos(a) * 3);
+      world.addActor('p' + i, g, { radius: 0.4, height: 0.8 });
+      pets.push({ g, phase: i, speed: 0.3 + (i % 5) * 0.05 });
+    }
+    world.onFrame((dt, t) => {
+      for (const p of pets) {
+        const a = t * p.speed + p.phase;
+        p.g.position.x = Math.sin(a) * (2 + (p.phase % 3));
+        p.g.position.z = Math.cos(a) * (2 + (p.phase % 3)) + 0.5;
+        p.g.position.y = Math.abs(Math.sin(t * 3 + p.phase)) * 0.15;
+      }
+    });
+    const first = () => world.getActor('p0').object.position;
+    document.getElementById('b-heart').onclick = () => fx.heart(world, { ...first(), y: 1 });
+    document.getElementById('b-bubble').onclick = () => fx.bubble(world, 'p0', '🍖');
+    document.getElementById('b-fly').onclick = () => fx.flyEmoji(world, { x: 0, y: 2, z: 5 }, { ...first(), y: 0.6 }, '🍎', () => log('landed'));
+    document.getElementById('b-sparkle').onclick = () => fx.sparkle(world, 'p1');
+    document.getElementById('b-confetti').onclick = () => fx.confetti(world, { x: 0, y: 0, z: 0 });
+    let on = true;
+    document.getElementById('b-pause').onclick = () => { on = !on; world.setActive(on); };
+    document.getElementById('b-dispose').onclick = () => world.dispose();
+    setInterval(() => log(JSON.stringify(world.getStats())), 2000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NongFarm 3D critter gallery</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #cfe8c4; font: 13px/1.4 system-ui, "Segoe UI", sans-serif; color: #243; overflow: hidden; }
+    #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+           padding: 6px 12px; background: rgba(255,255,255,.88); box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+    #bar b { font-size: 14px; }
+    #bar label { display: inline-flex; gap: 4px; align-items: center; }
+    #stats { margin-left: auto; font: 12px ui-monospace, Consolas, monospace; opacity: .75; }
+    #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    .tag { position: fixed; z-index: 2; transform: translate(-50%, 0); font-size: 12px; font-weight: 600; padding: 1px 7px;
+           border-radius: 9px; background: rgba(255,255,255,.8); white-space: nowrap; pointer-events: none; }
+    #err { position: fixed; inset: 60px 20px auto; z-index: 5; color: #b00020; white-space: pre-wrap; font: 13px ui-monospace, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <b>NongFarm critter gallery</b>
+    <label>stage
+      <select id="stage"><option value="0">0 baby</option><option value="1">1 child</option><option value="2" selected>2 adult</option><option value="3">3 master</option></select>
+    </label>
+    <label><input type="checkbox" id="shiny"> shiny</label>
+    <label><input type="checkbox" id="spin" checked> turntable</label>
+    <label><input type="checkbox" id="bob" checked> squash demo</label>
+    <label>angle <input type="range" id="yaw" min="-180" max="180" value="0" style="width:110px"></label>
+    <span id="stats"></span>
+  </div>
+  <canvas id="gl"></canvas>
+  <div id="err"></div>
+
+  <script type="module">
+    import * as THREE from '../vendor/three.module.min.js';
+    import { buildPetModel, buildBillboard, hasModel } from '../js/world3d/critters.js';
+    import { MODEL_SPECS } from '../js/data/models.js';
+    import { SPECIES, getSpecies } from '../js/data/species.js';
+
+    const q = new URLSearchParams(location.search);
+    const $ = id => document.getElementById(id);
+    if (q.get('stage')) $('stage').value = q.get('stage');
+    if (q.get('shiny')) $('shiny').checked = true;
+    if (q.get('spin') === '0') $('spin').checked = false;
+    if (q.get('bob') === '0') $('bob').checked = false;
+    if (q.get('yaw')) $('yaw').value = q.get('yaw');
+
+    window.addEventListener('error', e => { $('err').textContent += (e.error && e.error.stack || e.message) + '\n'; });
+    window.addEventListener('unhandledrejection', e => { $('err').textContent += String(e.reason && e.reason.stack || e.reason) + '\n'; });
+
+    const renderer = new THREE.WebGLRenderer({ canvas: $('gl'), antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#b9dca3');
+    scene.add(new THREE.HemisphereLight('#fffbe8', '#8fb07a', 1.6));
+    const sun = new THREE.DirectionalLight('#ffffff', 1.9);
+    sun.position.set(3, 6, 4);
+    scene.add(sun);
+
+    const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+    const ids = q.get('only') ? q.get('only').split(',') : Object.keys(MODEL_SPECS);
+    const cells = ids.map(id => ({ id, label: id })).concat(q.get('only') ? [] : [
+      { id: '_bb1', label: 'billboard \u{1F981} lion', emoji: '\u{1F981}' },
+      { id: '_bb2', label: 'fallback: dolphin (species)', species: 'dolphin' },
+    ]);
+    const cols = Math.min(cells.length, q.get('only') ? cells.length : 6), gap = 1.9;
+    const rows = Math.ceil(cells.length / cols);
+
+    const holders = [];
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshToonMaterial({ color: '#b9dca3' }));
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+
+    cells.forEach((c, i) => {
+      const holder = new THREE.Group();
+      holder.position.set((i % cols - (cols - 1) / 2) * gap, 0, (Math.floor(i / cols) - (rows - 1) / 2) * gap * 1.6);
+      scene.add(holder);
+      const tag = document.createElement('div');
+      tag.className = 'tag';
+      document.body.appendChild(tag);
+      holders.push({ c, holder, tag, model: null, tris: 0 });
+    });
+
+    function triCount(obj) {
+      let t = 0;
+      obj.traverse(o => { if (o.isMesh) { const g = o.geometry; t += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
+      return t;
+    }
+    function drawCalls(obj) { let n = 0; obj.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; }
+    function rebuild() {
+      const stage = +$('stage').value, shiny = $('shiny').checked;
+      let totalTris = 0;
+      for (const h of holders) {
+        if (h.model) h.holder.remove(h.model.root);
+        const { c } = h;
+        let m;
+        if (c.emoji) m = buildBillboard(THREE, c.emoji, { stage, shiny });
+        else if (c.species) m = buildPetModel(THREE, { stage, shiny, speciesId: c.species }, getSpecies(c.species));
+        else m = buildPetModel(THREE, { stage, shiny, speciesId: c.id }, getSpecies(c.id));
+        h.model = m;
+        h.tris = triCount(m.root);
+        h.calls = drawCalls(m.root);
+        totalTris += h.tris;
+        h.holder.add(m.root);
+        h.tag.textContent = `${c.label} · ${m.kind === 'model' ? h.tris + ' tris · ' + h.calls + ' calls' : 'sprite'}`;
+      }
+      window.__gallery = { cells: holders.map(h => ({ id: h.c.id, tris: h.tris, calls: h.calls, kind: h.model.kind, height: h.model.height, radius: h.model.radius })), totalTris };
+    }
+    for (const id of ['stage', 'shiny']) $(id).addEventListener('change', rebuild);
+    rebuild();
+
+    function resize() {
+      const w = innerWidth, h = innerHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      const tilt = q.get('only') ? 0.22 : 0.4;
+      const zoom = +q.get('zoom') || 1;
+      const spanX = (cols - 1) * gap + 2.4, spanZ = (rows - 1) * gap * 1.6 + 1.8;
+      const halfV = (spanZ * Math.sin(tilt) + 2.0) / 2;
+      const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      const dist = Math.max(spanX / 2 / (tanV * camera.aspect), halfV / tanV) / zoom * 1.25 + 1;
+      camera.position.set(0, Math.sin(tilt) * dist + 0.9, Math.cos(tilt) * dist);
+      camera.lookAt(0, 0.7, 0);
+      camera.updateProjectionMatrix();
+    }
+    addEventListener('resize', resize);
+    resize();
+
+    const v = new THREE.Vector3();
+    const clock = new THREE.Clock();
+    function frame() {
+      const t = clock.getElapsedTime();
+      const spin = $('spin').checked, bob = $('bob').checked;
+      const yaw = THREE.MathUtils.degToRad(+$('yaw').value);
+      holders.forEach((h, i) => {
+        const m = h.model;
+        if (m.kind === 'model') m.root.rotation.y = spin ? t * 0.7 + i * 0.5 : yaw;
+        const k = bob ? Math.sin(t * 3 + i) : 0;
+        m.body.scale.set(1 - k * 0.04, 1 + k * 0.06, 1 - k * 0.04);
+        if (m.head && bob) m.head.rotation.y = Math.sin(t * 1.3 + i) * 0.25;
+        if (m.parts.tail && bob) m.parts.tail.rotation.z = Math.sin(t * 6 + i) * 0.25;
+        if (m.parts.wingL && bob) { const f = Math.sin(t * 4 + i) * 0.35; m.parts.wingL.rotation.z = 0.2 + f; m.parts.wingR.rotation.z = -0.2 - f; }
+        v.set(h.holder.position.x, 0, h.holder.position.z + 0.75).project(camera);
+        h.tag.style.left = (v.x * 0.5 + 0.5) * innerWidth + 'px';
+        h.tag.style.top = (-v.y * 0.5 + 0.5) * innerHeight + 'px';
+      });
+      $('stats').textContent = `${renderer.info.render.calls} calls · ${renderer.info.render.triangles} tris/frame · ${renderer.info.programs.length} programs`;
+      renderer.render(scene, camera);
+      requestAnimationFrame(frame);
+    }
+    frame();
+  </script>
+</body>
+</html>

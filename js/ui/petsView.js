@@ -1,8 +1,10 @@
 // Pet views: 🏠 barn (incubator + pets + care) and 📖 book (collection).
 // render() is pure string-building; all events go through delegated data-action handlers.
 
-import { notify, escapeHtml, openModal, now, formatDuration, clamp } from '../util.js';
+import { notify, escapeHtml, openModal, now, formatDuration, clamp, morph } from '../util.js';
 import { update, getState, countItem } from '../state.js';
+import { getBarnViewPref, setBarnViewPref, onPrefChange } from '../prefs.js';
+import { isWorldSupported } from '../world3d/support.js'; // tiny, no three.js: asked before the engine is downloaded
 import { getItem } from '../data/items.js';
 import { EGGS, getEgg } from '../data/eggs.js';
 import { SPECIES, HABITATS, RARITIES, JOBS, getSpecies } from '../data/species.js';
@@ -182,9 +184,27 @@ function renderIncubator(state, t) {
 }
 
 // ── Barn: pet card ──────────────────────────────────────────────────────────
-function actionBtn(action, petId, label, disabledReason) {
-  return `<button type="button" class="btn btn-sm btn-ghost pet-act" data-action="${action}" data-pet-id="${e(petId)}"` +
+function actionBtn(action, petId, label, disabledReason, attr = 'data-action') {
+  return `<button type="button" class="btn btn-sm btn-ghost pet-act" ${attr}="${action}" data-pet-id="${e(petId)}"` +
     `${disabledReason ? ` disabled title="${e(disabledReason)}"` : ''}>${label}</button>`;
+}
+
+/** The care buttons of a pet (card and 3D sheet share them; `attr` is the attribute carrying the action name). */
+function petActionsHtml(pet, attr) {
+  const sleeping = pet.status === 'sleeping';
+  const working = pet.status === 'working';
+  const away = pet.status === 'expedition';
+  const careBlock = away ? 'ออกสำรวจอยู่' : sleeping ? 'หลับอยู่ ปลุกก่อนนะ' : '';
+  const playBlock = away ? 'ออกสำรวจอยู่' : sleeping ? 'หลับอยู่' : working ? 'กำลังทำงาน' : pet.sick ? 'ป่วยอยู่' : '';
+  const sleepBlock = working ? 'กำลังทำงาน' : away ? 'ออกสำรวจอยู่' : '';
+  return `${actionBtn('feed', pet.id, '🍖 ให้อาหาร', careBlock, attr)}
+      ${actionBtn('play', pet.id, '🎾 เล่น', playBlock, attr)}
+      ${actionBtn('bath', pet.id, '🛁 อาบน้ำ', careBlock, attr)}
+      ${actionBtn('toy', pet.id, '🧸 ของเล่น', playBlock, attr)}
+      ${pet.sick ? actionBtn('heal', pet.id, '💊 รักษา', '', attr) : ''}
+      ${actionBtn('sleep', pet.id, sleeping ? '☀️ ตื่น' : '💤 นอน', sleepBlock, attr)}
+      ${giftAvailable(pet) ? actionBtn('gift', pet.id, '🎁 ของขวัญ', '', attr) : ''}
+      ${actionBtn('details', pet.id, '📋 รายละเอียด', '', attr)}`;
 }
 
 function renderPetCard(pet, state) {
@@ -192,15 +212,9 @@ function renderPetCard(pet, state) {
   const rarColor = sp ? RARITIES[sp.rarity].color : '#8e9aa6';
   const st = stageOf(pet);
   const mood = petMood(pet);
-  const away = pet.status === 'expedition';
   const sleeping = pet.status === 'sleeping';
-  const working = pet.status === 'working';
   const notIdle = pet.status !== 'idle';
   const bond = bondProgress(pet);
-
-  const careBlock = away ? 'ออกสำรวจอยู่' : sleeping ? 'หลับอยู่ ปลุกก่อนนะ' : '';
-  const playBlock = away ? 'ออกสำรวจอยู่' : sleeping ? 'หลับอยู่' : working ? 'กำลังทำงาน' : pet.sick ? 'ป่วยอยู่' : '';
-  const sleepBlock = working ? 'กำลังทำงาน' : away ? 'ออกสำรวจอยู่' : '';
 
   const poops = Array.from({ length: pet.poop }, () =>
     `<button type="button" class="pet-poop" data-action="poop" data-pet-id="${e(pet.id)}" title="เก็บอึ" aria-label="เก็บอึ">💩</button>`).join('');
@@ -241,21 +255,72 @@ function renderPetCard(pet, state) {
       ${statBar('🫧', 'สะอาด', pet.stats.clean)}
     </div>
     <div class="pet-actions">
-      ${actionBtn('feed', pet.id, '🍖 ให้อาหาร', careBlock)}
-      ${actionBtn('play', pet.id, '🎾 เล่น', playBlock)}
-      ${actionBtn('bath', pet.id, '🛁 อาบน้ำ', careBlock)}
-      ${actionBtn('toy', pet.id, '🧸 ของเล่น', playBlock)}
-      ${pet.sick ? actionBtn('heal', pet.id, '💊 รักษา', '') : ''}
-      ${actionBtn('sleep', pet.id, sleeping ? '☀️ ตื่น' : '💤 นอน', sleepBlock)}
-      ${giftAvailable(pet) ? actionBtn('gift', pet.id, '🎁 ของขวัญ', '') : ''}
-      ${actionBtn('details', pet.id, '📋 รายละเอียด', '')}
+      ${petActionsHtml(pet, 'data-action')}
     </div>
   </article>`;
+}
+
+// 3D barn lifecycle (CONTRACT_V4). The world modules are loaded lazily: if any of them is missing or WebGL is
+// unavailable, the card grid below is used and everything keeps working.
+let worldDeps = null;       // null = still loading, false = unavailable, else { engine, barn }
+let barnRoot = null;        // the pane element (set in bindBarn)
+let barn3d = null;          // the mounted 3D barn instance
+let barnHost = null;        // the host element it is mounted in
+
+let depsStarted = false;
+
+/** Loads engine + barn3d (three.js is 650 KB) only once the 3D barn is actually wanted. */
+function ensureWorldDeps() {
+  if (depsStarted) return;
+  depsStarted = true;
+  Promise.all([import('../world3d/engine.js'), import('./barn3d.js')])
+    .then(([engine, barn]) => { worldDeps = { engine, barn }; })
+    .catch(err => { worldDeps = false; console.warn('3D barn unavailable, using the list view', err); })
+    .then(() => { if (barnRoot && !barnRoot.hidden) rerenderBarn(); });
+}
+
+function rerenderBarn() {
+  if (!barnRoot) return;
+  try { morph(barnRoot, renderBarn(getState())); } catch (err) { console.error('barn re-render failed', err); }
+}
+
+function worldSupported() {
+  try { return worldDeps !== false && isWorldSupported(); } catch { return false; }
+}
+
+/** 'list' | '3d' | 'loading' */
+function barnMode() {
+  if (getBarnViewPref() === 'list') return 'list';
+  if (!worldSupported()) return 'list'; // never downloads three.js on unsupported devices
+  ensureWorldDeps();
+  if (worldDeps === null) return 'loading';
+  return '3d';
+}
+
+/** Toggle shown whenever the 3D barn could be used on this device. */
+function barnToggleHtml(mode) {
+  if (!worldSupported()) return '';
+  const on = mode === 'list' ? 'list' : '3d';
+  return `<div class="barn-toggle" role="group" aria-label="มุมมองคอก">
+    <button type="button" class="barn-toggle-btn${on === '3d' ? ' is-on' : ''}" data-action="barn-mode" data-mode="3d" aria-pressed="${on === '3d'}">🌳 คอก</button>
+    <button type="button" class="barn-toggle-btn${on === 'list' ? ' is-on' : ''}" data-action="barn-mode" data-mode="list" aria-pressed="${on === 'list'}">📋 รายการ</button></div>`;
 }
 
 function renderBarn(state) {
   const t = now();
   const pets = state.pets;
+  const mode = barnMode();
+  const toggle = barnToggleHtml(mode);
+  if (mode === '3d' || mode === 'loading') {
+    return `<div class="barn-view barn-3d">
+      <section class="barn-section">
+        <div class="barn-head"><h2 class="barn-title">🏠 คอกสัตว์</h2>
+          <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+        ${mode === '3d'
+          ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
+          : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดคอก 3 มิติ…</div>'}
+      </section></div>`;
+  }
   const hasEgg = state.incubator.length > 0 || EGGS.some(eg => countItem(state, eg.id) > 0);
   const empty = `<div class="empty-state barn-empty">
       <div class="barn-empty-emoji">🥚</div>
@@ -266,9 +331,119 @@ function renderBarn(state) {
     ${renderIncubator(state, t)}
     <section class="barn-section">
       <div class="barn-head"><h2 class="barn-title">🏠 คอกสัตว์</h2>
-        <span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span></div>
+        <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
       ${pets.length ? `<div class="barn-grid">${pets.map(p => renderPetCard(p, state)).join('')}</div>` : empty}
     </section></div>`;
+}
+
+// ── 3D sheet / tray content (called by barn3d.js; pure string building) ─────
+/** Food rows for a pet, best match first. */
+function foodRows(pet, state) {
+  return Object.entries(state.inventory)
+    .filter(([, n]) => n > 0)
+    .map(([id, n]) => ({ item: getItem(id), n }))
+    .filter(r => r.item && r.item.food)
+    .map(r => {
+      const fx = foodEffect(pet, r.item);
+      return { ...r, fx, rank: fx.favorite ? 0 : fx.match ? 1 : 2 };
+    })
+    .sort((a, b) => a.rank - b.rank || a.item.nameTh.localeCompare(b.item.nameTh, 'th'));
+}
+
+function foodListHtml(pet, state, attr) {
+  const rows = foodRows(pet, state);
+  if (!rows.length) return '<p class="muted pet-picker-empty">ไม่มีอาหารในกระเป๋า ไปซื้อที่ร้านค้า 🛒 หรือเก็บผลผลิตจากไร่มาให้น้องนะ</p>';
+  return `<div class="pet-picker-list">${rows.map(r => {
+    const tag = r.fx.favorite ? '⭐ ของโปรด' : r.fx.match ? '✅ ถูกปาก' : '😐 พอกินได้';
+    return `<button type="button" class="pet-food-item${r.fx.favorite ? ' is-fav' : r.fx.match ? ' is-match' : ''}" ${attr}="food" data-item-id="${e(r.item.id)}" data-pet-id="${e(pet.id)}">
+      <span class="pet-food-emoji">${r.item.emoji}</span>
+      <span class="pet-food-main"><b>${e(r.item.nameTh)}</b> <small>×${r.n}</small>
+        <span class="pet-food-meta">อิ่ม +${Math.round(r.fx.hunger)} · สุข +${Math.round(r.fx.happy)}</span></span>
+      <span class="pet-food-tag">${tag}</span></button>`;
+  }).join('')}</div>`;
+}
+
+function miniStat(icon, label, value) {
+  const v = Math.round(clamp(value, 0, 100));
+  return `<div class="b3-stat" title="${label} ${v}/100"><span class="b3-stat-i">${icon}</span>
+    <span class="pet-bar"><span class="pet-bar-fill ${lvClass(v)}" style="width:${v}%"></span></span><span class="b3-stat-v">${v}</span></div>`;
+}
+
+/** Bottom sheet for a tapped pet. mode 'main' = card content + actions, 'feed' = food list for that pet. */
+function petSheetHtml(pet, state, mode = 'main', opts = {}) {
+  const sp = getSpecies(pet.speciesId);
+  const st = stageOf(pet);
+  const bond = bondProgress(pet);
+  const head = `<div class="b3-sheet-head">
+      ${mode === 'feed' ? '<button type="button" class="btn btn-sm btn-ghost" data-b3="back" aria-label="กลับ">‹</button>' : ''}
+      <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
+      <div class="b3-sheet-title"><b>${e(petName(pet))}</b>
+        <small>${sp ? e(sp.nameTh) : ''} · ${st.icon} ${st.nameTh}${pet.shiny ? ' · ✨' : ''}</small></div>
+      <button type="button" class="b3-sheet-close" data-b3="close" aria-label="ปิด">✕</button></div>`;
+  if (mode === 'feed') {
+    return `${head}<div class="b3-sheet-body">${foodListHtml(pet, state, 'data-b3')}</div>`;
+  }
+  const pers = persOf(pet);
+  const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
+      <b>${pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
+      <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
+      <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
+  return `${head}<div class="b3-sheet-body">${reveal}
+      <div class="b3-sheet-line"><span class="pet-status">${statusLabel(pet, state)}</span>
+        <span class="pet-hearts" title="ความผูกพัน ${bond.hearts}/5">${heartsHtml(bond.hearts)}</span></div>
+      <div class="b3-stats">
+        ${miniStat('🍖', 'อิ่ม', pet.stats.hunger)}${miniStat('💖', 'สุข', pet.stats.happy)}
+        ${miniStat('⚡', 'พลัง', pet.stats.energy)}${miniStat('🫧', 'สะอาด', pet.stats.clean)}</div>
+      <div class="pet-actions b3-acts">${petActionsHtml(pet, 'data-b3')}</div></div>`;
+}
+
+/** Edible items for the food tray (chips); `pet` (optional) marks favorites. */
+function foodTrayHtml(state, pet, selectedId) {
+  const chips = Object.entries(state.inventory)
+    .filter(([, n]) => n > 0)
+    .map(([id, n]) => ({ item: getItem(id), n }))
+    .filter(r => r.item && r.item.food && r.item.type !== 'egg')
+    .map(r => ({ ...r, fx: pet ? foodEffect(pet, r.item) : null }))
+    .sort((a, b) => (b.fx ? +b.fx.favorite : 0) - (a.fx ? +a.fx.favorite : 0) || a.item.nameTh.localeCompare(b.item.nameTh, 'th'));
+  if (!chips.length) return '<span class="b3-tray-empty">ไม่มีอาหารในกระเป๋า 🛒</span>';
+  return chips.map(r => `<button type="button" class="b3-food${selectedId === r.item.id ? ' is-on' : ''}${r.fx && r.fx.favorite ? ' is-fav' : ''}" data-b3="tray-food" data-item-id="${e(r.item.id)}" aria-label="${e(r.item.nameTh)} ${r.n}" aria-pressed="${selectedId === r.item.id}">
+      <span class="b3-food-e">${r.item.emoji}</span><small>${r.n}</small></button>`).join('');
+}
+
+/** What barn3d.js needs from this module. */
+const barnCtx = {
+  run, esc: e, petSheetHtml, foodTrayHtml,
+  openDetails: id => openDetails(id),
+  openEggPicker: () => openEggPicker(),
+  onFatal(err) {
+    console.error('3D barn failed, falling back to the list view', err);
+    worldDeps = false;
+    if (barn3d) { try { barn3d.dispose(); } catch { /* already gone */ } barn3d = null; barnHost = null; }
+    rerenderBarn();
+  },
+};
+
+/** Mount / unmount / pause the 3D barn so it always matches what the DOM currently shows. */
+function reconcileBarn3d() {
+  if (!barnRoot || !worldDeps) return;
+  const host = barnRoot.querySelector('.b3[data-morph="skip"]');
+  if (!host) {
+    if (barn3d) { barn3d.dispose(); barn3d = null; barnHost = null; }
+    return;
+  }
+  if (barnRoot.hidden) { if (barn3d) barn3d.setActive(false); return; }
+  if (barn3d && barnHost !== host) { barn3d.dispose(); barn3d = null; }
+  if (!barn3d) {
+    barnHost = host;
+    try {
+      barn3d = worldDeps.barn.mountBarn3d(host, barnCtx);
+    } catch (err) {
+      barn3d = null;
+      barnCtx.onFatal(err);
+      return;
+    }
+  }
+  barn3d.setActive(true);
 }
 
 // ── Modals ──────────────────────────────────────────────────────────────────
@@ -302,15 +477,7 @@ function openFoodPicker(petId) {
   const pet = getPet(state, petId);
   if (!pet) return;
   const sp = getSpecies(pet.speciesId);
-  const rows = Object.entries(state.inventory)
-    .filter(([, n]) => n > 0)
-    .map(([id, n]) => ({ item: getItem(id), n }))
-    .filter(r => r.item && r.item.food)
-    .map(r => {
-      const fx = foodEffect(pet, r.item);
-      return { ...r, fx, rank: fx.favorite ? 0 : fx.match ? 1 : 2 };
-    })
-    .sort((a, b) => a.rank - b.rank || a.item.nameTh.localeCompare(b.item.nameTh, 'th'));
+  const rows = foodRows(pet, state);
 
   const list = rows.map(r => {
     const hunger = Math.round(r.fx.hunger);
@@ -457,6 +624,8 @@ function openHatchReveal(pet) {
 
 // ── Barn view ───────────────────────────────────────────────────────────────
 function bindBarn(root) {
+  barnRoot = root;
+  onPrefChange(name => { if (name === 'barnView' && !root.hidden) rerenderBarn(); }); // e.g. changed in the settings modal
   const withPet = fn => btn => {
     const id = btn.dataset.petId || (btn.closest('[data-pet-id]') || {}).dataset?.petId;
     if (id) fn(id, btn);
@@ -476,7 +645,15 @@ function bindBarn(root) {
       const r = run(s => hatchReady(s, Number(btn.dataset.slot)));
       if (r && r.ok && r.pet) openHatchReveal(r.pet);
     },
+    'barn-mode': btn => {
+      setBarnViewPref(btn.dataset.mode === 'list' ? 'list' : '3d');
+      rerenderBarn(); // (barnMode() starts loading the 3D modules when needed)
+    },
   });
+  // The 3D host is skipped by morph, so mount/unmount it by watching what the view currently contains.
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(reconcileBarn3d).observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  }
 }
 
 // ── Book ────────────────────────────────────────────────────────────────────

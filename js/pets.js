@@ -504,6 +504,30 @@ export function pickPoop(state, petId) {
   return ok(`💩 เก็บอึของ${nong(pet)}แล้ว ${n} ก้อน`);
 }
 
+/** Pats left today for this pet (pat bookkeeping is optional: lastPatDay/patToday default to "none yet"). */
+export const PAT_DAILY_MAX = 5;
+export function patsLeftToday(pet) {
+  return pet && pet.lastPatDay === todayKey() ? Math.max(0, PAT_DAILY_MAX - (pet.patToday || 0)) : PAT_DAILY_MAX;
+}
+
+/**
+ * Stroke the pet's head (barn 3D tap). Max 5 rewarded pats per pet per day: +1 bond (through addBond, so the
+ * 30/day bond cap still applies) and +3 happy. Extra pats are harmless but give nothing (rewarded:false).
+ * The result has an empty msg on purpose: the heart effect is the feedback, not a toast.
+ */
+export function patPet(state, petId) {
+  const pet = getPet(state, petId);
+  const blocked = careBlocker(pet, { allowSleeping: true });
+  if (blocked) return fail(blocked);
+  if (patsLeftToday(pet) <= 0) return { ok: true, msg: '', rewarded: false, bond: 0, left: 0 };
+  const day = todayKey();
+  if (pet.lastPatDay !== day) { pet.lastPatDay = day; pet.patToday = 0; }
+  pet.patToday = (pet.patToday || 0) + 1;
+  pet.stats.happy = clamp(pet.stats.happy + 3, 0, 100);
+  const bond = addBond(state, petId, 1);
+  return { ok: true, msg: '', rewarded: true, bond, left: PAT_DAILY_MAX - pet.patToday };
+}
+
 export function giveToy(state, petId) {
   const pet = getPet(state, petId);
   const blocked = careBlocker(pet, { allowWorking: false });

@@ -5,6 +5,20 @@ import {
   APP_VERSION, canInstall, isInstalled, onInstallChange, promptInstall,
   notificationsSupported, notificationPermission, requestNotificationPermission,
 } from '../pwa.js';
+import { getBarnViewPref, setBarnViewPref, getQualityPref, setQualityPref } from '../prefs.js';
+
+function choiceRow(label, name, options, current, hint) {
+  const buttons = options.map(([value, text]) =>
+    `<button type="button" class="btn btn-sm choice${value === current ? ' btn-primary' : ''}" data-pref="${name}" data-value="${value}"` +
+    ` aria-pressed="${value === current}">${escapeHtml(text)}</button>`).join('');
+  return (
+    '<div class="settings-choice">' +
+      `<strong>${escapeHtml(label)}</strong>` +
+      `<div class="settings-choice-btns" role="group" aria-label="${escapeHtml(label)}">${buttons}</div>` +
+      `<span class="muted settings-hint">${escapeHtml(hint)}</span>` +
+    '</div>'
+  );
+}
 
 function notifyHint() {
   if (!notificationsSupported()) return 'เบราว์เซอร์นี้ไม่รองรับการแจ้งเตือน';
@@ -30,6 +44,10 @@ export function openSettings() {
           '<span><strong>การแจ้งเตือน</strong>' +
           `<span class="muted settings-hint" data-hint>${escapeHtml(notifyHint())}</span></span>` +
         '</label>' +
+        choiceRow('มุมมองคอก', 'barnView', [['3d', '🌳 3 มิติ'], ['list', '📋 รายการ']], getBarnViewPref(),
+          'เลือกว่าจะดูน้องๆ เป็นฉาก 3 มิติหรือเป็นการ์ดรายการ (จำไว้เฉพาะในเครื่องนี้ · ถ้าเปิดโหมดลดการเคลื่อนไหวหรือเครื่องไม่รองรับ จะแสดงเป็นรายการเอง)') +
+        choiceRow('คุณภาพกราฟิก', 'quality', [['auto', '✨ อัตโนมัติ'], ['low', '🔋 ต่ำ']], getQualityPref(),
+          'ต่ำ = ประหยัดแบตเตอรี่และลื่นขึ้นบนเครื่องเก่า (มีผลเมื่อเปิดฉาก 3 มิติครั้งถัดไป)') +
         `<div class="settings-install" data-install>${installSection()}</div>` +
         `<p class="muted settings-version">เวอร์ชันเกม ${escapeHtml(APP_VERSION)} · โครงสร้างเซฟ v${STATE_VERSION}</p>` +
       '</div>',
@@ -52,6 +70,18 @@ export function openSettings() {
         el.querySelector('[data-hint]').textContent = notifyHint();
       });
       el.addEventListener('click', async e => {
+        const choice = e.target.closest('[data-pref]');
+        if (choice) {
+          const { pref, value } = choice.dataset;
+          if (pref === 'barnView') setBarnViewPref(value);
+          else if (pref === 'quality') setQualityPref(value);
+          for (const b of el.querySelectorAll(`[data-pref="${pref}"]`)) {
+            const on = b === choice;
+            b.classList.toggle('btn-primary', on);
+            b.setAttribute('aria-pressed', String(on));
+          }
+          return;
+        }
         if (!e.target.closest('[data-set="install"]')) return;
         await promptInstall();
       });

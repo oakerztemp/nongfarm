@@ -254,7 +254,8 @@ export function claimGift(state, petId) {
 // ── ลานให้ของ (CONTRACT_V6 §3) ──────────────────────────────────────────────
 // Pets at home slowly produce coins and habitat items into state.yard; one tap collects them.
 // Deterministic expected-value accumulation (no RNG, so reloading cannot farm luck), capped at 6 h of production.
-export const YARD_BASE_COINS = { common: 3, uncommon: 4, rare: 6, epic: 9, legendary: 14 }; // coins / hour
+// coins / hour. Raised after V6 launch: common x2.7 .. legendary x1.3 (a yard of 20 maxed legendaries must stay < 20% of day-14 income).
+export const YARD_BASE_COINS = { common: 8, uncommon: 10, rare: 12, epic: 15, legendary: 18 };
 export const YARD_ITEM_CHANCE = { rare: 0.05, epic: 0.08, legendary: 0.12 };                 // items / hour (others 0.03)
 export const YARD_ITEM_CHANCE_DEFAULT = 0.03;
 export const YARD_CAP_MS = 6 * HOUR;
@@ -302,7 +303,7 @@ export function yardOutput(pet) {
   const happy = (pet.stats && pet.stats.happy) || 0;
   const mood = happy >= 70 ? 1 : happy >= 30 ? 0.6 : 0.2;
   const sleepMult = pet.status === 'sleeping' ? 0.5 : 1;
-  const coins = (YARD_BASE_COINS[sp.rarity] || 3) * (1 + 0.1 * bondHearts(pet)) * mood * sleepMult;
+  const coins = (YARD_BASE_COINS[sp.rarity] || YARD_BASE_COINS.common) * (1 + 0.1 * bondHearts(pet)) * mood * sleepMult;
   const items = (YARD_ITEM_CHANCE[sp.rarity] ?? YARD_ITEM_CHANCE_DEFAULT) * mood * sleepMult;
   return { coins, items, habitat: sp.habitat };
 }

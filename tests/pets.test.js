@@ -12,8 +12,9 @@ import {
   makeShiny, buyHabitatEgg, BOOK_GOALS, claimGoal,
   getTrait, traitEffect, bondHearts, bondPowerMult, addBond, claimGift, bondProgress,
   patPet, patsLeftToday, PAT_DAILY_MAX,
-  yardOutput, tickYard, collectYard, yardPreview, yardItemTable, stationStatus,
+  yardOutput, tickYard, collectYard, yardPreview, yardItemTable, stationStatus, YARD_BASE_COINS,
 } from '../js/pets.js';
+const C = YARD_BASE_COINS.common, L = YARD_BASE_COINS.legendary; // yard coins/h of a hamster / racehorse
 import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor,
   signatureFor, NAP_CAP, pickTarget, ceremonyKind, partBases, applyPartPose, canStartCeremony,
   yardTierOf, yardProps, configureYard, YARD_TIER_LAYOUT, nestSpot } from '../js/petBehaviour.js';
@@ -984,18 +985,18 @@ const yardSetup = (speciesId = 'hamster', over = {}) => {
 test('yard rates: base x (1 + 0.1/heart) x mood x sleep, sick and working pets earn nothing', () => {
   const rate = pet => yardOutput(pet).coins;
   const mk = (speciesId, over = {}) => setup(speciesId, over).pet;
-  near(rate(mk('hamster')), 3, 'common');
-  near(rate(mk('rabbit')), 4, 'uncommon');
-  near(rate(mk('llama')), 6, 'rare');
-  near(rate(mk('turkey')), 9, 'epic');
-  near(rate(mk('racehorse')), 14, 'legendary');
-  near(rate(mk('hamster', { bond: 360 })), 3 * 1.5, '5 hearts = +50%');
-  near(rate(mk('hamster', { bond: 60 })), 3 * 1.2, '2 hearts');
-  near(rate(mk('hamster', { stats: { happy: 70 } })), 3, 'happy 70 = full');
-  near(rate(mk('hamster', { stats: { happy: 69 } })), 3 * 0.6, 'happy < 70');
-  near(rate(mk('hamster', { stats: { happy: 30 } })), 3 * 0.6, 'happy 30');
-  near(rate(mk('hamster', { stats: { happy: 29 } })), 3 * 0.2, 'happy < 30');
-  near(rate(mk('hamster', { status: 'sleeping' })), 1.5, 'sleeping x0.5');
+  near(rate(mk('hamster')), C, 'common');
+  near(rate(mk('rabbit')), YARD_BASE_COINS.uncommon, 'uncommon');
+  near(rate(mk('llama')), YARD_BASE_COINS.rare, 'rare');
+  near(rate(mk('turkey')), YARD_BASE_COINS.epic, 'epic');
+  near(rate(mk('racehorse')), L, 'legendary');
+  near(rate(mk('hamster', { bond: 360 })), C * 1.5, '5 hearts = +50%');
+  near(rate(mk('hamster', { bond: 60 })), C * 1.2, '2 hearts');
+  near(rate(mk('hamster', { stats: { happy: 70 } })), C, 'happy 70 = full');
+  near(rate(mk('hamster', { stats: { happy: 69 } })), C * 0.6, 'happy < 70');
+  near(rate(mk('hamster', { stats: { happy: 30 } })), C * 0.6, 'happy 30');
+  near(rate(mk('hamster', { stats: { happy: 29 } })), C * 0.2, 'happy < 30');
+  near(rate(mk('hamster', { status: 'sleeping' })), C * 0.5, 'sleeping x0.5');
   assertEq(rate(mk('hamster', { sick: true })), 0, 'sick');
   assertEq(rate(mk('hamster', { status: 'working' })), 0, 'working');
   assertEq(rate(mk('hamster', { status: 'expedition' })), 0, 'expedition');
@@ -1008,29 +1009,29 @@ test('yard rates: base x (1 + 0.1/heart) x mood x sleep, sick and working pets e
 test('tickYard: exact expected-value accumulation, 6 h cap, collect resets the cap', () => {
   const { s } = yardSetup('hamster');
   tickYard(s, HOUR);
-  near(s.yard.pending, 3, '1 h of one common pet');
+  near(s.yard.pending, C, '1 h of one common pet');
   tickYard(s, 10 * HOUR);
-  near(s.yard.pending, 18, 'capped at 6 h of production (3 x 6)');
+  near(s.yard.pending, C * 6, 'capped at 6 h of production');
   near(s.yard.accMs, 6 * HOUR, 'cap bookkeeping');
   tickYard(s, 5 * HOUR);
-  near(s.yard.pending, 18, 'stops filling beyond the cap');
+  near(s.yard.pending, C * 6, 'stops filling beyond the cap');
   near(yardPreview(s).fill, 1, 'bar full');
   const r = collectYard(s);
-  assert(r.ok && r.coins === 18, 'collected 18 coins');
+  assert(r.ok && r.coins === C * 6, `collected ${C * 6} coins`);
   assertEq(s.stats.yardCollected, 1, 'stats.yardCollected');
   assertEq(yardPreview(s).fill, 0, 'bar empty again');
   tickYard(s, HOUR);
-  near(s.yard.pending, 3, 'fills again after a collect');
+  near(s.yard.pending, C, 'fills again after a collect');
 });
 
 test('tickYard: the rate follows the current pets; a bigger yard pays more, working pets pay nothing', () => {
   const { s, pet } = yardSetup('hamster');
   s.pets.push({ ...pet, id: 'p2', speciesId: 'racehorse' });
   tickYard(s, HOUR);
-  near(s.yard.pending, 3 + 14, 'two pets');
+  near(s.yard.pending, C + L, 'two pets');
   s.pets[1].status = 'working';
   tickYard(s, HOUR);
-  near(s.yard.pending, 3 + 14 + 3, 'the working one adds nothing');
+  near(s.yard.pending, C + L + C, 'the working one adds nothing');
 });
 
 test('yard items: deterministic (no RNG), rotate through the habitat table, fractions carry over collects', () => {
@@ -1156,7 +1157,7 @@ test('tickYard heals a corrupt yard: negative accMs, NaN prog, string pending', 
   tickYard(s, HOUR);
   assert(s.yard.accMs >= 0 && s.yard.accMs <= 6 * HOUR, 'accMs clamped to 0..cap: ' + s.yard.accMs);
   near(s.yard.accMs, HOUR, 'negative accMs did not buy extra credit');
-  near(s.yard.pending, 3, 'string pending reset, then 1 h of one hamster');
+  near(s.yard.pending, C, 'string pending reset, then 1 h of one hamster');
   assert(!('farm' in s.yard.prog) || Number.isFinite(s.yard.prog.farm), 'NaN prog never survives');
   assertEq(s.yard.prog.forest === undefined || s.yard.prog.forest >= 0, true, 'negative prog dropped');
   near(s.yard.prog.water, 0.4, 'valid prog kept');

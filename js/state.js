@@ -3,7 +3,7 @@ import { now, notify } from './util.js';
 import { fastForwardQuests } from './quests.js'; // circular on purpose: only called at migration time
 import { getCrop } from './data/crops.js';
 
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 export const DEFAULT_FARM_NAME = 'ฟาร์มของฉัน';
 const PLOT_COUNT = 4;
 
@@ -11,12 +11,12 @@ const STAT_KEYS = [
   'hatched', 'fed', 'played', 'cleaned', 'released',
   'planted', 'harvested', 'helped',
   'expeditionsStarted', 'expeditionsClaimed',
-  'ordersDone', 'sold', 'bought',
+  'ordersDone', 'sold', 'bought', 'yardCollected',
 ];
 const newStats = () => Object.fromEntries(STAT_KEYS.map(k => [k, 0]));
 
 function newPlot(index) {
-  return { index, cropId: null, plantedAt: 0, progress: 0, watered: false, petIds: [] };
+  return { index, cropId: null, plantedAt: 0, progress: 0, watered: false, petIds: [], stations: [null, null, null] };
 }
 
 export function createNewState() {
@@ -48,6 +48,7 @@ export function createNewState() {
     stardust: 0,
     claimedGoals: [],
     settings: { notify: false },
+    yard: { pending: 0, items: {}, lastAt: t },
   };
 }
 
@@ -80,6 +81,7 @@ function petDefaults(t) {
     poop: 0, sick: false, zeroSince: null, lastFedAt: 0,
     status: 'idle', task: null, bornAt: t,
     bond: 0, bondDay: null, bondToday: 0, giftDay: null,
+    station: null,
   };
 }
 
@@ -163,7 +165,68 @@ export const MIGRATIONS = {
     s.version = 3;
     return s;
   },
+
+  // v3 -> v4: stations (pets pinned to a plot slot) + the yard gift accumulator.
+  // Friendly default: every pet that is working a plot slot right now becomes stationed on that slot.
+  3(s) {
+    const plots = (Array.isArray(s.plots) ? s.plots : []).map(p => (isObj(p) ? { ...p, stations: [null, null, null] } : p));
+    s.plots = plots;
+    const pets = Array.isArray(s.pets) ? s.pets : [];
+    for (const pet of pets) {
+      if (!isObj(pet)) continue;
+      pet.station = null;
+      const task = isObj(pet.task) ? pet.task : null;
+      if (!task || task.type !== 'plot') continue;
+      const plot = plots[task.plotIndex];
+      const slot = Number.isInteger(task.slot) ? task.slot : 0;
+      if (isObj(plot) && slot >= 0 && slot < 3 && Array.isArray(plot.petIds) && plot.petIds[slot] === pet.id) {
+        plot.stations[slot] = pet.id;
+        pet.station = { plotIndex: task.plotIndex, slot };
+      }
+    }
+    const old = isObj(s.yard) ? s.yard : {};
+    s.yard = {
+      pending: Number.isFinite(old.pending) && old.pending > 0 ? old.pending : 0,
+      items: isObj(old.items) ? old.items : {},
+      lastAt: now(),
+    };
+    s.version = 4;
+    return s;
+  },
 };
+
+/**
+ * Makes plot.stations <-> pet.station consistent in both directions: a station pointing at a missing pet/plot (or
+ * a pet whose own station does not list it) is cleared, a pet holds at most one station, plots get exactly 3 entries.
+ * Idempotent; runs at the end of every migrate() and is exported for the farm logic's tests.
+ */
+export function repairStations(s) {
+  const plots = Array.isArray(s.plots) ? s.plots : [];
+  const pets = Array.isArray(s.pets) ? s.pets : [];
+  const byId = new Map(pets.filter(p => isObj(p)).map(p => [p.id, p]));
+  const claimed = new Set();
+  plots.forEach((plot, i) => {
+    if (!isObj(plot)) return;
+    const src = Array.isArray(plot.stations) ? plot.stations : [];
+    plot.stations = [0, 1, 2].map(slot => {
+      const id = src[slot];
+      const pet = typeof id === 'string' && id ? byId.get(id) : null;
+      if (!pet || claimed.has(id)) return null;
+      const st = isObj(pet.station) ? pet.station : null;
+      if (st && (st.plotIndex !== i || st.slot !== slot)) return null; // the pet is stationed somewhere else
+      claimed.add(id);
+      pet.station = { plotIndex: i, slot };
+      return id;
+    });
+  });
+  for (const pet of byId.values()) {
+    const st = isObj(pet.station) ? pet.station : null;
+    if (!st) { pet.station = null; continue; }
+    const plot = plots[st.plotIndex];
+    if (!isObj(plot) || !Array.isArray(plot.stations) || plot.stations[st.slot] !== pet.id) pet.station = null;
+  }
+  return s;
+}
 
 /** Helper slots of a crop (mirrors the rule in crops.js: <30 min 1, <2 h 2, else 3). */
 function slotCount(cropId) {
@@ -217,6 +280,9 @@ function migrateUnsafe(raw) {
   s.log = s.log.filter(isObj).slice(0, 50);
   s.plots = s.plots.filter(isObj).map((p, i) => fill(p, newPlot(i), 'plot'));
   if (!s.plots.length) s.plots = base.plots;
+  s.yard.pending = Math.max(0, s.yard.pending);
+  s.yard.items = Object.fromEntries(Object.entries(s.yard.items).filter(([, n]) => Number.isFinite(n) && n > 0));
+  repairStations(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

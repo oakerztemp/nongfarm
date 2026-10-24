@@ -5,9 +5,9 @@ import { addLog } from './util.js';
 const stat = (s, key) => (s.stats && s.stats[key]) || 0;
 
 export const QUESTS = [
-  { id: 'hatch', titleTh: 'ฟักไข่ใบแรก', hintTh: 'ใส่ไข่ในตู้ฟักที่แท็บคอก แล้วรอให้ฟัก', tab: 'barn',
+  { id: 'hatch', titleTh: 'ฟักไข่ใบแรก', hintTh: 'ใส่ไข่ในตู้ฟักที่แท็บลาน แล้วรอให้ฟัก', tab: 'barn',
     check: s => stat(s, 'hatched') >= 1, reward: { coins: 30, textTh: '🪙 30' } },
-  { id: 'feed', titleTh: 'ให้อาหารน้อง', hintTh: 'กดให้อาหารน้องที่แท็บคอก', tab: 'barn',
+  { id: 'feed', titleTh: 'ให้อาหารน้อง', hintTh: 'กดให้อาหารน้องที่แท็บลาน', tab: 'barn',
     check: s => stat(s, 'fed') >= 1, reward: { items: { food_kibble: 3 }, textTh: 'อาหารเม็ด ×3' } },
   { id: 'plant', titleTh: 'ปลูกพืช', hintTh: 'เลือกแปลงว่างที่แท็บไร่ แล้วปลูกเมล็ดแครอท', tab: 'farm',
     check: s => stat(s, 'planted') >= 1, reward: { items: { seed_corn: 3 }, textTh: 'เมล็ดข้าวโพด ×3' } },

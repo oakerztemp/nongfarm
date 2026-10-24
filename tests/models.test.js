@@ -7,7 +7,7 @@ import { SPECIES, getSpecies } from '../js/data/species.js';
 
 const FARM = SPECIES.filter(s => s.habitat === 'farm');
 const TRI_BUDGET = 1500;
-const LEGEND_IDS = ['dragon', 'unicorn', 'dragonhead', 'mammoth', 'lion', 'panda'];
+const LEGEND_IDS = ['dragon', 'unicorn', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear'];
 const LEGEND_TRI_BUDGET = 1800;
 
 function tris(obj) {
@@ -218,7 +218,7 @@ test('models V5: legendary six build, <= 1800 tris, <= 7 draw calls, finite, sta
 });
 
 test('models V5: rarity + legendary flag; legendary root scale is x1.25 on top of the stage scale', () => {
-  for (const id of ['dragon', 'unicorn', 'lion', 'panda']) {
+  for (const id of ['dragon', 'unicorn', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear']) {
     for (let st = 0; st < 4; st++) {
       const m = buildL(id, { stage: st });
       assertEq(m.legendary, true, id + ' legendary');
@@ -281,7 +281,8 @@ test('models V5: curated shiny palettes (sapphire dragon, golden lion, white-gol
 });
 
 test('models V5: billboards never apply a colour filter; shiny just sets shinyStyle halo (same texture)', () => {
-  const eagle = getSpecies('eagle');
+  // every legendary now has a model, so a made-up legendary species without a spec exercises the billboard path
+  const eagle = { id: 'test_legend', emoji: '\u{1F985}', rarity: 'legendary' };
   const plain = buildPetModel(THREE, { stage: 2 }, eagle);
   const t0 = kitStats(THREE).textures;
   const shiny = buildPetModel(THREE, { stage: 2, shiny: true }, eagle);
@@ -316,7 +317,7 @@ test('models: the stage-3 crown rides on the head, just above the head-top ancho
       assert(Math.hypot(c2.x - a2.x, c2.z - a2.z) / k < 0.3, `${id} crown stays on the rotated head`);
     }
   }
-  for (const sid of ['eagle', 'dolphin', 'deer']) {   // billboards: centred above the sprite
+  for (const sid of ['shark', 'dolphin', 'deer']) {   // billboards: centred above the sprite
     const m = buildPetModel(THREE, { stage: 3 }, getSpecies(sid));
     assertEq([m.parts.crown.position.x, m.parts.crown.position.z], [0, 0], sid + ' billboard crown centred');
     const dy = m.parts.crown.position.y - m.anchor.position.y;
@@ -324,4 +325,30 @@ test('models: the stage-3 crown rides on the head, just above the head-top ancho
   }
   for (const id of LEGEND_IDS) assert(drawCalls(buildL(id, { stage: 3 })) <= 8, id + ' master draw calls');
   assert(drawCalls(buildL('dragon')) <= 7 && drawCalls(buildL('dragon', { stage: 3 })) <= 7, 'dragon <= 7 draw calls even as a master');
+});
+
+test('models V6: humpback / eagle / beetle / polarbear: budgets, flags and the exact part names B animates', () => {
+  const whale = buildL('humpback'), eagle = buildL('eagle'), beetle = buildL('beetle'), bear = buildL('polarbear');
+  for (const m of [whale, eagle, beetle, bear]) {
+    assertEq([m.legendary, m.rarity, m.kind], [true, 'legendary', 'model']);
+    assert(tris(m.root) <= LEGEND_TRI_BUDGET && drawCalls(m) <= 7, `budget: ${tris(m.root)} tris / ${drawCalls(m)} calls`);
+    assertEq(+m.root.scale.x.toFixed(6), 1.25, 'legendary x1.25');
+    assert(MODEL_SPECS[m.root.name] === undefined && true, 'root');
+  }
+  assert(whale.parts.fluke && whale.parts.fluke.isGroup && whale.parts.fluke.children.some(c => c.isMesh), 'fluke pivot with geometry');
+  whale.parts.fluke.rotation.x += 0.4; // slap
+  assert(whale.parts.spout && whale.parts.spout.isObject3D && !whale.parts.spout.isMesh && whale.parts.spout.parent === whale.head, 'spout anchor on the head');
+  assert(whale.parts.spout.position.y > 0.2 && whale.parts.tail === null, 'blowhole is on top; the whale tail is called fluke');
+  for (const m of [eagle, beetle]) {
+    assert(m.parts.wingL && m.parts.wingR && m.parts.wingL !== m.parts.wingR, 'wing pivots');
+    assert(m.parts.wingL.children.some(c => c.isMesh) && m.parts.wingR.children.some(c => c.isMesh), 'wings have geometry');
+    m.parts.wingL.rotation.z = 0.8; m.parts.wingR.rotation.z = -0.8;
+  }
+  // beetle shells hinge at the front-top: the pivot sits in front of the shell's centre
+  assert(beetle.parts.wingL.position.z > 0 && beetle.parts.wingL.position.y > 0.3, 'beetle hinge at the front-top');
+  assert(eagle.parts.wingL.position.x > 0.2 && eagle.parts.wingR.position.x < -0.2, 'eagle wings at the shoulders');
+  assert(bear.parts.wingL === null && bear.parts.fluke === null, 'bear has nothing extra');
+  // curated shiny palettes
+  for (const id of ['humpback', 'eagle', 'beetle', 'polarbear']) assert(MODEL_SPECS[id].shinyPalette, id + ' palette');
+  assert(vertexColors(buildL('beetle', { shiny: true })).size > 0 && [...vertexColors(buildL('humpback', { shiny: true }))].join() !== [...vertexColors(whale)].join(), 'shiny changes colours');
 });

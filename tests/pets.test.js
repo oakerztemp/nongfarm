@@ -12,9 +12,11 @@ import {
   makeShiny, buyHabitatEgg, BOOK_GOALS, claimGoal,
   getTrait, traitEffect, bondHearts, bondPowerMult, addBond, claimGift, bondProgress,
   patPet, patsLeftToday, PAT_DAILY_MAX,
+  yardOutput, tickYard, collectYard, yardPreview, yardItemTable, stationStatus,
 } from '../js/pets.js';
 import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor,
-  signatureFor, NAP_CAP, pickTarget, ceremonyKind, partBases, applyPartPose, canStartCeremony } from '../js/petBehaviour.js';
+  signatureFor, NAP_CAP, pickTarget, ceremonyKind, partBases, applyPartPose, canStartCeremony,
+  yardTierOf, yardProps, configureYard, YARD_TIER_LAYOUT, nestSpot } from '../js/petBehaviour.js';
 
 const HOUR = 3600 * 1000;
 const MIN = 60 * 1000;
@@ -970,4 +972,200 @@ test('hatch ceremony lock: only an unfinished ceremony blocks the next hatch', (
   assertEq(canStartCeremony(null), true, 'idle');
   for (const phase of ['pending', 'wobble', 'legend']) assertEq(canStartCeremony({ phase }), false, phase + ' blocks');
   assertEq(canStartCeremony({ phase: 'burst' }), true, 'after the burst another egg may hatch (newborn still walking)');
+});
+
+// ── ลานให้ของ (CONTRACT_V6 §3) ──────────────────────────────────────────────
+const yardSetup = (speciesId = 'hamster', over = {}) => {
+  const r = setup(speciesId, over);
+  r.s.yard = { pending: 0, items: {}, lastAt: 0 };
+  return r;
+};
+
+test('yard rates: base x (1 + 0.1/heart) x mood x sleep, sick and working pets earn nothing', () => {
+  const rate = pet => yardOutput(pet).coins;
+  const mk = (speciesId, over = {}) => setup(speciesId, over).pet;
+  near(rate(mk('hamster')), 3, 'common');
+  near(rate(mk('rabbit')), 4, 'uncommon');
+  near(rate(mk('llama')), 6, 'rare');
+  near(rate(mk('turkey')), 9, 'epic');
+  near(rate(mk('racehorse')), 14, 'legendary');
+  near(rate(mk('hamster', { bond: 360 })), 3 * 1.5, '5 hearts = +50%');
+  near(rate(mk('hamster', { bond: 60 })), 3 * 1.2, '2 hearts');
+  near(rate(mk('hamster', { stats: { happy: 70 } })), 3, 'happy 70 = full');
+  near(rate(mk('hamster', { stats: { happy: 69 } })), 3 * 0.6, 'happy < 70');
+  near(rate(mk('hamster', { stats: { happy: 30 } })), 3 * 0.6, 'happy 30');
+  near(rate(mk('hamster', { stats: { happy: 29 } })), 3 * 0.2, 'happy < 30');
+  near(rate(mk('hamster', { status: 'sleeping' })), 1.5, 'sleeping x0.5');
+  assertEq(rate(mk('hamster', { sick: true })), 0, 'sick');
+  assertEq(rate(mk('hamster', { status: 'working' })), 0, 'working');
+  assertEq(rate(mk('hamster', { status: 'expedition' })), 0, 'expedition');
+  near(yardOutput(mk('hamster')).items, 0.03, 'item chance common 3%');
+  near(yardOutput(mk('llama')).items, 0.05, 'rare 5%');
+  near(yardOutput(mk('turkey')).items, 0.08, 'epic 8%');
+  near(yardOutput(mk('racehorse')).items, 0.12, 'legendary 12%');
+});
+
+test('tickYard: exact expected-value accumulation, 6 h cap, collect resets the cap', () => {
+  const { s } = yardSetup('hamster');
+  tickYard(s, HOUR);
+  near(s.yard.pending, 3, '1 h of one common pet');
+  tickYard(s, 10 * HOUR);
+  near(s.yard.pending, 18, 'capped at 6 h of production (3 x 6)');
+  near(s.yard.accMs, 6 * HOUR, 'cap bookkeeping');
+  tickYard(s, 5 * HOUR);
+  near(s.yard.pending, 18, 'stops filling beyond the cap');
+  near(yardPreview(s).fill, 1, 'bar full');
+  const r = collectYard(s);
+  assert(r.ok && r.coins === 18, 'collected 18 coins');
+  assertEq(s.stats.yardCollected, 1, 'stats.yardCollected');
+  assertEq(yardPreview(s).fill, 0, 'bar empty again');
+  tickYard(s, HOUR);
+  near(s.yard.pending, 3, 'fills again after a collect');
+});
+
+test('tickYard: the rate follows the current pets; a bigger yard pays more, working pets pay nothing', () => {
+  const { s, pet } = yardSetup('hamster');
+  s.pets.push({ ...pet, id: 'p2', speciesId: 'racehorse' });
+  tickYard(s, HOUR);
+  near(s.yard.pending, 3 + 14, 'two pets');
+  s.pets[1].status = 'working';
+  tickYard(s, HOUR);
+  near(s.yard.pending, 3 + 14 + 3, 'the working one adds nothing');
+});
+
+test('yard items: deterministic (no RNG), rotate through the habitat table, fractions carry over collects', () => {
+  const realRandom = Math.random;
+  Math.random = () => { throw new Error('yard must not use randomness'); };
+  try {
+    const { s } = yardSetup('dragon'); // legendary, mystic: 12%/h
+    let items = 0;
+    const seen = new Set();
+    for (let i = 0; i < 100; i++) { // 600 h in 6 h sessions
+      tickYard(s, 6 * HOUR);
+      const r = collectYard(s);
+      if (r.ok) for (const [id, c] of Object.entries(r.items)) { items += c; seen.add(id); }
+    }
+    assertEq(items, Math.floor(0.12 * 600 + 1e-6), 'expected value only: 72 items in 600 h');
+    assertEq([...seen].sort(), ['forage_gem', 'forage_star'], 'mystic table');
+    assert((countItem(s, 'forage_star') + countItem(s, 'forage_gem')) === items, 'items landed in the inventory');
+  } finally { Math.random = realRandom; }
+  // each habitat only gifts its own things; farm gifts only seeds of unlocked crops (+ milk)
+  const farm = yardSetup('hamster');
+  farm.s.player.level = 1;
+  for (const id of yardItemTable(farm.s, 'farm')) assert(id === 'food_milk' || /^seed_/.test(id), 'farm item ' + id);
+  assert(yardItemTable(farm.s, 'farm').length >= 2, 'milk + at least one seed');
+  for (const hab of Object.keys(HABITATS)) for (const id of yardItemTable(farm.s, hab)) assert(getItem(id), hab + ': ' + id + ' exists');
+});
+
+test('collectYard: nothing to collect fails politely; bond daily cap is untouched', () => {
+  const { s, pet } = yardSetup('hamster');
+  assertEq(collectYard(s).ok, false, 'empty yard');
+  tickYard(s, HOUR);
+  addBond(s, pet.id, 30); // the daily bond cap is used up
+  const bondBefore = pet.bond;
+  assert(collectYard(s).ok, 'still collectable');
+  assertEq(pet.bond, bondBefore, 'collecting gives no bond');
+});
+
+test('yard via tickPets / offline catch-up: 72 h away yields at most 6 h of production', async () => {
+  const { advance } = await import('../js/tick.js');
+  await withFakeNow(Date.UTC(2026, 5, 1, 0, 0, 0), async clock => {
+    const { s, pet } = yardSetup('hamster', { stats: { hunger: 100, happy: 100, energy: 100, clean: 100 } });
+    s.lastTick = clock.get();
+    const perHourAtStart = yardOutput(pet).coins;
+    clock.advance(72 * HOUR);
+    advance(s, clock.get());
+    assert(s.yard.accMs <= 6 * HOUR + 1, 'credited time capped: ' + s.yard.accMs);
+    assert(s.yard.pending <= perHourAtStart * 6 + 1e-6, 'pending <= 6 h of production: ' + s.yard.pending);
+    assert(s.yard.pending > 0, 'and something was produced');
+  });
+});
+
+test('stationStatus: "ประจำแปลง #N" and what the resting pet is doing', () => {
+  const { s, pet } = setup('hamster', { station: { plotIndex: 2, slot: 0 } });
+  s.plots[2].cropId = 'carrot'; s.plots[2].progress = 0.3;
+  assertEq(stationStatus(s, pet).label, 'ประจำแปลง #3', 'label');
+  assert(/พร้อมกลับไปทำงาน/.test(stationStatus(s, pet).text), 'ready to go back');
+  pet.status = 'sleeping'; assertEq(stationStatus(s, pet).emoji, '💤', 'sleeping');
+  pet.status = 'idle'; pet.stats.hunger = 5; assertEq(stationStatus(s, pet).emoji, '😋', 'hungry');
+  pet.stats.hunger = 80; pet.sick = true; assertEq(stationStatus(s, pet).emoji, '🤒', 'sick');
+  pet.sick = false; pet.status = 'working'; assertEq(stationStatus(s, pet).emoji, '🌾', 'working');
+  pet.status = 'idle'; s.plots[2].cropId = null; assert(/รอที่ลาน/.test(stationStatus(s, pet).text), 'empty plot: waits at home');
+  assertEq(stationStatus(s, setup('cat').pet), null, 'not stationed');
+});
+
+// ── yard tiers S / M / L / XL (CONTRACT_V6 §4) ───────────────────────────────
+test('yard tiers: capacity -> tier, same rule and numbers as the engine', async () => {
+  for (const [cap, tier] of [[0, 'S'], [3, 'S'], [5, 'S'], [6, 'M'], [9, 'M'], [10, 'L'], [14, 'L'], [15, 'XL'], [20, 'XL'], [40, 'XL']]) {
+    assertEq(yardTierOf(cap), tier, 'capacity ' + cap);
+  }
+  const eng = await import('../js/world3d/engine.js');
+  for (const t of ['S', 'M', 'L', 'XL']) {
+    assertEq([YARD_TIER_LAYOUT[t].walk, YARD_TIER_LAYOUT[t].barnZ], [eng.YARD_TIERS[t].walk, eng.YARD_TIERS[t].barnZ], 'layout mirrors engine ' + t);
+    assertEq(eng.yardTierForCapacity(t === 'S' ? 4 : t === 'M' ? 7 : t === 'L' ? 12 : 18), t, 'engine tier rule ' + t);
+  }
+  assert(YARD_TIER_LAYOUT.S.walk < YARD_TIER_LAYOUT.M.walk && YARD_TIER_LAYOUT.M.walk < YARD_TIER_LAYOUT.L.walk && YARD_TIER_LAYOUT.L.walk < YARD_TIER_LAYOUT.XL.walk, 'walk radius grows');
+});
+
+test('yard props: cumulative per tier, clear of the bowl, the nest row and each other, inside the island', () => {
+  const kinds = t => yardProps(t).map(p => p.kind);
+  assertEq(kinds('S'), [], 'S: plain meadow');
+  assertEq(kinds('M'), ['pond', 'tree'], 'M');
+  assertEq(kinds('L'), ['pond', 'tree', 'flowerbed', 'playground'], 'L');
+  assertEq(kinds('XL').slice(0, 6), ['pond', 'tree', 'flowerbed', 'playground', 'hill', 'lantern'], 'XL');
+  assertEq(kinds('XL').filter(k => k === 'lantern').length, 4, 'four lanterns');
+  const saved = JSON.stringify(YARD);
+  try {
+    for (const t of ['S', 'M', 'L', 'XL']) {
+      configureYard(t);
+      const lay = YARD_TIER_LAYOUT[t];
+      const props = yardProps(t);
+      for (const p of props) {
+        assert(Math.hypot(p.x, p.z) + p.r <= lay.walk + 1.4, `${t}/${p.id} inside the island`);
+        assert(Math.hypot(p.x - YARD.bowl.x, p.z - YARD.bowl.z) > p.r + 0.9, `${t}/${p.id} keeps clear of the food bowl`);
+        for (let i = 0; i < 6; i++) {
+          const n = nestSpot(i, 6);
+          assert(Math.hypot(p.x - n.x, p.z - n.z) > p.r + 0.7, `${t}/${p.id} keeps clear of nest ${i}`);
+        }
+        for (const q of props) if (q !== p) assert(Math.hypot(p.x - q.x, p.z - q.z) > p.r + q.r + 0.2 || p.kind === 'lantern' && q.kind === 'lantern', `${t}: ${p.id} vs ${q.id}`);
+      }
+      assertEq(YARD.nestZ, lay.barnZ + 2.35, t + ' nest row follows the barn');
+      assert(YARD.walkRadius < lay.walk, 'pets stay inside the engine walk radius');
+      // wander targets respect the new radius and avoid the props
+      const rng = makeRng(77);
+      for (let i = 0; i < 300; i++) {
+        const tg = pickTarget(rng, 0, 0.5, [], false);
+        assert(Math.hypot(tg.x, tg.z) <= YARD.walkRadius + 1e-6, t + ': target inside the yard');
+        for (const p of props) if (p.kind !== 'lantern') assert(Math.hypot(tg.x - p.x, tg.z - p.z) >= p.r + 0.6 - 1e-6 || Math.hypot(tg.x, tg.z) < 0.01, `${t}: target clear of ${p.id}`);
+      }
+    }
+  } finally { Object.assign(YARD, JSON.parse(saved)); }
+});
+
+test('part animator also drives a whale fluke (rotation.x) and ignores models without one', () => {
+  const fluke = { rotation: { x: 0.1, y: 0, z: 0 } };
+  const parts = { fluke };
+  applyPartPose(parts, partBases(parts), { fluke: 0.5 });
+  assert(Math.abs(fluke.rotation.x - 0.6) < 1e-9, 'fluke swings around its rest pose');
+  applyPartPose({}, partBases({}), { fluke: 0.5 });
+});
+
+test('tickYard heals a corrupt yard: negative accMs, NaN prog, string pending', () => {
+  const { s } = yardSetup('hamster');
+  s.yard = { pending: '12', items: { food_milk: -3, forage_gem: 2, junk: NaN }, accMs: -5 * HOUR, prog: { farm: NaN, forest: -1, water: 0.4 }, n: -4, lastAt: 0 };
+  tickYard(s, HOUR);
+  assert(s.yard.accMs >= 0 && s.yard.accMs <= 6 * HOUR, 'accMs clamped to 0..cap: ' + s.yard.accMs);
+  near(s.yard.accMs, HOUR, 'negative accMs did not buy extra credit');
+  near(s.yard.pending, 3, 'string pending reset, then 1 h of one hamster');
+  assert(!('farm' in s.yard.prog) || Number.isFinite(s.yard.prog.farm), 'NaN prog never survives');
+  assertEq(s.yard.prog.forest === undefined || s.yard.prog.forest >= 0, true, 'negative prog dropped');
+  near(s.yard.prog.water, 0.4, 'valid prog kept');
+  assertEq(s.yard.items, { forage_gem: 2 }, 'bad item counts dropped');
+  assertEq(s.yard.n, 0, 'rotation counter repaired');
+  // a farm habitat keeps producing items after its NaN entry was dropped
+  for (let i = 0; i < 40; i++) tickYard(s, 6 * HOUR), collectYard(s);
+  assert(Number.isFinite(s.yard.prog.farm) && s.yard.prog.farm >= 0, 'farm progress is a normal number again');
+  s.yard.accMs = 99 * HOUR;
+  tickYard(s, HOUR);
+  assert(s.yard.accMs <= 6 * HOUR, 'oversized accMs clamped');
 });

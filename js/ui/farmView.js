@@ -16,6 +16,7 @@ import {
   startExpedition, claimExpedition, buyItem, sellItem,
   plotPrice, buyPlot, barnUpgradePrice, upgradeBarn,
   plotSpeed, plotEtaMs, effectivePower, plotTeam, slotPowerPreview, slotJobs, TEAM_COMBO, plotBonusPreview,
+  stationPet, unstationPet, stationInfo, stationLabel, MAX_STATIONS, yardUpgradePreview,
 } from '../farm.js';
 
 const esc = escapeHtml;
@@ -65,15 +66,34 @@ function slotsHtml(team, plotIndex, ready) {
   const rows = team.slots.map(sl => {
     const emoji = multi ? jobEmoji(sl.job) : team.crop.jobs.map(jobEmoji).join('');
     const title = multi ? `ช่อง ${sl.slot + 1}: ${esc(jobName(sl.job))}` : 'ช่องคนช่วย';
+    const pinned = !!(sl.station && sl.pet && sl.station.pet.id === sl.pet.id);
     if (sl.pet) {
       const pct = Math.round(PET_PCT * sl.power * (team.full && multi ? TEAM_COMBO : 1) * 100);
-      return `<div class="plot-slot is-filled" title="${title}"><span class="plot-slot-job">${emoji}</span>${petChipHtml(sl.pet)}<span class="plot-slot-pow">+${pct}%</span><button type="button" class="plot-slot-x" data-action="unassign" data-plot="${plotIndex}" data-slot="${sl.slot}" aria-label="เรียกกลับ" title="เรียกกลับ">✕</button></div>`;
+      const pin = pinned ? '<span class="plot-slot-pin" title="ประจำแปลง">📌</span>' : '';
+      const xLabel = pinned ? 'เลิกประจำแปลง' : 'เรียกกลับ';
+      return `<div class="plot-slot is-filled${pinned ? ' is-pinned' : ''}" title="${title}"><span class="plot-slot-job">${emoji}</span>${pin}${petChipHtml(sl.pet)}<span class="plot-slot-pow">+${pct}%</span><button type="button" class="plot-slot-x" data-action="unassign" data-plot="${plotIndex}" data-slot="${sl.slot}" aria-label="${xLabel}" title="${xLabel}">✕</button></div>`;
     }
+    if (sl.station) return restingRow(sl.station, plotIndex, sl.slot, emoji, title);
     if (ready) return '';
     return `<button type="button" class="plot-slot is-empty" data-action="helper" data-plot="${plotIndex}" data-slot="${sl.slot}" title="${title}"><span class="plot-slot-job">${emoji}</span> ＋ ส่งน้อง</button>`;
   }).join('');
   const combo = team.full && multi ? `<span class="badge plot-combo">🤝 คอมโบ! x${TEAM_COMBO}</span>` : '';
   return `<div class="plot-slots">${rows}${combo}</div>`;
+}
+
+// A stationed (📌) pet that is not working right now: dimmed chip + why (พัก / หิว / ป่วย / รอที่ลาน).
+function restingRow(info, plotIndex, slot, emoji, title) {
+  return `<div class="plot-slot is-filled is-resting" title="${title}"><span class="plot-slot-job">${emoji}</span><span class="plot-slot-pin" title="ประจำแปลง">📌</span>${petChipHtml(info.pet)}<span class="plot-slot-state">${info.emoji} ${esc(info.text)}</span><button type="button" class="plot-slot-x" data-action="unstation" data-plot="${plotIndex}" data-slot="${slot}" aria-label="เลิกประจำแปลง" title="เลิกประจำแปลง">✕</button></div>`;
+}
+
+// Empty plot: stationed pets wait at the yard (รอที่ลาน) until something is planted again.
+function stationWaitHtml(state, plotIndex) {
+  const rows = [];
+  for (let slot = 0; slot < MAX_STATIONS; slot++) {
+    const info = stationInfo(state, plotIndex, slot);
+    if (info) rows.push(restingRow(info, plotIndex, slot, '📌', `ประจำแปลง #${plotIndex + 1}`));
+  }
+  return rows.length ? `<div class="plot-slots plot-slots-wait">${rows.join('')}</div>` : '';
 }
 
 function powerNote(pet, jobs, label, ctx) {
@@ -103,6 +123,7 @@ function plotCard(state, plot, i, fertCount) {
       <div class="plot-head"><span class="plot-num">#${i + 1}</span></div>
       <div class="plot-soil"><div class="plot-plant plot-plant-empty">🟫</div></div>
       <div class="plot-body"><span class="muted">แปลงว่าง</span></div>
+      ${stationWaitHtml(state, i)}
       <div class="plot-actions">${again}<button class="btn ${last ? '' : 'btn-primary '}btn-sm" data-action="plant" data-plot="${i}">🌱 ${last ? 'เลือกพืช' : 'ปลูก'}</button></div>
     </div>`;
   }
@@ -126,7 +147,7 @@ function plotCard(state, plot, i, fertCount) {
     ? `<b class="plot-ready-text">พร้อมเก็บเกี่ยว!</b>${Number(plot.helperBonus) > 0 ? ` <span class="muted">น้องช่วย +${Number(plot.helperBonus)}</span>` : ''}`
     : `<span>${pct}% · เหลือ <span data-countdown="${endMs}">${formatDuration(eta)}</span></span>${bonusPreview > 0 ? ` <span class="muted">· น้องช่วย +${bonusPreview}</span>` : ''}`;
 
-  const slotsRow = team && team.slots.some(sl => sl.pet || !ready) ? slotsHtml(team, i, ready) : '';
+  const slotsRow = team && team.slots.some(sl => sl.pet || sl.station || !ready) ? slotsHtml(team, i, ready) : '';
 
   let actions = '';
   if (ready) {
@@ -314,6 +335,41 @@ function openSeedPicker(plotIndex) {
   });
 }
 
+const STATION_PREF_KEY = 'nongfarm_station_default';
+function stationDefault() {
+  try { return localStorage.getItem(STATION_PREF_KEY) !== '0'; } catch { return true; }   // default: pinned
+}
+function setStationDefault(on) {
+  try { localStorage.setItem(STATION_PREF_KEY, on ? '1' : '0'); } catch { /* storage blocked */ }
+}
+
+/** Send a helper; with `pin` also station it (replacing a resting pet that was pinned to that slot). */
+function sendHelper(s, plotIndex, slot, petId, pin) {
+  const r = assignPet(s, plotIndex, petId, slot);
+  if (!r.ok || !pin) return r;
+  const plot = s.plots[plotIndex];
+  const holder = plot && Array.isArray(plot.stations) ? plot.stations[slot] : null;
+  if (holder && holder !== petId) unstationPet(s, plotIndex, slot);
+  const pr = stationPet(s, plotIndex, slot, petId);
+  return { ok: true, msg: pr.ok ? `${r.msg} 📌 ประจำแปลงแล้ว` : `${r.msg} (${pr.reason})` };
+}
+
+function confirmModal(title, text, yesLabel, onYes) {
+  let close = () => {};
+  close = openModal({
+    title,
+    html: `<p>${esc(text)}</p><div class="farm-confirm-btns"><button type="button" class="btn" data-confirm="no">ไว้ก่อน</button> <button type="button" class="btn btn-primary" data-confirm="yes">${esc(yesLabel)}</button></div>`,
+    onMount(el) {
+      el.addEventListener('click', ev => {
+        const b = ev.target && ev.target.closest ? ev.target.closest('[data-confirm]') : null;
+        if (!b) return;
+        close();
+        if (b.dataset.confirm === 'yes') onYes();
+      });
+    },
+  });
+}
+
 function pickHelper(plotIndex, slot) {
   const st = getState();
   const plot = st.plots[plotIndex];
@@ -325,14 +381,28 @@ function pickHelper(plotIndex, slot) {
   }
   const jobs = slotJobs(crop, slot);
   const multi = (crop.slots || 1) > 1;
-  openPetPicker({
+  const pets = st.pets.filter(petCanWork);
+  const list = pets.map(pet => {
+    const pv = slotPowerPreview(st, plotIndex, slot, pet);
+    const where = stationLabel(pet);
+    return `<button type="button" class="pet-picker-item" data-pet-id="${esc(pet.id)}">${petChipHtml(pet)}<span class="pet-picker-desc"><span class="farm-power">${jobs.map(jobEmoji).join('')} พลัง ${pv.raw.toFixed(1)} · โต +${Math.round(PET_PCT * pv.eff * 100)}%</span>${where ? ` <span class="badge">📌 ${esc(where)}</span>` : ''}</span></button>`;
+  }).join('');
+  let close = () => {};
+  close = openModal({
     title: `ส่งน้องมาช่วย ${crop.emoji} ${crop.nameTh}${multi ? ` · ช่อง ${slot + 1} ${jobEmoji(jobs[0])} ${jobName(jobs[0])}` : ''}`,
-    filter: pet => petCanWork(pet),
-    describe: pet => {
-      const pv = slotPowerPreview(getState(), plotIndex, slot, pet);
-      return `<span class="farm-power">${jobs.map(jobEmoji).join('')} พลัง ${pv.raw.toFixed(1)} · โต +${Math.round(PET_PCT * pv.eff * 100)}%</span>`;
+    html: `<label class="station-toggle"><input type="checkbox" class="station-check" ${stationDefault() ? 'checked' : ''}> 📌 ประจำแปลง <span class="muted farm-small">(กลับมาช่วยเองทุกรอบ ไม่ต้องส่งใหม่)</span></label><div class="pet-picker-list">${list}</div>`,
+    onMount(el) {
+      const check = el.querySelector('.station-check');
+      check.addEventListener('change', () => setStationDefault(check.checked));
+      el.addEventListener('click', ev => {
+        const b = ev.target && ev.target.closest ? ev.target.closest('.pet-picker-item') : null;
+        if (!b) return;
+        const id = b.dataset.petId;
+        const pin = check.checked;
+        close();
+        run(s => sendHelper(s, plotIndex, slot, id, pin));
+      });
     },
-    onPick: petId => run(s => assignPet(s, plotIndex, petId, slot)),
   });
 }
 
@@ -344,6 +414,7 @@ function farmBind(rootEl) {
     fertilize: d => run(s => fertilize(s, idx(d))),
     helper: d => pickHelper(idx(d), Number(d.slot) || 0),
     unassign: d => run(s => unassignPet(s, idx(d), d.slot === undefined ? null : Number(d.slot))),
+    unstation: d => run(s => unstationPet(s, idx(d), Number(d.slot) || 0)),
     harvest: d => run(s => harvestPlot(s, idx(d))),
     'harvest-all': () => run(s => harvestAll(s, false)),
     'harvest-replant': () => run(s => harvestAll(s, true)),
@@ -437,8 +508,15 @@ function pickExplorer(zoneId) {
   openPetPicker({
     title: `ส่งน้องไปสำรวจ ${zone.emoji} ${zone.nameTh}`,
     filter: eligible,
-    describe: pet => powerNote(pet, [zone.job], p => `เก็บของ ~${Math.round(zone.baseRolls + 0.75 * p)} ครั้ง`, { kind: 'expedition', jobs: [zone.job], zoneId: zone.id, hour: new Date(now()).getHours() }),
-    onPick: petId => run(s => startExpedition(s, petId, zoneId)),
+    describe: pet => powerNote(pet, [zone.job], p => `เก็บของ ~${Math.round(zone.baseRolls + 0.75 * p)} ครั้ง`, { kind: 'expedition', jobs: [zone.job], zoneId: zone.id, hour: new Date(now()).getHours() })
+      + (pet.station ? ` <span class="badge">📌 ${esc(stationLabel(pet))}</span>` : ''),
+    onPick: petId => {
+      const pet = getPet(getState(), petId);
+      const go = () => run(s => startExpedition(s, petId, zoneId));
+      if (pet && pet.station) {
+        confirmModal('📌 น้องประจำแปลงอยู่', `${stationLabel(pet)} — ถ้าส่งไปสำรวจ น้องจะเลิกประจำแปลงนี้ ตกลงไหม?`, 'ส่งไปสำรวจ', go);
+      } else go();
+    },
   });
 }
 
@@ -514,7 +592,7 @@ function upgradeCards(state) {
       : `<span class="shop-price">🪙 ${num(price)}</span><button class="btn btn-primary btn-sm" data-action="${action}" ${coins < price ? 'disabled' : ''}>ซื้อ</button>`}</div>
   </div>`;
   return card('🌾', 'ขยายแปลงไร่', `ตอนนี้ ${plots}/${MAX_PLOTS} แปลง · ปลูกได้พร้อมกันมากขึ้น`, pp, 'buy-plot')
-    + card('🏠', 'ขยายคอก', `ตอนนี้ ${cap}/${MAX_BARN} ช่อง · เลี้ยงน้องได้มากขึ้น`, bp, 'upgrade-barn')
+    + card('🏡', 'ขยายลาน', `ตอนนี้ ${cap}/${MAX_BARN} ช่อง · ${esc(yardUpgradePreview(state))}`, bp, 'upgrade-barn')
     + card('🥚', 'ขยายตู้ฟัก', `ตอนนี้ ${incCap}/${MAX_INCUBATOR} ช่อง · ฟักไข่ได้พร้อมกันมากขึ้น`, ip, 'upgrade-incubator');
 }
 
@@ -565,11 +643,11 @@ function bagRow(id, count) {
     acts = `<button class="btn btn-sm" data-action="sell" data-item="${esc(id)}" data-qty="1">ขาย x1</button>`
       + (count > 1 ? `<button class="btn btn-sm btn-primary" data-action="sell" data-item="${esc(id)}" data-qty="all">ขายทั้งหมด +${num(it.sell * count)}🪙</button>` : '');
   } else if (it.type === 'egg') {
-    acts = '<span class="muted farm-small">ฟักที่แท็บคอก</span>';
+    acts = '<span class="muted farm-small">ฟักที่แท็บลาน</span>';
   } else {
     acts = '<span class="muted farm-small">ขายไม่ได้</span>';
   }
-  const sub = it.sell != null ? `ขาย ${num(it.sell)}🪙/ชิ้น` : (it.type === 'care' || it.type === 'food' ? 'ใช้ที่แท็บคอก' : '');
+  const sub = it.sell != null ? `ขาย ${num(it.sell)}🪙/ชิ้น` : (it.type === 'care' || it.type === 'food' ? 'ใช้ที่แท็บลาน' : '');
   return `<div class="bag-row">
     <span class="bag-emoji">${it.emoji}</span>
     <div class="bag-info"><div><b>${esc(it.nameTh)}</b> <span class="badge">x${num(count)}</span></div>

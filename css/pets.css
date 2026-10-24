@@ -389,3 +389,29 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
   color: #fff3c4; border-color: #f2a516; font-weight: 800; letter-spacing: 0.02em;
   background: linear-gradient(180deg, #5a3a0a, #2e1d05); box-shadow: 0 0 14px rgba(242, 165, 22, 0.75), var(--shadow);
 }
+
+/* ───────── ลานให้ของ: collect button ───────── */
+.yard-gift-row { display: block; }
+.yard-gift {
+  position: relative; width: 100%; min-height: 48px; display: grid; gap: 3px; text-align: left; padding: 8px 12px;
+  border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text);
+  font: inherit; cursor: pointer;
+}
+.yard-gift.has-gift { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.yard-gift.is-full { border-color: var(--success); animation: pet-twinkle 2s ease-in-out infinite; }
+.yard-gift:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.yard-gift-t { font-weight: 700; }
+.yard-gift-s { font-size: 0.75rem; color: var(--text-dim); }
+.yard-gift-bar { display: block; height: 7px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+.yard-gift-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width 0.4s; }
+.yard-gift.is-full .yard-gift-bar i { background: var(--success); }
+.b3-station { padding: 4px 10px; border-radius: 10px; background: var(--surface-2); font-size: 0.82rem; font-weight: 600; }
+.b3-flycoin { position: fixed; left: 0; top: 0; z-index: 400; font-size: 22px; line-height: 1; pointer-events: none; will-change: transform, opacity; }
+@media (prefers-reduced-motion: reduce) { .yard-gift.is-full { animation: none; } .yard-gift-bar i { transition: none; } }
+.b3-banner {
+  position: absolute; top: 14%; left: 50%; transform: translateX(-50%); z-index: 5; padding: 8px 18px; border-radius: 99px;
+  font-weight: 800; font-size: 1.05rem; color: #fff8ea; background: linear-gradient(180deg, #2b8a50, #1f6b3c);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35); pointer-events: none; animation: b3-banner 2.6s ease-out forwards; white-space: nowrap;
+}
+@keyframes b3-banner { 0% { opacity: 0; transform: translate(-50%, -12px) scale(0.8); } 12% { opacity: 1; transform: translate(-50%, 0) scale(1.08); } 20% { transform: translate(-50%, 0) scale(1); } 85% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .b3-banner { animation: none; } }

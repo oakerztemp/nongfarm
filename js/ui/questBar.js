@@ -3,7 +3,7 @@ import { getState, update, subscribe } from '../state.js';
 import { QUESTS, currentQuest, claimQuest } from '../quests.js';
 import { escapeHtml, notify, morph } from '../util.js';
 
-const TAB_LABELS = { barn: 'คอก', farm: 'ไร่', explore: 'สำรวจ' };
+const TAB_LABELS = { barn: 'ลาน', farm: 'ไร่', explore: 'สำรวจ' };
 
 function html(state) {
   const quest = currentQuest(state);

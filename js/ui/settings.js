@@ -44,7 +44,7 @@ export function openSettings() {
           '<span><strong>การแจ้งเตือน</strong>' +
           `<span class="muted settings-hint" data-hint>${escapeHtml(notifyHint())}</span></span>` +
         '</label>' +
-        choiceRow('มุมมองคอก', 'barnView', [['3d', '🌳 3 มิติ'], ['list', '📋 รายการ']], getBarnViewPref(),
+        choiceRow('มุมมองลาน', 'barnView', [['3d', '🌳 3 มิติ'], ['list', '📋 รายการ']], getBarnViewPref(),
           'เลือกว่าจะดูน้องๆ เป็นฉาก 3 มิติหรือเป็นการ์ดรายการ (จำไว้เฉพาะในเครื่องนี้ · ถ้าเปิดโหมดลดการเคลื่อนไหวหรือเครื่องไม่รองรับ จะแสดงเป็นรายการเอง)') +
         choiceRow('คุณภาพกราฟิก', 'quality', [['auto', '✨ อัตโนมัติ'], ['low', '🔋 ต่ำ']], getQualityPref(),
           'ต่ำ = ประหยัดแบตเตอรี่และลื่นขึ้นบนเครื่องเก่า (มีผลเมื่อเปิดฉาก 3 มิติครั้งถัดไป)') +

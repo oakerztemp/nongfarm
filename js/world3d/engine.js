@@ -24,9 +24,26 @@
 // Host element: give it a height (e.g. CSS `height: 60vh`). Put it inside a `data-morph="skip"` wrapper so util.morph
 // never touches it, and give that wrapper a data-key. Create the world ONCE per view; sync actors when state changes.
 //
-// Coordinates: y up, ground disc centred at (0,0,0) (island radius world.islandRadius = 7). Pets should stay within
-// world.walkRadius (5.6) and outside world.obstacles ([{ x, z, r }] circles, e.g. the barn prop). The barn prop is at
+// Coordinates: y up, ground disc centred at (0,0,0) (island radius world.islandRadius = 5.7 / 6.4 / 7.0 / 7.6 by yard tier). Pets should stay within
+// world.walkRadius (see yard tiers below) and outside world.obstacles ([{ x, z, r }] circles, e.g. the barn prop). The barn prop is at
 // the back (-z) with its door facing +z; the default camera looks from +z. Actors' positions are never saved.
+//
+// YARD TIERS + PROPS (CONTRACT_V6 §4; the yard grows with barnCapacity: S 3-5, M 6-9, L 10-14, XL 15-20):
+//   yardTierForCapacity(cap) -> 'S'|'M'|'L'|'XL'      (pure; also createWorld(host, h, { yardTier: 'M' }))
+//   world.setYardTier(tierOrCapacity, { animate })    rebuilds ground/fence/tufts/flowers/barn spot for the tier, eases the
+//                                                     camera fit, and (animate:true, ~0.9 s) grows the fence ring from the old
+//                                                     size with a small overshoot. Call with animate:false when mounting, true
+//                                                     when the player upgrades (then fire fx.confetti / a "ลานกว้างขึ้น!" toast).
+//   world.yardTier / walkRadius (4.3 / 5.0 / 5.6 / 6.2) / fenceRadius / islandRadius are live getters; world.yardInfo();
+//   world.onYardChange(fn(info)) -> unsubscribe. world.obstacles is one array updated IN PLACE (barn + prop obstacles).
+//   Static props (never actors, not pickable, freed on removeProp/dispose; geometry you pass stays yours unless noted):
+//     world.addProp(id, object3d, { obstacle: {x,z,r} })            any object you built (use merged geometry!)
+//     world.addMergedProp(id, [{ geometry, color, position:[x,y,z], rotation:[x,y,z], scale }], { obstacle, position })
+//         -> merges many small parts into ONE vertex-coloured toon mesh = 1 draw call (pond, tree, gazebo, playground)
+//     world.addInstancedProp(id, geometry, [{ position, rotation, scale, color }], opts)
+//         -> ONE InstancedMesh for N copies (flower bed, lanterns, stones) = 1 draw call
+//     world.removeProp(id) / hasProp(id) / clearProps(prefix)
+//   Budget (contract): all props together <= +15 draw calls at XL. Props are static: no per-frame work.
 //
 // Interaction: horizontal drag orbits (yaw); with a mouse, vertical drag tilts within clamped pitch. Touch keeps
 // `touch-action: pan-y`, so a vertical swipe scrolls the page instead. Pinch / wheel zoom is clamped. A press that
@@ -57,10 +74,19 @@ export const ZOOM_MIN = 0.4;
 export const ZOOM_MAX = 1.15;
 export const ZOOM_DEFAULT = 0.85;
 export const CAMERA_FOV = 38;
-export const ISLAND_RADIUS = 7;
-export const FENCE_RADIUS = 6.3;
-export const WALK_RADIUS = 5.6;
-const BARN_Z = -4.9;
+/** Yard tiers (CONTRACT_V6 §4): walkable radius grows with barnCapacity; island = walk + 1.4, fence = walk + 0.7. */
+export const YARD_TIERS = {
+  S: { name: 'S', walk: 4.3, fence: 5.0, island: 5.7, barnZ: -3.6 },
+  M: { name: 'M', walk: 5.0, fence: 5.7, island: 6.4, barnZ: -4.3 },
+  L: { name: 'L', walk: 5.6, fence: 6.3, island: 7.0, barnZ: -4.9 },
+  XL: { name: 'XL', walk: 6.2, fence: 6.9, island: 7.6, barnZ: -5.5 },
+};
+export const YARD_TIER_NAMES = ['S', 'M', 'L', 'XL'];
+export const DEFAULT_YARD_TIER = 'L';
+export const ISLAND_RADIUS = YARD_TIERS.L.island; // legacy constants = tier L
+export const FENCE_RADIUS = YARD_TIERS.L.fence;
+export const WALK_RADIUS = YARD_TIERS.L.walk;
+export const YARD_GROW_MS = 900;
 const MAX_DT = 0.1;
 const MAX_SHADOWS = 128; // actors beyond this simply have no blob shadow
 const YAW_PER_PX = 0.008;
@@ -167,6 +193,67 @@ export function pickNearest(candidates, px, py) {
   return best;
 }
 
+/** Yard tier name for a barnCapacity: 3-5 S, 6-9 M, 10-14 L, 15+ XL (anything lower than 3 is S). */
+export function yardTierForCapacity(capacity) {
+  const c = Number(capacity) || 0;
+  return c >= 15 ? 'XL' : c >= 10 ? 'L' : c >= 6 ? 'M' : 'S';
+}
+/** Accepts a tier name ('S'..'XL', any case) or a capacity number; returns the tier config (default L). */
+export function yardTierConfig(tierOrCapacity) {
+  if (typeof tierOrCapacity === 'number') return YARD_TIERS[yardTierForCapacity(tierOrCapacity)];
+  return YARD_TIERS[String(tierOrCapacity || '').toUpperCase()] || YARD_TIERS[DEFAULT_YARD_TIER];
+}
+/** Scale factor + easing used while the yard grows: starts at `from` (old/new radius) and settles at 1 with a little overshoot. */
+export function yardGrowScale(from, u) {
+  const x = Math.min(1, Math.max(0, u));
+  const c1 = 1.2;
+  const c3 = c1 + 1;
+  const e = 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+  return from + (1 - from) * e;
+}
+
+/**
+ * Merges many small static parts into ONE BufferGeometry (1 draw call) with per-vertex colours.
+ * parts: [{ geometry, color, position:[x,y,z], rotation:[x,y,z], scale: n | [x,y,z] }]. Source geometries are not modified.
+ */
+export function mergeStaticParts(THREE_, parts) {
+  const pos = [];
+  const nor = [];
+  const col = [];
+  const m = new THREE_.Matrix4();
+  const q = new THREE_.Quaternion();
+  const e = new THREE_.Euler();
+  const nm = new THREE_.Matrix3();
+  const c = new THREE_.Color();
+  const v = new THREE_.Vector3();
+  for (const part of parts) {
+    const src = part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone();
+    if (!src.attributes.normal) src.computeVertexNormals();
+    const r = part.rotation || [0, 0, 0];
+    const sc = Array.isArray(part.scale) ? part.scale : [part.scale ?? 1, part.scale ?? 1, part.scale ?? 1];
+    const t = part.position || [0, 0, 0];
+    q.setFromEuler(e.set(r[0], r[1], r[2]));
+    m.compose(v.set(t[0], t[1], t[2]), q, new THREE_.Vector3(sc[0], sc[1], sc[2]));
+    nm.getNormalMatrix(m);
+    c.set(part.color ?? 0xffffff);
+    const pa = src.attributes.position;
+    const na = src.attributes.normal;
+    for (let i = 0; i < pa.count; i++) {
+      v.fromBufferAttribute(pa, i).applyMatrix4(m);
+      pos.push(v.x, v.y, v.z);
+      v.fromBufferAttribute(na, i).applyMatrix3(nm).normalize();
+      nor.push(v.x, v.y, v.z);
+      col.push(c.r, c.g, c.b);
+    }
+    src.dispose();
+  }
+  const geo = new THREE_.BufferGeometry();
+  geo.setAttribute('position', new THREE_.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE_.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('color', new THREE_.Float32BufferAttribute(col, 3));
+  return geo;
+}
+
 // ---------------------------------------------------------------- support detection (lives in support.js: no three.js import)
 
 export { prefersReducedMotion, detectWebGL, isWorldSupported } from './support.js';
@@ -212,8 +299,8 @@ function makeBlobTexture() {
   return tex;
 }
 
-/** Builds ground island, fence, grass tufts, flowers and the barn prop. Returns { group, dispose, obstacles }. */
-function buildEnvironment(tier, gradient) {
+/** Builds ground island, fence, grass tufts, flowers (group) and the barn prop (barn) for a yard tier. */
+function buildEnvironment(tier, gradient, yard) {
   const group = new THREE.Group();
   group.name = 'environment';
   const disposables = [];
@@ -222,7 +309,7 @@ function buildEnvironment(tier, gradient) {
   const rand = mulberry32(20261023);
 
   // island: grass top + dirt rim
-  const islandGeo = own(new THREE.CylinderGeometry(ISLAND_RADIUS, ISLAND_RADIUS - 0.5, 0.7, 48));
+  const islandGeo = own(new THREE.CylinderGeometry(yard.island, yard.island - 0.5, 0.7, 48));
   const island = new THREE.Mesh(islandGeo, [toon(0xe0b084), toon(0x8ccf6a), toon(0x9b6b43)]);
   island.position.y = -0.35;
   island.userData.noPick = true;
@@ -234,12 +321,13 @@ function buildEnvironment(tier, gradient) {
   }));
   const path = new THREE.Mesh(own(new THREE.PlaneGeometry(1.5, 4.2)), pathMat);
   path.rotation.x = -Math.PI / 2;
-  path.position.set(0, 0.01, BARN_Z + 3.2);
+  path.position.set(0, 0.01, yard.barnZ + 3.2);
   path.userData.noPick = true;
   group.add(path);
 
   // fence (gap behind the barn)
-  const posts = tier.posts;
+  const posts = Math.max(12, Math.round(tier.posts * yard.fence / FENCE_RADIUS));
+  const areaK = (yard.fence / FENCE_RADIUS) ** 2;
   const gapAngle = Math.PI;
   const inGap = a => Math.abs(((a - gapAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < 0.5;
   const woodMat = toon(0xc08a54);
@@ -249,7 +337,7 @@ function buildEnvironment(tier, gradient) {
   const dummy = new THREE.Object3D();
   keep.forEach((i, n) => {
     const a = (i / posts) * Math.PI * 2;
-    dummy.position.set(Math.sin(a) * FENCE_RADIUS, 0.35, Math.cos(a) * FENCE_RADIUS);
+    dummy.position.set(Math.sin(a) * yard.fence, 0.35, Math.cos(a) * yard.fence);
     dummy.rotation.set(0, a, 0);
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
@@ -258,13 +346,13 @@ function buildEnvironment(tier, gradient) {
   postMesh.userData.noPick = true;
   group.add(postMesh);
 
-  const chord = 2 * FENCE_RADIUS * Math.sin(Math.PI / posts);
+  const chord = 2 * yard.fence * Math.sin(Math.PI / posts);
   const railSegs = keep.filter(i => !inGap(((i + 1) / posts) * Math.PI * 2));
   const railMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(1, 0.07, 0.06)), woodMat, railSegs.length * 2);
   let r = 0;
   for (const i of railSegs) {
     const a = ((i + 0.5) / posts) * Math.PI * 2;
-    const radius = FENCE_RADIUS * Math.cos(Math.PI / posts);
+    const radius = yard.fence * Math.cos(Math.PI / posts);
     for (const y of [0.28, 0.54]) {
       dummy.position.set(Math.sin(a) * radius, y, Math.cos(a) * radius);
       dummy.rotation.set(0, a, 0);
@@ -277,12 +365,14 @@ function buildEnvironment(tier, gradient) {
   group.add(railMesh);
 
   // grass tufts
+  const tufts_n = Math.round(tier.tufts * areaK);
+  const flowers_n = Math.round(tier.flowers * areaK);
   const tuftMat = toon(0xffffff);
-  const tufts = new THREE.InstancedMesh(own(new THREE.ConeGeometry(0.08, 0.3, 4)), tuftMat, tier.tufts);
+  const tufts = new THREE.InstancedMesh(own(new THREE.ConeGeometry(0.08, 0.3, 4)), tuftMat, tufts_n);
   const green = new THREE.Color();
-  for (let i = 0; i < tier.tufts; i++) {
+  for (let i = 0; i < tufts_n; i++) {
     const a = rand() * Math.PI * 2;
-    const rad = Math.sqrt(rand()) * (FENCE_RADIUS - 0.4);
+    const rad = Math.sqrt(rand()) * (yard.fence - 0.4);
     dummy.position.set(Math.sin(a) * rad, 0.13, Math.cos(a) * rad);
     dummy.rotation.set(0, rand() * 3, (rand() - 0.5) * 0.3);
     const s = 0.7 + rand() * 0.8;
@@ -297,11 +387,11 @@ function buildEnvironment(tier, gradient) {
 
   // flowers
   const flowerMat = toon(0xffffff);
-  const flowers = new THREE.InstancedMesh(own(new THREE.SphereGeometry(0.075, 6, 4)), flowerMat, tier.flowers);
+  const flowers = new THREE.InstancedMesh(own(new THREE.SphereGeometry(0.075, 6, 4)), flowerMat, flowers_n);
   const palette = [0xffd84a, 0xff8fb1, 0xffffff, 0xb9a0ff].map(c => new THREE.Color(c));
-  for (let i = 0; i < tier.flowers; i++) {
+  for (let i = 0; i < flowers_n; i++) {
     const a = rand() * Math.PI * 2;
-    const rad = 1.5 + Math.sqrt(rand()) * (FENCE_RADIUS - 2);
+    const rad = 1.5 + Math.sqrt(rand()) * (yard.fence - 2);
     dummy.position.set(Math.sin(a) * rad, 0.1, Math.cos(a) * rad);
     dummy.rotation.set(0, 0, 0);
     dummy.scale.set(1, 1, 1);
@@ -348,13 +438,16 @@ function buildEnvironment(tier, gradient) {
   const loft = new THREE.Mesh(own(new THREE.BoxGeometry(0.5, 0.4, 0.05)), trimMat);
   loft.position.set(0, 1.45, D / 2 + 0.01);
   barn.add(loft);
-  barn.position.set(0, 0, BARN_Z);
+  barn.position.set(0, 0, yard.barnZ);
   barn.traverse(o => { o.userData.noPick = true; });
-  group.add(barn);
+  const barnGroup = new THREE.Group();
+  barnGroup.name = 'barn-holder';
+  barnGroup.add(barn);
 
   return {
     group,
-    obstacles: [{ x: 0, z: BARN_Z, r: 2.0 }],
+    barn: barnGroup,
+    obstacles: [{ x: 0, z: yard.barnZ, r: 2.0 }],
     dispose() {
       for (const o of disposables) o.dispose();
       postMesh.dispose(); railMesh.dispose(); tufts.dispose(); flowers.dispose();
@@ -379,7 +472,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
   const canvas = document.createElement('canvas');
   canvas.className = 'world3d-canvas';
   canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', 'ฉากคอก 3 มิติ — ลากเพื่อหมุนมุมมอง แตะน้องเพื่อดูรายละเอียด');
+  canvas.setAttribute('aria-label', 'ฉากลาน 3 มิติ — ลากเพื่อหมุนมุมมอง แตะน้องเพื่อดูรายละเอียด');
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: tier.antialias, alpha: true, powerPreference: 'default' });
@@ -433,9 +526,111 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     undo.push(() => { if (darkMq && darkMq.removeEventListener) darkMq.removeEventListener('change', applyMood); });
 
     undo.push(() => { blobGeo.dispose(); blobMat.dispose(); blobTexture.dispose(); toonGradient.dispose(); });
-    const env = buildEnvironment(tier, toonGradient);
+    // ---- yard (grows with barnCapacity), static props
+    let yardCfg = yardTierConfig(options.yardTier || DEFAULT_YARD_TIER);
+    let env = buildEnvironment(tier, toonGradient, yardCfg);
     undo.push(() => env.dispose());
-    scene.add(env.group);
+    scene.add(env.group, env.barn);
+    const obstacles = env.obstacles.map(o => ({ ...o })); // mutable list shared with scenes (world.obstacles)
+    const props = new Map();   // id -> { object, obstacle, ownGeometry }
+    const yardListeners = new Set();
+    let yardAnim = null;       // { age, from, barnFrom, barnTo }
+    const propMaterial = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: toonGradient });
+    const instMaterial = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: toonGradient });
+    undo.push(() => { propMaterial.dispose(); instMaterial.dispose(); });
+
+    function syncObstacles() {
+      obstacles.length = 0;
+      for (const o of env.obstacles) obstacles.push({ ...o });
+      for (const pr of props.values()) if (pr.obstacle) obstacles.push(pr.obstacle);
+    }
+
+    function removeProp(id) {
+      const pr = props.get(id);
+      if (!pr) return false;
+      scene.remove(pr.object);
+      if (pr.ownGeometry && pr.object.geometry) pr.object.geometry.dispose();
+      if (pr.object.dispose && pr.object.isInstancedMesh) pr.object.dispose();
+      props.delete(id);
+      syncObstacles();
+      return true;
+    }
+
+    function addProp(id, object, opts = {}) {
+      if (!id || !object) throw new Error('addProp(id, object3d, opts)');
+      removeProp(id);
+      object.traverse(o => { o.userData.noPick = true; });
+      scene.add(object);
+      props.set(id, { object, obstacle: opts.obstacle ? { ...opts.obstacle } : null, ownGeometry: !!opts.ownGeometry });
+      syncObstacles();
+      return object;
+    }
+
+    /** Merges parts into one vertex-coloured toon mesh (1 draw call) and adds it as a prop. */
+    function addMergedProp(id, parts, opts = {}) {
+      const geo = mergeStaticParts(THREE, parts);
+      const mesh = new THREE.Mesh(geo, propMaterial);
+      if (opts.position) mesh.position.set(...opts.position);
+      return addProp(id, mesh, { ...opts, ownGeometry: true });
+    }
+
+    /** One InstancedMesh (1 draw call) for many copies of a geometry. items: [{ position, rotation, scale, color }]. */
+    function addInstancedProp(id, geometry, items, opts = {}) {
+      const mesh = new THREE.InstancedMesh(geometry, opts.material || instMaterial, Math.max(1, items.length));
+      const d = new THREE.Object3D();
+      const col = new THREE.Color();
+      items.forEach((it, i) => {
+        const pz = it.position || [0, 0, 0];
+        d.position.set(pz[0], pz[1], pz[2]);
+        const r = it.rotation || [0, 0, 0];
+        d.rotation.set(r[0], r[1], r[2]);
+        const sc = Array.isArray(it.scale) ? it.scale : [it.scale ?? 1, it.scale ?? 1, it.scale ?? 1];
+        d.scale.set(sc[0], sc[1], sc[2]);
+        d.updateMatrix();
+        mesh.setMatrixAt(i, d.matrix);
+        if (it.color != null) { col.set(it.color); mesh.setColorAt(i, col); }
+      });
+      mesh.count = items.length;
+      mesh.frustumCulled = false;
+      return addProp(id, mesh, { ...opts, ownGeometry: !!opts.ownGeometry });
+    }
+
+    function setYardTier(tierOrCapacity, { animate = true } = {}) {
+      const next = yardTierConfig(tierOrCapacity);
+      if (next.name === yardCfg.name) return next.name;
+      const old = yardCfg;
+      yardCfg = next;
+      scene.remove(env.group, env.barn);
+      env.dispose();
+      env = buildEnvironment(tier, toonGradient, next);
+      scene.add(env.group, env.barn);
+      syncObstacles();
+      baseDistT = fitDistance(camera.aspect, CAMERA_FOV, PITCH_DEFAULT, next.island);
+      if (animate) {
+        const from = Math.min(1, old.fence / next.fence);
+        yardAnim = { age: 0, from, barnFrom: old.barnZ, barnTo: next.barnZ };
+        env.group.scale.set(from, 1, from);
+        env.barn.position.z = yardAnim.barnFrom - next.barnZ; // barn child sits at next.barnZ; shift back to the old spot
+        boostUntil = Math.max(boostUntil, performance.now() + YARD_GROW_MS + 300);
+      } else {
+        baseDist = baseDistT;
+        yardAnim = null;
+      }
+      for (const fn of [...yardListeners]) { try { fn(yardInfo()); } catch (e) { console.error(e); } }
+      return next.name;
+    }
+
+    const yardInfo = () => ({ tier: yardCfg.name, walkRadius: yardCfg.walk, fenceRadius: yardCfg.fence, islandRadius: yardCfg.island });
+
+    function updateYardAnim(dt) {
+      if (!yardAnim) return;
+      yardAnim.age += dt * 1000;
+      const u = yardAnim.age / YARD_GROW_MS;
+      const k = yardGrowScale(yardAnim.from, u);
+      env.group.scale.set(k, 1, k);
+      env.barn.position.z = (yardAnim.barnFrom - yardAnim.barnTo) * (1 - Math.min(1, u) * Math.min(1, u) * (3 - 2 * Math.min(1, u)));
+      if (u >= 1) { env.group.scale.set(1, 1, 1); env.barn.position.z = 0; yardAnim = null; }
+    }
 
     // ---- actors
     const actors = new Map(); // id -> actor record
@@ -488,6 +683,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     let width = 0;
     let height = 0;
     let baseDist = 12;
+    let baseDistT = 12;
 
     function updateCamera() {
       const p = orbitPosition(view.yaw, view.pitch, baseDist * view.zoom, target);
@@ -502,7 +698,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       width = w; height = h;
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
-      baseDist = fitDistance(camera.aspect, CAMERA_FOV, PITCH_DEFAULT, ISLAND_RADIUS);
+      baseDistT = fitDistance(camera.aspect, CAMERA_FOV, PITCH_DEFAULT, yardCfg.island);
+      baseDist = baseDistT;
       camera.updateProjectionMatrix();
       updateCamera();
       lastRenderTs = -Infinity; // draw the resized frame right away
@@ -543,7 +740,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
 
     function isEasing() {
       return Math.abs(view.yaw - view.yawT) > 0.0005 || Math.abs(view.pitch - view.pitchT) > 0.0005 ||
-        Math.abs(view.zoom - view.zoomT) > 0.0005;
+        Math.abs(view.zoom - view.zoomT) > 0.0005 || Math.abs(baseDist - baseDistT) > 0.005 || !!yardAnim;
     }
 
     function downgrade() {
@@ -582,7 +779,9 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       view.yaw += (view.yawT - view.yaw) * k;
       view.pitch += (view.pitchT - view.pitch) * k;
       view.zoom += (view.zoomT - view.zoom) * k;
-      if (!isEasing()) { view.yaw = view.yawT; view.pitch = view.pitchT; view.zoom = view.zoomT; }
+      baseDist += (baseDistT - baseDist) * k;
+      if (!isEasing()) { view.yaw = view.yawT; view.pitch = view.pitchT; view.zoom = view.zoomT; baseDist = baseDistT; }
+      updateYardAnim(dt);
       updateCamera();
 
       for (const fn of [...frameFns]) {
@@ -621,7 +820,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     function groundPoint() {
       const hit = raycaster.ray.intersectPlane(groundPlane, new THREE.Vector3());
       if (!hit) return null;
-      return Math.hypot(hit.x, hit.z) <= ISLAND_RADIUS ? hit : null;
+      return Math.hypot(hit.x, hit.z) <= yardCfg.island ? hit : null;
     }
 
     function pick(clientX, clientY) {
@@ -775,7 +974,21 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
 
     return {
       THREE, scene, camera, renderer, canvas, toonGradient,
-      islandRadius: ISLAND_RADIUS, walkRadius: WALK_RADIUS, obstacles: env.obstacles,
+      get islandRadius() { return yardCfg.island; },
+      get walkRadius() { return yardCfg.walk; },
+      get fenceRadius() { return yardCfg.fence; },
+      /** Yard tier name 'S' | 'M' | 'L' | 'XL' (not the same as `tier`, which is graphics quality). */
+      get yardTier() { return yardCfg.name; },
+      /** Walkable obstacles [{x,z,r}] (barn + props with an obstacle). The array is updated in place on tier changes. */
+      obstacles,
+      /** Switch yard size by tier name or barnCapacity. Rebuilds ground/fence/flowers; { animate:true } grows the fence ring. Returns the tier. */
+      setYardTier,
+      onYardChange(fn) { yardListeners.add(fn); return () => yardListeners.delete(fn); },
+      yardInfo,
+      /** Static props: addProp(id, object3d, {obstacle}), addMergedProp(id, parts, opts), addInstancedProp(id, geometry, items, opts). */
+      addProp, addMergedProp, addInstancedProp, removeProp,
+      hasProp: id => props.has(id),
+      clearProps(prefix = '') { for (const id of [...props.keys()]) if (id.startsWith(prefix)) removeProp(id); },
       /** Current quality tier: 'high' | 'medium' | 'low' (can drop at runtime). Scenes may choose cheaper content at 'low'. */
       get tier() { return tier.name; },
       addActor, removeActor, getActor,
@@ -844,6 +1057,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         canvas.removeEventListener('webglcontextrestored', onContextRestored);
         // actors are only detached: their geometry / materials belong to whoever created them
         for (const id of [...actors.keys()]) removeActor(id);
+        for (const id of [...props.keys()]) removeProp(id);
+        propMaterial.dispose(); instMaterial.dispose();
         env.dispose();
         scene.remove(blobMesh); blobMesh.dispose(); blobGeo.dispose(); blobMat.dispose(); blobTexture.dispose(); toonGradient.dispose();
         renderer.dispose();

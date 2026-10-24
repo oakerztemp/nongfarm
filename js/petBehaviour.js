@@ -17,7 +17,48 @@ export const YARD = {
   nestZ: -2.55,                      // incubator nests stand in a row in front of the barn door
   bowl: { x: 1.7, z: 2.3 },          // food bowl, front right
   bowlClear: 0.9,                    // wander targets keep this far from the bowl centre
+  obstacles: [],                     // static prop circles { x, z, r } of the current yard tier (pond, tree, ...)
 };
+
+// ── Yard tiers (CONTRACT_V6 §4) ─────────────────────────────────────────────
+// Mirrors engine.YARD_TIERS (walk radius + barn z); a test keeps the two in sync. Props are static scenery that
+// barn3d builds; the circles also keep wander targets away from them.
+export const YARD_TIER_LAYOUT = {
+  S: { walk: 4.3, barnZ: -3.6 },
+  M: { walk: 5.0, barnZ: -4.3 },
+  L: { walk: 5.6, barnZ: -4.9 },
+  XL: { walk: 6.2, barnZ: -5.5 },
+};
+const TIER_RANK = { S: 0, M: 1, L: 2, XL: 3 };
+
+/** Tier for a barnCapacity: 3-5 S, 6-9 M, 10-14 L, 15+ XL (same rule as the engine). */
+export function yardTierOf(capacity) {
+  const c = Number(capacity) || 0;
+  return c >= 15 ? 'XL' : c >= 10 ? 'L' : c >= 6 ? 'M' : 'S';
+}
+
+/** Static props of a tier: M pond + tree, L + flower bed + playground, XL + hill with gazebo + 4 lanterns. r = blocked radius. */
+export function yardProps(tier) {
+  const rank = TIER_RANK[tier] ?? 0;
+  const out = [];
+  if (rank >= 1) out.push({ id: 'pond', kind: 'pond', x: -3.6, z: 1.6, r: 1.1 }, { id: 'tree', kind: 'tree', x: 3.9, z: -0.4, r: 0.55 });
+  if (rank >= 2) out.push({ id: 'flowerbed', kind: 'flowerbed', x: 3.3, z: 3.5, r: 0.9 }, { id: 'playground', kind: 'playground', x: -3.8, z: -0.9, r: 1.0 });
+  if (rank >= 3) {
+    out.push({ id: 'hill', kind: 'hill', x: 5.2, z: -2.4, r: 1.3 });
+    for (const [i, [x, z]] of [[-4.6, 2.9], [4.6, 2.9], [-2.6, 4.9], [2.6, 4.9]].entries()) out.push({ id: `lantern${i}`, kind: 'lantern', x, z, r: 0.25 });
+  }
+  return out;
+}
+
+/** Re-targets the behaviour layout (walk radius, nest row, blocked props) when the yard changes tier. */
+export function configureYard(tier = 'L') {
+  const lay = YARD_TIER_LAYOUT[tier] || YARD_TIER_LAYOUT.L;
+  YARD.walkRadius = lay.walk - 0.1;
+  YARD.nestZ = lay.barnZ + 2.35;
+  YARD.backLimit = lay.barnZ + 3.0;
+  YARD.obstacles = yardProps(tier).map(({ x, z, r }) => ({ x, z, r }));
+  return YARD;
+}
 
 /** Position of incubator nest i of n (a row in front of the barn door). */
 export function nestSpot(i, n) {
@@ -116,6 +157,7 @@ function weightedPick(entries, rng) {
 function validTarget(x, z, fromX, fromZ) {
   if (dist(x, z, YARD.bowl.x, YARD.bowl.z) < YARD.bowlClear) return false;
   if (z < YARD.backLimit) return false; // the nest row / barn strip stays clear
+  for (const o of YARD.obstacles) if (dist(x, z, o.x, o.z) < o.r + 0.6) return false; // pond, tree, hill ...
   if (dist(x, z, fromX, fromZ) < 0.9) return false; // tiny shuffles look jittery
   return true;
 }
@@ -353,7 +395,7 @@ const rot = o => (o && o.rotation && Number.isFinite(o.rotation.x) ? { x: o.rota
 /** Remembers the resting rotation of the optional parts so animations are offsets from it. */
 export function partBases(parts) {
   const p = parts || {};
-  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane) };
+  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke) };
 }
 
 /**
@@ -373,6 +415,7 @@ export function applyPartPose(parts, base, P) {
   set('tailTip', 'y', P.tailTip || 0);
   set('trunk', 'x', P.trunk || 0);
   set('mane', 'z', P.mane || 0);
+  set('fluke', 'x', P.fluke || 0);
 }
 
 /** A new hatch ceremony may start unless another one is still before its burst (egg still in the nest). */

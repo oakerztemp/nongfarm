@@ -7,6 +7,7 @@ import { getItem, ITEMS } from './data/items.js';
 import { EGGS, getEgg } from './data/eggs.js';
 import { SPECIES, HABITATS, RARITIES, getSpecies } from './data/species.js';
 import { getTraitDef, TRAIT_SCALE } from './data/traits.js';
+import { CROPS } from './data/crops.js';
 
 const HOUR = 3600 * 1000;
 
@@ -250,10 +251,150 @@ export function claimGift(state, petId) {
   return { ok: true, msg, items: got };
 }
 
+// ── ลานให้ของ (CONTRACT_V6 §3) ──────────────────────────────────────────────
+// Pets at home slowly produce coins and habitat items into state.yard; one tap collects them.
+// Deterministic expected-value accumulation (no RNG, so reloading cannot farm luck), capped at 6 h of production.
+export const YARD_BASE_COINS = { common: 3, uncommon: 4, rare: 6, epic: 9, legendary: 14 }; // coins / hour
+export const YARD_ITEM_CHANCE = { rare: 0.05, epic: 0.08, legendary: 0.12 };                 // items / hour (others 0.03)
+export const YARD_ITEM_CHANCE_DEFAULT = 0.03;
+export const YARD_CAP_MS = 6 * HOUR;
+
+const YARD_ITEMS = {
+  farm: ['food_milk'], // + the seed of every unlocked crop (see yardItemTable)
+  forest: ['forage_mushroom', 'forage_berry'],
+  water: ['forage_shell', 'forage_fish'],
+  sky: ['forage_feather'],
+  bug: ['forage_honey'],
+  savanna: ['forage_bone'],
+  polar: ['forage_fish'],
+  mystic: ['forage_star', 'forage_gem'],
+};
+
+/** state.yard with defaults in code (migration only has to provide { pending, items, lastAt }). */
+export function ensureYard(state) {
+  const y = state.yard && typeof state.yard === 'object' ? state.yard : (state.yard = { pending: 0, items: {}, lastAt: 0 });
+  const good = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  if (!good(y.pending)) y.pending = 0;
+  if (!y.items || typeof y.items !== 'object' || Array.isArray(y.items)) y.items = {};
+  for (const k of Object.keys(y.items)) if (!good(y.items[k])) delete y.items[k];
+  if (!y.prog || typeof y.prog !== 'object' || Array.isArray(y.prog)) y.prog = {};   // habitat -> fractional expected items
+  for (const k of Object.keys(y.prog)) if (!good(y.prog[k])) delete y.prog[k];       // NaN / negative would freeze that habitat
+  y.accMs = good(y.accMs) ? Math.min(y.accMs, YARD_CAP_MS) : 0; // production time credited since the last collect (0..cap)
+  y.n = good(y.n) ? Math.floor(y.n) : 0;                        // rotation counter through a habitat's item table
+  return y;
+}
+
+/** Items a habitat can gift right now (farm also gifts seeds of the crops the player has unlocked). */
+export function yardItemTable(state, habitat) {
+  const base = (YARD_ITEMS[habitat] || []).filter(id => getItem(id));
+  if (habitat !== 'farm') return base;
+  const level = (state.player && state.player.level) || 1;
+  const seeds = CROPS.filter(c => c.unlockLevel <= level).map(c => `seed_${c.id}`).filter(id => getItem(id));
+  return base.concat(seeds);
+}
+
+/** Does this pet produce gifts right now? Returns coins/h and items/h (0 when it does not). */
+export function yardOutput(pet) {
+  const none = { coins: 0, items: 0, habitat: null };
+  if (!pet || pet.sick || pet.status === 'working' || pet.status === 'expedition') return none;
+  const sp = getSpecies(pet.speciesId);
+  if (!sp) return none;
+  const happy = (pet.stats && pet.stats.happy) || 0;
+  const mood = happy >= 70 ? 1 : happy >= 30 ? 0.6 : 0.2;
+  const sleepMult = pet.status === 'sleeping' ? 0.5 : 1;
+  const coins = (YARD_BASE_COINS[sp.rarity] || 3) * (1 + 0.1 * bondHearts(pet)) * mood * sleepMult;
+  const items = (YARD_ITEM_CHANCE[sp.rarity] ?? YARD_ITEM_CHANCE_DEFAULT) * mood * sleepMult;
+  return { coins, items, habitat: sp.habitat };
+}
+
+/** Total yard production per hour: { coins, items:{habitat: n} }. */
+export function yardRates(state) {
+  const out = { coins: 0, items: {} };
+  for (const pet of state.pets) {
+    const o = yardOutput(pet);
+    if (o.coins <= 0) continue;
+    out.coins += o.coins;
+    out.items[o.habitat] = (out.items[o.habitat] || 0) + o.items;
+  }
+  return out;
+}
+
+/** Called from tickPets (also during offline catch-up). Credits at most 6 h of production between collects. */
+export function tickYard(state, dtMs) {
+  const y = ensureYard(state);
+  const dt = Math.max(0, Number(dtMs) || 0);
+  const credit = Math.min(dt, Math.max(0, YARD_CAP_MS - y.accMs));
+  y.lastAt = now();
+  if (credit <= 0) return;
+  const h = credit / HOUR;
+  const r = yardRates(state);
+  y.pending += r.coins * h;
+  for (const [hab, perHour] of Object.entries(r.items)) y.prog[hab] = (y.prog[hab] || 0) + perHour * h;
+  y.accMs += credit;
+}
+
+/** What a collect would give right now (pure): { coins, items:{id:n}, fill:0..1, perHour }. */
+export function yardPreview(state) {
+  const y = ensureYard(state);
+  const items = {};
+  let n = y.n;
+  for (const [hab, v] of Object.entries(y.prog)) {
+    const table = yardItemTable(state, hab);
+    for (let k = Math.floor(v + 1e-9); k > 0 && table.length; k--) { const id = table[n++ % table.length]; items[id] = (items[id] || 0) + 1; }
+  }
+  return { coins: Math.floor(y.pending + 1e-9), items, fill: clamp(y.accMs / YARD_CAP_MS, 0, 1), perHour: yardRates(state).coins };
+}
+
+/** Collects everything the yard has stored. Not limited by the bond daily cap. */
+export function collectYard(state) {
+  const y = ensureYard(state);
+  const pv = yardPreview(state);
+  const itemCount = Object.values(pv.items).reduce((a, b) => a + b, 0);
+  if (pv.coins <= 0 && itemCount <= 0) return fail('ยังไม่มีของขวัญจากลาน รอสักครู่นะ');
+  // materialise the items (same rotation as the preview) and keep the fractional remainders
+  const got = {};
+  for (const [hab, v] of Object.entries(y.prog)) {
+    const table = yardItemTable(state, hab);
+    const whole = Math.floor(v + 1e-9);
+    if (!table.length) continue;
+    for (let k = 0; k < whole; k++) { const id = table[y.n++ % table.length]; got[id] = (got[id] || 0) + 1; }
+    y.prog[hab] = Math.max(0, v - whole);
+  }
+  if (pv.coins > 0) { addCoins(state, pv.coins); y.pending = Math.max(0, y.pending - pv.coins); }
+  for (const [id, c] of Object.entries(got)) addItem(state, id, c);
+  y.accMs = 0;
+  bumpStat(state, 'yardCollected');
+  const parts = [];
+  if (pv.coins > 0) parts.push(`🪙 ${pv.coins}`);
+  for (const [id, c] of Object.entries(got)) { const it = getItem(id); parts.push(`${it.emoji} ${it.nameTh}${c > 1 ? ` ×${c}` : ''}`); }
+  const msg = `🎁 ของขวัญจากลาน: ${parts.join(', ')}`;
+  addLog(state, msg);
+  return { ok: true, msg, coins: pv.coins, items: got };
+}
+
+/** "ประจำแปลง #N" + what the stationed pet is doing right now (for the yard sheet). null when not stationed. */
+export function stationStatus(state, pet) {
+  const st = pet && pet.station;
+  if (!st || !Number.isFinite(st.plotIndex)) return null;
+  const label = `ประจำแปลง #${st.plotIndex + 1}`;
+  const plot = state.plots && state.plots[st.plotIndex];
+  let emoji = '🏡', text = 'รอที่ลาน';
+  if (pet.status === 'working') { emoji = '🌾'; text = 'กำลังทำงาน'; }
+  else if (pet.status === 'expedition') { emoji = '🧭'; text = 'ออกสำรวจ'; }
+  else if (pet.sick) { emoji = '🤒'; text = 'พักรักษาตัว'; }
+  else if (pet.status === 'sleeping') { emoji = '💤'; text = 'พักผ่อน'; }
+  else if (pet.stats.hunger < 15) { emoji = '😋'; text = 'หิว รอกินข้าว'; }
+  else if (pet.stats.energy < 20) { emoji = '🥱'; text = 'เหนื่อย พักก่อน'; }
+  else if (!plot || !plot.cropId || plot.progress >= 1) { emoji = '🏡'; text = 'รอที่ลาน (แปลงว่าง/พร้อมเก็บ)'; }
+  else { emoji = '⏳'; text = 'พร้อมกลับไปทำงาน'; }
+  return { label, emoji, text, plotIndex: st.plotIndex };
+}
+
 // ── Tick ────────────────────────────────────────────────────────────────────
 export function tickPets(state, dtMs, { offline = false } = {}) {
   const dt = Math.max(0, dtMs || 0);
   if (dt > 0) for (const pet of state.pets) tickOnePet(pet, dt, offline);
+  if (dt > 0) tickYard(state, dt);
   tickIncubator(state, now());
 }
 
@@ -348,7 +489,7 @@ export function hatchReady(state, slotIndex) {
   const slot = state.incubator[slotIndex];
   if (!slot) return fail('ไม่พบไข่ในช่องนี้');
   if (now() < slot.readyAt) return fail('ไข่ยังไม่พร้อมฟัก');
-  if (state.pets.length >= state.barnCapacity) return fail('คอกเต็มแล้ว! ขยายคอกหรือปล่อยน้องบางตัวก่อน');
+  if (state.pets.length >= state.barnCapacity) return fail('ลานเต็มแล้ว! ขยายลานหรือปล่อยน้องบางตัวก่อน');
   const egg = getEgg(slot.eggId);
   const species = egg && pickSpeciesForHabitat(egg.habitat);
   if (!species) return fail('ไข่ใบนี้ฟักไม่ได้');
@@ -398,7 +539,7 @@ export function hatchReady(state, slotIndex) {
 // Returns a reason string if the pet cannot be cared for right now, else null.
 function careBlocker(pet, { allowWorking = true, allowSleeping = false } = {}) {
   if (!pet) return 'ไม่พบน้องตัวนี้';
-  if (pet.status === 'expedition') return 'น้องออกสำรวจอยู่ ไม่อยู่ที่คอก';
+  if (pet.status === 'expedition') return 'น้องออกสำรวจอยู่ ไม่อยู่ที่ลาน';
   if (pet.status === 'working' && !allowWorking) return 'น้องกำลังทำงานอยู่';
   if (pet.status === 'sleeping' && !allowSleeping) return 'น้องกำลังหลับอยู่ ปลุกก่อนนะ';
   return null;

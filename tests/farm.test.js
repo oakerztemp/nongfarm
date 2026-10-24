@@ -1,7 +1,7 @@
 // Farm logic tests: plot growth, fertilizer, helper pets, offline clamp, orders, shop, upgrades, stats.
 import { test, assert, assertEq, withFakeNow } from './harness.js';
 import { createNewState, addItem, countItem } from '../js/state.js';
-import { getWorkPower, getPet, traitEffect, bondHearts } from '../js/pets.js';
+import { getWorkPower, getPet, traitEffect, bondHearts, tickPets } from '../js/pets.js';
 import { getSpecies, SPECIES } from '../js/data/species.js';
 import { getCrop, CROPS } from '../js/data/crops.js';
 import { ITEMS, getItem } from '../js/data/items.js';
@@ -11,6 +11,7 @@ import {
   incubatorUpgradePrice, upgradeIncubator, ensureOrders, completeOrder, isoWeekKey, orderValue,
   generateDailyOrders, generateWeeklyOrder, forageDropsPerTrip, cropProducedPerDay, effectivePower, ZONES, MAX_PLOTS,
   slotJobs, plotTeam, plotSpeed, TEAM_COMBO, plotBonusPreview,
+  stationPet, unstationPet, stationInfo, stationLabel, yardTierOf, yardUpgradePreview,
 } from '../js/farm.js';
 
 const MIN = 60 * 1000;
@@ -843,3 +844,192 @@ test('teams: partial shares round down per pet; >= 25% earns bond, below does no
   assert(late.shareA > 0.95, 'the pet that worked all along keeps ~full share');
   assert(late.baseB >= 2, 'test pet has a base bonus >= 2 so rounding is visible');
 }));
+
+// ── V6 stations (📌 น้องประจำแปลง) ──────────────────────────────────────────
+
+function stationSetup(cropId = 'carrot') {
+  const s = fresh(10);
+  const pet = mkPet(s);
+  const plot = plant(s, cropId);
+  return { s, pet, plot };
+}
+
+test('stations: stationPet / unstationPet keep plot.stations and pet.station in sync; rules', () => withFakeNow(T0, () => {
+  const { s, pet, plot } = stationSetup('strawberry'); // 2 slots
+  const r = stationPet(s, 0, 0, pet.id);
+  assert(r.ok, r.reason);
+  assertEq([plot.stations[0], pet.station], [pet.id, { plotIndex: 0, slot: 0 }], 'both sides set');
+  assert(stationPet(s, 0, 0, pet.id).ok, 'idempotent for the same slot');
+  assert(!stationPet(s, 1, 0, pet.id).ok, 'a pet cannot be pinned to two places');
+  assert(!stationPet(s, 0, 2, pet.id).ok, 'strawberry has only 2 slots');
+  assert(!stationPet(s, 0, 7, pet.id).ok && !stationPet(s, 0, -1, pet.id).ok, 'bad slot');
+  const other = mkPet(s);
+  assert(!stationPet(s, 0, 0, other.id).ok, 'slot already pinned by another pet');
+  assert(stationPet(s, 0, 1, other.id).ok, 'other slot is free');
+  assert(!stationPet(s, 0, 1, 'nope').ok && !stationPet(s, 99, 0, pet.id).ok, 'unknown pet / plot');
+  const away = mkPet(s, { status: 'expedition', task: { type: 'expedition', expeditionId: 'x' } });
+  assert(!stationPet(s, 3, 0, away.id).ok, 'pets on an expedition cannot be pinned');
+  assert(unstationPet(s, 0, 0).ok);
+  assertEq([plot.stations[0], pet.station], [null, null], 'cleared on both sides');
+  assert(!unstationPet(s, 0, 0).ok, 'nothing left to remove');
+}));
+
+test('stations: a stationed idle pet goes to work by itself, goes home when the crop is ready and returns for the next one', () => withFakeNow(T0, clock => {
+  const { s, pet, plot } = stationSetup('carrot');
+  stationPet(s, 0, 0, pet.id);
+  assertEq(pet.status, 'idle', 'pinning alone does not move the pet');
+  tickFarm(s, T0 + MIN);
+  assertEq([pet.status, pet.task, plot.petIds[0]], ['working', { type: 'plot', plotIndex: 0, slot: 0 }, pet.id], 'auto-dispatched');
+  assertEq(s.stats.helped, 0, 'automatic dispatch does not inflate the "helped" stat');
+  const at = tickMinutes(s, T0 + MIN, () => plot.progress >= 1);
+  assertEq([pet.status, plot.petIds[0], pet.station && pet.station.plotIndex], ['idle', null, 0], 'ready: home, still pinned');
+  assert(plot.helperBonus >= 0 && plot.helperPetIds.includes(pet.id), 'the >= 25% share rule still credits the pinned helper');
+  tickFarm(s, at + MIN);
+  assertEq(pet.status, 'idle', 'does not go back to a ready plot');
+  assert(harvestPlot(s, 0).ok);
+  assertEq(plot.stations[0], pet.id, 'station survives the harvest');
+  tickFarm(s, at + 2 * MIN);
+  assertEq(pet.status, 'idle', 'empty plot: waits at the yard');
+  clock.set(at + 2 * MIN);
+  addItem(s, 'seed_carrot', 1);
+  assert(plantSeed(s, 0, 'carrot').ok);
+  tickFarm(s, at + 3 * MIN);
+  assertEq([pet.status, plot.petIds[0]], ['working', pet.id], 'new crop: back to work without any click');
+}));
+
+test('stations: tired / hungry / sick pets go home (station kept) and come back when fit; tired ones sleep', () => withFakeNow(T0, () => {
+  const { s, pet, plot } = stationSetup('pumpkin');
+  stationPet(s, 0, 0, pet.id);
+  tickFarm(s, T0 + MIN);
+  assertEq(pet.status, 'working');
+  // tired
+  pet.stats.energy = 19;
+  tickFarm(s, T0 + 2 * MIN);
+  assertEq([pet.status, plot.petIds[0], pet.station !== null], ['sleeping', null, true], 'energy < 20: home asleep, still pinned');
+  assertEq(stationInfo(s, 0, 0).state, 'rest', 'plot card state');
+  pet.stats.energy = 100; pet.status = 'idle';       // what pets.js does when it wakes up
+  tickFarm(s, T0 + 3 * MIN);
+  assertEq(pet.status, 'working', 'rested pet returns');
+  // hungry
+  pet.stats.hunger = 14;
+  tickFarm(s, T0 + 4 * MIN);
+  assertEq([pet.status, plot.petIds[0]], ['idle', null], 'hunger < 15: home, awake');
+  assertEq(stationInfo(s, 0, 0).state, 'hungry');
+  tickFarm(s, T0 + 5 * MIN);
+  assertEq(pet.status, 'idle', 'stays home while hungry');
+  pet.stats.hunger = 60;
+  tickFarm(s, T0 + 6 * MIN);
+  assertEq(pet.status, 'working', 'fed pet returns');
+  // sick
+  pet.sick = true;
+  tickFarm(s, T0 + 7 * MIN);
+  assertEq([pet.status, stationInfo(s, 0, 0).state], ['idle', 'sick'], 'sick: home');
+  pet.sick = false;
+  tickFarm(s, T0 + 8 * MIN);
+  assertEq(pet.status, 'working', 'healed pet returns');
+  // an un-pinned pet keeps the old rule (only exhausted at energy 0 goes home)
+  const free = mkPet(s);
+  addItem(s, 'seed_pumpkin', 1); plantSeed(s, 1, 'pumpkin');
+  assert(assignPet(s, 1, free.id).ok);
+  free.stats.energy = 10;
+  tickFarm(s, T0 + 9 * MIN);
+  assertEq(free.status, 'working', 'one-off helpers are not sent home at energy 10');
+}));
+
+test('stations: automatic work/rest cycle over many hours with the real pet ticks (offline steps)', () => withFakeNow(T0, clock => {
+  const { s, pet } = stationSetup('pumpkin');
+  stationPet(s, 0, 0, pet.id);
+  let workMin = 0, restMin = 0, napStarts = 0, prev = pet.status;
+  for (let m = 1; m <= 45 * 60; m++) {
+    const t = T0 + m * MIN;
+    clock.set(t);
+    tickPets(s, MIN, { offline: true });
+    tickFarm(s, t);
+    pet.stats.hunger = Math.max(pet.stats.hunger, 50); // fed: this test is about energy
+    pet.stats.clean = 100;
+    if (pet.status === 'working') workMin++; else restMin++;
+    if (pet.status === 'sleeping' && prev !== 'sleeping') napStarts++;
+    prev = pet.status;
+    // keep a crop growing the whole time
+    const plot = s.plots[0];
+    if (plot.cropId && plot.progress >= 1) { harvestPlot(s, 0); addItem(s, 'seed_pumpkin', 1); plantSeed(s, 0, 'pumpkin'); }
+  }
+  assert(napStarts >= 2, 'the pet napped by itself at least twice in 45 h (offline decay): ' + napStarts);
+  assert(workMin > restMin, `works more than it rests (${workMin} vs ${restMin} min)`);
+  assert(restMin > 0 && pet.station, 'and kept its station the whole time');
+  assert(pet.stats.energy >= 0 && pet.stats.energy <= 100, 'energy in range');
+}));
+
+test('stations: ✕ (unassign), expedition and release clear the pin; dangling pins are repaired', () => withFakeNow(T0, () => {
+  const { s, pet, plot } = stationSetup('strawberry');
+  stationPet(s, 0, 0, pet.id);
+  tickFarm(s, T0 + MIN);
+  assertEq(pet.status, 'working');
+  assert(unassignPet(s, 0, 0).ok);
+  assertEq([pet.station, plot.stations[0], pet.status], [null, null, 'idle'], 'recall = unpin');
+  tickFarm(s, T0 + 2 * MIN);
+  assertEq(pet.status, 'idle', 'no automatic return after recalling');
+  // expedition
+  stationPet(s, 0, 1, pet.id);
+  assert(startExpedition(s, pet.id, 'forest').ok);
+  assertEq([pet.station, plot.stations[1], pet.status], [null, null, 'expedition'], 'expedition drops the pin');
+  // release: pet removed from state.pets
+  const gone = mkPet(s);
+  stationPet(s, 0, 0, gone.id);
+  s.pets.splice(s.pets.indexOf(gone), 1);
+  tickFarm(s, T0 + 3 * MIN);
+  assertEq(plot.stations[0], null, 'released pet cleared from the plot');
+  // inconsistent pet.station without the plot side
+  const p3 = mkPet(s);
+  p3.station = { plotIndex: 2, slot: 0 };
+  tickFarm(s, T0 + 4 * MIN);
+  assertEq(p3.station, null, 'one-sided pin removed');
+  // stations on a missing plot
+  const p4 = mkPet(s);
+  p4.station = { plotIndex: 99, slot: 0 };
+  tickFarm(s, T0 + 5 * MIN);
+  assertEq(p4.station, null, 'pin to a missing plot removed');
+}));
+
+test('stations: pins respect crop slots (2/3-slot crops), a stationed pet fills only its own slot', () => withFakeNow(T0, () => {
+  const s = fresh(20);
+  const a = mkPet(s), b = mkPet(s, { speciesId: 'dog' });
+  addItem(s, 'seed_pumpkin', 1);
+  const crop = getCrop('pumpkin');
+  const n = crop.slots || 1;
+  assert(plantSeed(s, 0, 'pumpkin').ok);
+  assert(stationPet(s, 0, 0, a.id).ok);
+  if (n >= 2) assert(stationPet(s, 0, 1, b.id).ok, 'second slot');
+  tickFarm(s, T0 + MIN);
+  assertEq(s.plots[0].petIds[0], a.id, 'a in slot 0');
+  if (n >= 2) { assertEq(s.plots[0].petIds[1], b.id, 'b in slot 1'); assert(plotTeam(s, s.plots[0]).slots[1].station.working, 'plot card sees it'); }
+  const si = stationInfo(s, 0, 0);
+  assertEq([si.state, si.text], ['work', 'กำลังช่วย'], 'state label');
+  assertEq(stationLabel(a), 'ประจำแปลง #1', 'label for the yard sheet');
+}));
+
+test('yard tiers: preview line says what the next upgrade adds', () => {
+  const s = createNewState();
+  assertEq(yardTierOf(3).id, 'S'); assertEq(yardTierOf(6).id, 'M'); assertEq(yardTierOf(10).id, 'L'); assertEq(yardTierOf(15).id, 'XL'); assertEq(yardTierOf(20).id, 'XL');
+  s.barnCapacity = 5;
+  assert(yardUpgradePreview(s).includes('บ่อน้ำ'), 'step into tier M mentions the pond: ' + yardUpgradePreview(s));
+  s.barnCapacity = 9;
+  assert(yardUpgradePreview(s).includes('แปลงดอกไม้'), 'tier L: ' + yardUpgradePreview(s));
+  s.barnCapacity = 14;
+  assert(yardUpgradePreview(s).includes('ศาลา'), 'tier XL: ' + yardUpgradePreview(s));
+  s.barnCapacity = 7;
+  assert(yardUpgradePreview(s).includes('อีก 2 ช่อง'), 'mid-tier counts the slots left: ' + yardUpgradePreview(s));
+  s.barnCapacity = 20;
+  assert(yardUpgradePreview(s).includes('ใหญ่สุด'));
+  assert(upgradeBarn(Object.assign(createNewState(), { barnCapacity: 20 })).reason.includes('ลาน'), 'text says ลาน');
+});
+
+test('rename: no "คอก" left in the farm logic user texts', () => {
+  const s = fresh(10);
+  s.player.coins = 1e6;
+  assert(upgradeBarn(s).msg.includes('ลาน'));
+  const pet = mkPet(s);
+  plant(s, 'carrot');
+  assignPet(s, 0, pet.id);
+  assert(unassignPet(s, 0, 0).msg.includes('ลาน') && !unassignPet(s, 0).reason.includes('คอก'));
+});

@@ -229,7 +229,27 @@
 .plot-slot.is-empty { border-style: dashed; color: var(--text-dim); cursor: pointer; justify-content: center; }
 .plot-slot.is-empty:hover { border-color: var(--primary); color: var(--text); }
 .plot-slot-job { font-size: 1rem; line-height: 1; flex: none; }
-.plot-slot.is-filled { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px; }
+.plot-slot.is-filled { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; }
+.plot-slot.is-filled .pet-chip { flex: 1 1 0; }
+.plot-slot-pin { flex: none; font-size: 0.8rem; line-height: 1; }
+/* filled / pinned rows are tight (3 plots per row, ~105-170 px): the pin + chip say enough, the job emoji stays on empty slots */
+.plot-slot.is-filled { padding: 3px 4px; gap: 3px; overflow: hidden; }
+.plot-slot.is-filled .plot-slot-job { display: none; }
+.plot-slot.is-filled .pet-chip { flex: 1 1 0; min-width: 0; }
+.plot-slot.is-filled .pet-chip-name { min-width: 0; }
+.plot-slot.is-filled .plot-slot-pow, .plot-slot.is-filled .plot-slot-state { font-size: 0.7rem; }
+.plot-slot-x { width: 20px; height: 20px; }
+.plot-slot.is-resting .pet-chip { flex: 0 1 auto; }
+.plot-slot.is-resting .pet-chip-name { display: none; }          /* the state text + 📌 are what matter on a resting row */
+.plot-slot.is-resting .plot-slot-state { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.plot-slot.is-pinned { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.plot-slot.is-resting { opacity: 0.62; border-style: dashed; }
+.plot-slot.is-resting .pet-chip { filter: grayscale(0.5); }
+.plot-slot-state { flex: none; font-size: 0.75rem; color: var(--text-dim); white-space: nowrap; }
+.plot-slots-wait { margin: 2px 8px 0; }
+.station-toggle { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; font-weight: 600; cursor: pointer; }
+.station-toggle input { width: 18px; height: 18px; accent-color: var(--primary); }
+.farm-confirm-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .plot-slot .pet-chip { min-width: 0; overflow: hidden; white-space: nowrap; }
 .plot-slot .pet-chip-name { overflow: hidden; text-overflow: ellipsis; }
 .plot-slot .pet-chip-stage { display: none; } /* keep slot rows to one line at 360px */

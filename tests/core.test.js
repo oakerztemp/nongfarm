@@ -941,6 +941,98 @@ test('migrate v1 fixtures all the way to v3 (no NaN, links consistent)', async (
   }
 });
 
+// ---- v3 -> v4 migration (stations + yard) ----
+
+test('migrate v3 -> v4: working pets become stationed on their slot; yard accumulator starts empty', async () => {
+  const raw = await loadFixture('save_v3_midgame');
+  const T = 1790000300000;
+  const s = await withFakeNow(T, () => migrate(raw));
+  assertEq(s.version, 4, 'version');
+  assertEq(STATE_VERSION, 4, 'STATE_VERSION');
+  assertEq(s.plots[0].stations, ['pet1', 'pet4', 'pet6'], '3-slot plot: all three workers stationed');
+  assertEq(s.plots[1].stations, ['pet2', null, null], 'stations always have 3 entries');
+  assertEq(s.plots[2].stations, [null, null, null]);
+  assertEq(s.plots[3].stations, [null, null, null], 'empty plot');
+  const by = Object.fromEntries(s.pets.map(p => [p.id, p]));
+  assertEq(by.pet1.station, { plotIndex: 0, slot: 0 });
+  assertEq(by.pet4.station, { plotIndex: 0, slot: 1 });
+  assertEq(by.pet6.station, { plotIndex: 0, slot: 2 });
+  assertEq(by.pet2.station, { plotIndex: 1, slot: 0 });
+  for (const id of ['pet3', 'pet5', 'pet7']) assertEq(by[id].station, null, `${id} (not working a plot) is not stationed`);
+  assertEq(s.yard, { pending: 0, items: {}, lastAt: T }, 'yard accumulator');
+  assertEq(s.pets.length, 7, 'no pet lost');
+  assertEq([s.player.coins, s.barnCapacity, by.pet5.bond], [2300, 8, 25], 'nothing else changed');
+  assertEq(s.stats.yardCollected, 0, 'new counter exists');
+  for (const p of s.pets) {
+    if (p.task && p.task.type === 'plot') assertEq(s.plots[p.task.plotIndex].petIds[p.task.slot], p.id, 'work link still two-way');
+    if (p.station) assertEq(s.plots[p.station.plotIndex].stations[p.station.slot], p.id, 'station link two-way');
+  }
+  assertEq(findBad(s), null, 'no NaN/undefined');
+});
+
+test('migrate: stations are repaired in both directions (missing pet/plot, double claims, bad shapes)', () => {
+  const raw = {
+    version: 4,
+    plots: [
+      { index: 0, cropId: 'rice', stations: ['a', 'ghost', 'a'] },     // ghost pet; a claimed twice
+      { index: 1, cropId: null, stations: 'broken' },                     // not an array
+      { index: 2, cropId: 'carrot' },                                     // no stations at all
+    ],
+    pets: [
+      { id: 'a', speciesId: 'hamster', station: { plotIndex: 0, slot: 0 } },
+      { id: 'b', speciesId: 'hamster', station: { plotIndex: 5, slot: 0 } },   // plot does not exist
+      { id: 'c', speciesId: 'hamster', station: { plotIndex: 0, slot: 1 } },   // plot does not list c
+      { id: 'd', speciesId: 'hamster', station: 'nonsense' },
+    ],
+    yard: { pending: -5, items: { food_milk: 2, junk: -1, bad: 'x' }, lastAt: 7 },
+  };
+  const s = migrate(raw);
+  assertEq(s.plots.map(p => p.stations.length), [3, 3, 3], 'every plot has 3 entries');
+  assertEq(s.plots[0].stations, ['a', null, null], 'ghost dropped, double claim collapsed to the first slot');
+  assertEq(s.plots[1].stations, [null, null, null]);
+  const by = Object.fromEntries(s.pets.map(p => [p.id, p]));
+  assertEq(by.a.station, { plotIndex: 0, slot: 0 });
+  assertEq([by.b.station, by.c.station, by.d.station], [null, null, null], 'dangling pet stations cleared');
+  assertEq(s.yard, { pending: 0, items: { food_milk: 2 }, lastAt: 7 }, 'yard sanitised, a v4 save keeps lastAt');
+  assertEq(migrate(s).plots[0].stations, ['a', null, null], 'repair is idempotent');
+});
+
+test('migrate: old stations that point at a pet stationed elsewhere are cleared on the plot side', () => {
+  const s = migrate({
+    version: 4,
+    plots: [
+      { index: 0, cropId: 'rice', stations: [null, 'a', null] },
+      { index: 1, cropId: 'rice', stations: ['a', null, null] },
+    ],
+    pets: [{ id: 'a', speciesId: 'hamster', station: { plotIndex: 1, slot: 0 } }],
+  });
+  assertEq(s.plots[0].stations, [null, null, null], 'pet a belongs to plot 1');
+  assertEq(s.plots[1].stations, ['a', null, null]);
+  assertEq(s.pets[0].station, { plotIndex: 1, slot: 0 });
+});
+
+test('migrate v1 + v2 fixtures all the way to v4: stations + yard present and consistent', async () => {
+  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame']) {
+    const s = migrate(await loadFixture(name));
+    assertEq(s.version, 4, `${name}: version`);
+    assert(s.plots.every(p => Array.isArray(p.stations) && p.stations.length === 3), `${name}: plots have stations`);
+    assert(s.yard && s.yard.pending === 0 && Object.keys(s.yard.items).length === 0, `${name}: yard`);
+    for (const p of s.pets) {
+      assert(p.station === null || s.plots[p.station.plotIndex].stations[p.station.slot] === p.id, `${name}: station two-way`);
+      if (p.task && p.task.type === 'plot') assert(p.station && p.station.plotIndex === p.task.plotIndex, `${name}: working pet is stationed`);
+    }
+    assertEq(findBad(s), null, `${name}: no NaN/undefined`);
+  }
+});
+
+test('createNewState has stations on every plot, no station on pets, an empty yard', () => {
+  const s = createNewState();
+  assert(s.plots.every(p => p.stations.length === 3 && p.stations.every(x => x === null)));
+  assertEq(s.yard.pending, 0);
+  assertEq(s.yard.items, {});
+  assertEq(s.stats.yardCollected, 0);
+});
+
 // ---- PWA: service worker guard, manifest, icons ----
 
 test('service worker is not registered on localhost unless ?sw=1', () => {

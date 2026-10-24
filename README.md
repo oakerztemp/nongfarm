@@ -74,12 +74,22 @@ python tests/run_tests.py
 - **ไอคอน:** วาดด้วย `python .github/scripts/make_icons.py` (ไม่ต้องใช้ไลบรารีภายนอก) ไฟล์ผลลัพธ์อยู่ใน `icons/` และ commit ไว้
 - ขั้นตอน `Version assets` ตอน deploy จะประทับเวอร์ชันลงใน `sw.js` (`const VERSION`), การลงทะเบียน service worker, ลิงก์ manifest/ไอคอนด้วย
 
+## ลานน้องๆ 3 มิติ
+
+แท็บ 🏡 **ลาน** แสดงน้องๆ เป็นฉาก 3 มิติ (three.js r160 ฝังไว้ใน `vendor/` ไม่ต้องใช้ CDN) ลากเพื่อหมุนมุมมอง บีบนิ้ว/เลื่อนล้อเพื่อซูม แตะน้องเพื่อดูรายละเอียด ลานจะกว้างขึ้นเป็น 4 ระดับตามความจุ (3–5 · 6–9 · 10–14 · 15–20 ตัว)
+
+- ⚙️ ตั้งค่า > **มุมมองลาน** (3 มิติ / รายการ) และ **คุณภาพกราฟิก** (อัตโนมัติ / ต่ำ) — จำไว้เฉพาะในเครื่องนั้น
+- เครื่องที่ไม่มี WebGL หรือเปิด "ลดการเคลื่อนไหว" จะแสดงเป็นรายการการ์ดเอง (ไม่โหลด three.js เลย)
+- ทดสอบบนเครื่องที่ไม่มี GPU จริง: เปิด `/?soft3d=1`; หน้าสาธิตเอนจิน: `/tests/world-demo.html`
+- เอนจินอยู่ที่ `js/world3d/` (`support.js` ตรวจความพร้อม ไม่ import three · `engine.js` · `fx.js`) และค่าที่ตั้งเฉพาะเครื่องอยู่ที่ `js/prefs.js`
+
 ## โครงสร้างไฟล์ & เจ้าของ
 
 | ไฟล์ | เจ้าของ |
 |---|---|
 | `index.html`, `firestore.rules`, `README.md`, `css/style.css` | A (Core/Platform) |
 | `js/main.js`, `auth.js`, `storage.js`, `state.js`, `util.js`, `tick.js`, `quests.js`, `notify.js`, `pwa.js`, `ui/questBar.js`, `ui/settings.js`, `firebase-config.js`, `sw.js`, `manifest.webmanifest`, `icons/` | A (Core/Platform) |
+| `js/world3d/engine.js`, `fx.js`, `support.js`, `js/prefs.js`, `vendor/`, `tests/world.test.js`, `tests/world-demo.html` | A (Core/Platform) |
 | `tests/index.html`, `harness.js`, `run_tests.py`, `core.test.js`, `fixtures/`, `.github/workflows/pages.yml`, `.github/scripts/version_assets.py` | A (Core/Platform) |
 | `js/data/species.js`, `data/eggs.js`, `js/pets.js`, `js/ui/petsView.js`, `css/pets.css` | B (Pets) |
 | `js/data/crops.js`, `data/items.js`, `js/farm.js`, `js/ui/farmView.js`, `css/farm.css` | C (Farm) |

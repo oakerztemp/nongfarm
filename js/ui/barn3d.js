@@ -14,10 +14,11 @@ import { getEgg } from '../data/eggs.js';
 import { getItem } from '../data/items.js';
 import {
   getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop,
-  hatchReady, foodEffect,
+  hatchReady, foodEffect, yardOutput,
 } from '../pets.js';
 import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, beginAction, advanceActor, angDiff,
-  signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony } from '../petBehaviour.js';
+  signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony,
+  configureYard, yardProps, yardTierOf } from '../petBehaviour.js';
 import { createWorld } from '../world3d/engine.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
@@ -67,7 +68,8 @@ export function mountBarn3d(host, ctx) {
 
   let world;
   try {
-    world = createWorld(stage, { onTap: id => { if (tapFn) tapFn(id); }, onTapGround: () => { if (groundFn) groundFn(); } });
+    world = createWorld(stage, { onTap: id => { if (tapFn) tapFn(id); }, onTapGround: () => { if (groundFn) groundFn(); } },
+      { yardTier: yardTierOf(getState().barnCapacity) });
   } catch (err) {
     host.innerHTML = '';
     throw err;
@@ -137,6 +139,120 @@ export function mountBarn3d(host, ctx) {
     timers.add(id);
   };
 
+  // ── yard tiers: S / M / L / XL props, walk radius, "ลานกว้างขึ้น!" moment (CONTRACT_V6 §4) ──────────
+  let yardTier = yardTierOf(getState().barnCapacity);
+  let lanternMat = null;
+  const hourIsNight = () => { const h = new Date().getHours(); return h >= 18 || h < 6; };
+
+  /** Builds the static scenery of the current tier as a few merged / instanced props (<= +15 draw calls at XL). */
+  function buildYardProps(tier) {
+    try { world.clearProps('yard-'); } catch { /* none yet */ }
+    if (lanternMat) { lanternMat.dispose(); lanternMat = null; }
+    const geos = [];
+    const g = o => { geos.push(o); return o; };
+    const cyl = (rt, rb, h, seg = 14) => g(new THREE.CylinderGeometry(rt, rb, h, seg));
+    const sph = (r, ws = 10, hs = 8) => g(new THREE.SphereGeometry(r, ws, hs));
+    const box = (w, h, d) => g(new THREE.BoxGeometry(w, h, d));
+    const cone = (r, h, seg = 10) => g(new THREE.ConeGeometry(r, h, seg));
+    const merged = (id, parts, pos, obstacle) => world.addMergedProp(`yard-${id}`, parts, { position: pos, obstacle });
+    for (const pr of yardProps(tier)) {
+      const pos = [pr.x, 0, pr.z];
+      const obstacle = { x: pr.x, z: pr.z, r: pr.r };
+      switch (pr.kind) {
+        case 'pond':
+          merged(pr.id, [
+            { geometry: cyl(1.12, 1.18, 0.05, 20), color: '#b9a07a', position: [0, 0.025, 0] },
+            { geometry: cyl(0.98, 0.98, 0.06, 20), color: '#5ec2ea', position: [0, 0.06, 0] },
+            { geometry: cyl(0.2, 0.2, 0.02, 10), color: '#4caf50', position: [-0.35, 0.1, 0.25] },
+            { geometry: cyl(0.15, 0.15, 0.02, 10), color: '#66bb6a', position: [0.3, 0.1, -0.3] },
+            { geometry: sph(0.06), color: '#ff8fb1', position: [-0.35, 0.14, 0.25] },
+          ], pos, obstacle);
+          break;
+        case 'tree':
+          merged(pr.id, [
+            { geometry: cyl(0.12, 0.17, 1.0, 8), color: '#8d5a34', position: [0, 0.5, 0] },
+            { geometry: sph(0.75, 12, 8), color: '#4fae56', position: [0, 1.35, 0] },
+            { geometry: sph(0.55, 12, 8), color: '#62c26a', position: [0.3, 1.85, 0.1] },
+            { geometry: sph(0.4, 10, 8), color: '#7ad47f', position: [-0.25, 2.2, -0.1] },
+          ], pos, obstacle);
+          break;
+        case 'flowerbed': {
+          const parts = [{ geometry: cyl(0.85, 0.9, 0.1, 16), color: '#8a5d3b', position: [0, 0.05, 0] }];
+          const cols = ['#ff6b8b', '#ffd84a', '#ffffff', '#b79bff', '#ff9f43'];
+          for (let i = 0; i < 10; i++) {
+            const a = (i / 10) * TAU, r = 0.25 + (i % 3) * 0.2;
+            parts.push({ geometry: sph(0.1, 8, 6), color: cols[i % cols.length], position: [Math.cos(a) * r, 0.22, Math.sin(a) * r] });
+            parts.push({ geometry: cyl(0.015, 0.015, 0.16, 5), color: '#3f9a45', position: [Math.cos(a) * r, 0.13, Math.sin(a) * r] });
+          }
+          merged(pr.id, parts, pos, obstacle);
+          break;
+        }
+        case 'playground':
+          merged(pr.id, [
+            { geometry: cyl(0.95, 0.95, 0.06, 16), color: '#f0d9a0', position: [0, 0.03, 0] }, // sandy ground
+            { geometry: box(0.1, 1.3, 0.1), color: '#d8574a', position: [-0.6, 0.65, -0.2], rotation: [0, 0, 0.12] },
+            { geometry: box(0.1, 1.3, 0.1), color: '#d8574a', position: [-0.6, 0.65, 0.2], rotation: [0, 0, 0.12] },
+            { geometry: box(0.1, 1.3, 0.1), color: '#d8574a', position: [0.6, 0.65, -0.2], rotation: [0, 0, -0.12] },
+            { geometry: box(0.1, 1.3, 0.1), color: '#d8574a', position: [0.6, 0.65, 0.2], rotation: [0, 0, -0.12] },
+            { geometry: box(1.4, 0.08, 0.08), color: '#8d5a34', position: [0, 1.3, 0] },
+            { geometry: box(0.03, 0.9, 0.03), color: '#cfcfcf', position: [-0.2, 0.85, 0] },
+            { geometry: box(0.03, 0.9, 0.03), color: '#cfcfcf', position: [0.2, 0.85, 0] },
+            { geometry: box(0.5, 0.06, 0.2), color: '#4d96ff', position: [0, 0.4, 0] },
+          ], pos, obstacle);
+          break;
+        case 'hill':
+          merged(pr.id, [
+            { geometry: sph(1.3, 18, 10), color: '#7fcf6b', position: [0, -0.7, 0], scale: [1, 0.55, 1] },
+            { geometry: cyl(0.65, 0.65, 0.06, 12), color: '#f1e6cc', position: [0, 0.1, 0] },
+            ...[0, 1, 2, 3, 4, 5].map(i => ({ geometry: cyl(0.05, 0.05, 0.85, 6), color: '#ffffff', position: [Math.cos((i / 6) * TAU) * 0.58, 0.55, Math.sin((i / 6) * TAU) * 0.58] })),
+            { geometry: cone(0.82, 0.55, 6), color: '#d8574a', position: [0, 1.25, 0] },
+            { geometry: sph(0.07), color: '#ffd84a', position: [0, 1.58, 0] },
+          ], [pr.x, 0.55, pr.z], obstacle);
+          break;
+        case 'lantern': {
+          // poles are merged below; the glowing tops are instanced (own material, see dayNight)
+          break;
+        }
+        default: break;
+      }
+    }
+    const lanterns = yardProps(tier).filter(p => p.kind === 'lantern');
+    if (lanterns.length) {
+      world.addMergedProp('yard-lantern-poles', lanterns.map(l => ({ geometry: cyl(0.04, 0.05, 1.1, 6), color: '#5a4636', position: [l.x, 0.55, l.z] })), {});
+      lanternMat = new THREE.MeshBasicMaterial({ color: hourIsNight() ? 0xffd966 : 0xfff1c9 });
+      world.addInstancedProp('yard-lantern-glow', new THREE.SphereGeometry(0.14, 8, 6),
+        lanterns.map(l => ({ position: [l.x, 1.18, l.z] })), { material: lanternMat, ownGeometry: true });
+    }
+    // sources were cloned by mergeStaticParts: free them now
+    for (const geo of geos) geo.dispose();
+  }
+
+  /** Switch the scenery / walk radius to the tier of the new capacity (animated when the player upgrades). */
+  function applyYardTier(tier, animate) {
+    const old = yardTier;
+    yardTier = tier;
+    configureYard(tier);
+    world.setYardTier(tier, { animate });
+    buildYardProps(tier);
+    if (nestCount) buildNests(nestCount); // the nest row follows the barn
+    if (!animate) return;
+    world.boost(2500);
+    const A0 = { x: 0, y: 1.2, z: 0 };
+    fx.confetti(world, A0, 60);
+    fx.sparkleAt(world, A0);
+    showBanner(`🎉 ลานกว้างขึ้น! (${old} → ${tier})`);
+  }
+
+  function showBanner(text) {
+    const el = document.createElement('div');
+    el.className = 'b3-banner';
+    el.textContent = text;
+    host.appendChild(el);
+    later(2600, () => el.remove());
+  }
+
+  configureYard(yardTier);
+
   // ── static props ──────────────────────────────────────────────────────
   const bowl = new THREE.Group();
   {
@@ -187,7 +303,7 @@ export function mountBarn3d(host, ctx) {
       stage: pet.stage, poop: pet.poop || 0, bubble: null, bubbleEmoji: '', blinkAt: 1 + Math.random() * 4, blink: 0,
       spawn: null, pose: null, headBase: model.head ? model.head.rotation.clone() : null,
       pinned: false,
-      deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, sparkleAt: 4 + Math.random() * 8,
+      deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, coinAt: 6 + Math.random() * 20, sparkleAt: 4 + Math.random() * 8,
     };
     A.partBase = partBases(model.parts);
     if (opts.spawn) A.spawn = { t: 0, dur: opts.spawn.dur || 0.7, arc: opts.spawn.arc ?? 0.5, drop: opts.spawn.drop || 0, from: opts.spawn.from || null };
@@ -460,6 +576,17 @@ export function mountBarn3d(host, ctx) {
     fxo('sparkleAt', world, pos);
   }
 
+  /** Water spout from the model's `spout` anchor (falls back to a splash above the head). */
+  function spoutPuff(A) {
+    const anchor = A.model.parts && A.model.parts.spout;
+    if (anchor && typeof anchor.getWorldPosition === 'function') {
+      A.holder.updateMatrixWorld(true);
+      const v = anchor.getWorldPosition(new THREE.Vector3());
+      if (Number.isFinite(v.x + v.y + v.z)) { fxo('emojiPop', world, v, '💦'); fxo('emojiPop', world, { x: v.x, y: v.y + 0.35, z: v.z }, '🌊'); return; }
+    }
+    popAt(A, '💦', 0.3, -0.2);
+  }
+
   /** dragon / eagle: take off, fly a slow circle above the yard, land. */
   function flightPose(A, P, t) {
     const act = A.act, soar = act.type === 'soar', k = act.small ? 0.5 : 1;
@@ -524,8 +651,9 @@ export function mountBarn3d(host, ctx) {
     P.hop = Math.sin(u * Math.PI) * 1.7 * k;
     P.pitch = -0.7 + 1.4 * u;
     P.sy = 1 + 0.12 * Math.sin(u * Math.PI);
+    if (A.model.parts && A.model.parts.fluke) P.fluke = Math.sin(u * Math.PI * 2) * 0.7; // whale tail fluke swing
     if (at(act, 'splash1', 0.35)) popAt(A, '💦', 0, -0.2);
-    if (at(act, 'splash2', 1.7)) { popAt(A, '💦', 0.3, -0.2); popAt(A, '🌊', -0.3, -0.1); }
+    if (at(act, 'splash2', 1.7)) { spoutPuff(A); popAt(A, '🌊', -0.3, -0.1); }
   }
 
   /** lion & co: head up, roar bubble, a tiny shake. */
@@ -565,7 +693,8 @@ export function mountBarn3d(host, ctx) {
   function shimmerPose(A, P, t) {
     const act = A.act;
     const f = act.t > 0.3 && act.t < 1.7 ? 1 : 0;
-    P.wing = Math.sin(t * 30) * 0.9 * f;
+    const open = smooth((act.t - 0.15) / 0.3) * smooth((act.dur - 0.2 - act.t) / 0.3); // shell halves swing open and shut
+    P.wing = (0.55 * open + Math.sin(t * 30) * 0.35 * f) * (A.pet.speciesId === 'beetle' ? 1 : 0.6);
     P.sy = 1 + 0.06 * Math.sin(t * 20) * f; P.sx = 1 + 0.06 * Math.sin(t * 20) * f;
     if (at(act, 'sp1', 0.4)) fxo('sparkle', world, A.id);
     if (at(act, 'sp2', 1.2)) { fxo('sparkle', world, A.id); popAt(A, '✨', 0, 0.1); }
@@ -850,6 +979,9 @@ export function mountBarn3d(host, ctx) {
         poopSpots.delete(A.id);
       }
     }
+    const wantTier = yardTierOf(state.barnCapacity);
+    if (wantTier !== yardTier) applyYardTier(wantTier, synced);
+    if (lanternMat) lanternMat.color.set(hourIsNight() ? 0xffd966 : 0xfff1c9);
     syncPoops(state);
     syncNests(state);
     updateNestLabels();
@@ -1248,6 +1380,38 @@ export function mountBarn3d(host, ctx) {
     }
   }
 
+  // ── ลานให้ของ visuals: 🪙 pops above earning pets, coins fly to the 🎁 button when collected ──────────────
+  const flyCoins = new Set();
+
+  function collectFx(rect, result) {
+    if (disposed || !rect) return;
+    const hr = host.getBoundingClientRect();
+    const tx = rect.left + rect.width / 2, ty = rect.top + rect.height / 2;
+    const earning = [...actors.values()].filter(A => !A.hidden && yardOutput(A.pet).coins > 0).slice(0, 10);
+    const calm = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    earning.forEach((A, i) => {
+      fxo('emojiPop', world, headPos(A), '🪙');
+      if (calm || typeof document.body.animate !== 'function') return;
+      const p = world.worldToScreen(headPos(A));
+      if (!p.visible) return;
+      const sx = hr.left + p.x, sy = hr.top + p.y;
+      const el = document.createElement('span');
+      el.className = 'b3-flycoin';
+      el.textContent = '🪙';
+      document.body.appendChild(el);
+      flyCoins.add(el);
+      const anim = el.animate([
+        { transform: `translate(${sx}px, ${sy}px) scale(1)`, opacity: 1 },
+        { transform: `translate(${(sx + tx) / 2}px, ${Math.min(sy, ty) - 40}px) scale(1.15)`, opacity: 1, offset: 0.45 },
+        { transform: `translate(${tx}px, ${ty}px) scale(0.5)`, opacity: 0.2 },
+      ], { duration: 700 + i * 40, delay: i * 55, easing: 'cubic-bezier(.3,.1,.4,1)', fill: 'both' });
+      anim.onfinish = () => { flyCoins.delete(el); el.remove(); };
+    });
+    if (result && result.items) {
+      Object.keys(result.items).slice(0, 3).forEach((id, k) => { const it = getItem(id); if (it) later(250 + k * 200, () => fxo('emojiPop', world, { x: (k - 1) * 0.8, y: 1.4, z: 1.2 }, it.emoji)); });
+    }
+  }
+
   // ── DOM events ─────────────────────────────────────────────────────────
   const handlers = {
     close: () => closeSheet(),
@@ -1330,6 +1494,12 @@ export function mountBarn3d(host, ctx) {
     }
     for (const A of actors.values()) {
       if (A.hidden) continue;
+      A.coinAt -= dt;
+      if (A.coinAt < 0) {
+        A.coinAt = 14 + Math.random() * 16;
+        const y = getState().yard;
+        if (y && y.pending >= 1 && yardOutput(A.pet).coins > 0 && !lowTier()) fxo('emojiPop', world, headPos(A), '🪙');
+      }
       A.puffAt -= dt;
       if (A.puffAt < 0) {
         A.puffAt = 10 + Math.random() * 8;
@@ -1367,6 +1537,7 @@ export function mountBarn3d(host, ctx) {
   });
 
 
+  buildYardProps(yardTier);
   sync(getState());
   if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, tap: id => onTap(id) };
 
@@ -1397,8 +1568,11 @@ export function mountBarn3d(host, ctx) {
       for (const tg of tags) tg.el.remove();
       try { world.dispose(); } catch (e) { console.error(e); }
       for (const o of owned) { try { o.dispose(); } catch { /* already disposed */ } }
+      if (lanternMat) lanternMat.dispose();
+      for (const el of flyCoins) el.remove();
       host.innerHTML = '';
     },
+    collectFx,
   };
   } catch (err) {
     try { world.dispose(); } catch { /* ignore */ }

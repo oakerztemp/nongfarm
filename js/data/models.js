@@ -420,4 +420,69 @@ export const MODEL_SPECS = {
       '#ff7aa8': '#7a5cff', '#ffb35c': '#c15cff', '#ffe66d': '#ff7ad9', '#7be0a0': '#4cc9f0', '#6ab7ff': '#3f6bff', '#b58cff': '#8a5cff',
     },
   },
+
+  // ───────── V6: the four remaining legendaries ─────────
+
+  humpback: {
+    body: { w: 0.5, h: 0.46, d: 0.82, color: '#3f5f86', belly: { color: '#e8f1f8', s: 0.8, dz: 0.14, dy: -0.1 } },
+    legs: { type: 'none' },
+    head: { r: 0.4, w: 1.0, h: 0.9, d: 1.15, y: 0.5, z: 0.42 },
+    eyes: { s: 0.1, gap: 0.9, el: -0.02 },
+    snout: { type: 'flatbeak', color: '#e8f1f8', w: 0.78, h: 0.2, d: 0.62, el: -0.32 },
+    tail: { type: 'fluke', name: 'fluke', s: 0.52, len: 0.5, rot: 0.25, color: '#3f5f86', lobe: '#2f4a70', y: 0.05, z: 0.92 },
+    extras: [
+      { t: 'flippers', color: '#e8f1f8', s: 0.5 },
+      { t: 'spikes', color: '#2f4a70', n: 1, s: 0.2, from: -0.35, to: -0.35 },
+      { t: 'spout', el: 1.12 },
+    ],
+    shinyPalette: { '#3f5f86': '#2fd0c8', '#e8f1f8': '#fff3d6', '#2f4a70': '#1f9e9a' },
+  },
+
+  eagle: {
+    body: { w: 0.36, h: 0.4, d: 0.34, color: '#7a5230', belly: { color: '#c9a27a', s: 0.8, dz: 0.26 } },
+    legs: { type: 'bird', h: 0.16, r: 0.036, color: '#f2c14a', x: 0.34 },
+    head: { r: 0.27, h: 0.98, z: 0.1, color: '#fff8ea' },
+    eyes: { s: 0.13, gap: 0.62, el: 0.12 },
+    blush: '#ffb08a',
+    snout: { type: 'beak', color: '#f2b84a', w: 0.22, len: 0.42, el: -0.1 },
+    extras: [
+      { t: 'batwings', color: '#7a5230', colors: ['#5a3b20', '#7a5230', '#5a3b20', '#7a5230', '#f5e6c8'], bone: '#5a3b20', s: 1.0, x: 0.85, y: 0.6, z: 0.0, rest: 0.3, sweep: 0.2, arm: 0.35, armDir: [1, 0.25, -0.1], thin: 0.03,
+        fingers: [[1, 0.2, 0.15, 0.95, 0.36], [1, 0.1, -0.1, 1.0, 0.36], [0.95, 0.0, -0.35, 0.95, 0.36], [0.85, -0.1, -0.6, 0.82, 0.36], [0.7, -0.15, -0.85, 0.65, 0.34]] },
+      { t: 'fan', colors: ['#fff8ea', '#ffffff'], n: 5, s: 0.38, spread: 0.55, lean: 0.55, y: 0.25, z: 0.85, wd: 0.2 },
+    ],
+    shinyPalette: {
+      '#7a5230': '#3a5fd9', '#5a3b20': '#2a3fa0', '#c9a27a': '#8fb8ff', '#fff8ea': '#fff6d0', '#f5e6c8': '#ffe08a',
+      '#f2c14a': '#ffd34a', '#f2b84a': '#ffb020', '#ffffff': '#fff6d0', '#ffb08a': '#ffd9a0',
+    },
+  },
+
+  beetle: {
+    body: { w: 0.4, h: 0.3, d: 0.5, color: '#22222f' },
+    legs: { type: 'stub', h: 0.1, r: 0.05, color: '#22222f', x: 0.6, z: 0.5 },
+    head: { r: 0.24, w: 1.0, h: 0.9, d: 0.95, y: 0.38, z: 0.5, color: '#1b6b62' },
+    eyes: { s: 0.17, gap: 0.62, el: 0.1 },
+    blush: '#ff9ab0',
+    extras: [
+      { t: 'shells', colors: ['#18b5a0', '#7a4fd1', '#e9b830'], y: 0.78, z: 0.42 },
+      { t: 'horn', colors: ['#22222f', '#4a4a62'], n: 4, s: 2.3, w: 0.26, el: 0.75, fwd: 1.1 },
+      { t: 'horns', color: '#22222f', s: 0.8, az: 0.3, el: 0.7, dir: [0.35, 1, 0.5], segs: 2, bend: 0.3, thick: 0.35 },
+      { t: 'puffs', color: '#22222f', list: [['body', 0.25, 0.06, 0.0, 0.065], ['body', -0.25, 0.06, 0.0, 0.065]] },
+    ],
+    shinyPalette: {
+      '#18b5a0': '#e9b830', '#7a4fd1': '#ff7ab8', '#e9b830': '#fff3a8', '#1b6b62': '#b8860b', '#22222f': '#3a2a18', '#4a4a62': '#6a4a28', '#ff9ab0': '#ffd9a0',
+    },
+  },
+
+  polarbear: {
+    body: { w: 0.46, h: 0.4, d: 0.5, color: '#f4f8fc' },
+    legs: { type: 'stub', h: 0.13, r: 0.11, color: '#e9f1f8' },
+    head: { r: 0.36, w: 1.05, h: 0.95, d: 1.0, y: 0.8, z: 0.3, color: '#fbfdff' },
+    eyes: { s: 0.1, gap: 0.52, el: 0.12 },
+    blush: '#bfdcff',
+    ears: { type: 'round', s: 0.42, az: 0.85, el: 0.6, up: 0.25, color: '#f4f8fc', inner: '#c9def0', static: true },
+    snout: { type: 'muzzle', color: '#ffffff', w: 0.42, h: 0.3, d: 0.36, el: -0.28, nose: '#2f2a30', noseS: 0.15, noseY: 0.6, lo: true },
+    tail: { type: 'puff', s: 0.09, color: '#f4f8fc', y: 0.2 },
+    extras: [{ t: 'collar', color: '#4a9bff', bell: '#bfe3ff' }],
+    shinyPalette: { '#f4f8fc': '#ffe9b0', '#fbfdff': '#fff4d0', '#e9f1f8': '#f6d98a', '#c9def0': '#ffcf8a', '#4a9bff': '#ff7ab8', '#bfe3ff': '#fff1a8', '#bfdcff': '#ffd0a0' },
+  },
 };

@@ -154,7 +154,7 @@ export function xpForLevel(level)                 // Math.round(50 * level ** 1.
 
 ### View object (B and C export `export const views = [...]`)
 ```js
-{ id: 'barn', icon: '🏠', label: 'คอก',
+{ id: 'barn', icon: '🏠', label: 'ลาน',
   render(state) → HTML string,         // pure, uses escapeHtml for user strings
   bind(rootEl) }                        // called ONCE when the view container is created; use event delegation
                                         // (rootEl persists; its innerHTML is replaced on each render)

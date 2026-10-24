@@ -39,7 +39,7 @@ function sp(id, emoji, nameTh, habitat, rarity, jobs, diet, favorite, desc, trai
 
 export const SPECIES = [
   // ───────── ทุ่งนา (farm) ─────────
-  sp('hamster', '🐹', 'แฮมสเตอร์', 'farm', 'common', { dig: 3, carry: 1 }, ['grain', 'veg'], 'crop_corn', 'ตัวจิ๋วแก้มตุ่ย ขุดดินเก่งที่สุดในคอก', 'digger'),
+  sp('hamster', '🐹', 'แฮมสเตอร์', 'farm', 'common', { dig: 3, carry: 1 }, ['grain', 'veg'], 'crop_corn', 'ตัวจิ๋วแก้มตุ่ย ขุดดินเก่งที่สุดในลาน', 'digger'),
   sp('chicken', '🐔', 'ไก่', 'farm', 'common', { forage: 2, dig: 1 }, ['grain', 'insect'], 'food_seedmix', 'คุ้ยเขี่ยหาเมล็ดพืชตั้งแต่เช้าตรู่', 'earlyBird'),
   sp('cow', '🐮', 'วัว', 'farm', 'common', { carry: 2, dig: 1 }, ['leaf', 'grain', 'veg'], 'food_leaf', 'ใจเย็น แบกของหนักได้สบายๆ', 'tireless'),
   sp('pig', '🐷', 'หมู', 'farm', 'common', { dig: 2, forage: 2 }, ['veg', 'fruit', 'grain'], 'crop_potato', 'จมูกไวมาก ดมหาของกินใต้ดินได้', 'gourmet'),

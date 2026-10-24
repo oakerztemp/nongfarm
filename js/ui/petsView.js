@@ -13,6 +13,7 @@ import {
   STAGES, PERSONALITIES, petEmoji, petName, petMood, getPet,
   putEggInIncubator, hatchReady, feedPet, playWithPet, cleanPet, pickPoop,
   giveToy, healPet, toggleSleep, renamePet, releasePet, foodEffect,
+  collectYard, yardPreview, stationStatus,
   getTrait, bondProgress, giftAvailable, claimGift, BOND_DAILY_CAP, GIFT_MIN_HEARTS,
   STARDUST_BY_RARITY, BOOK_GOALS, getGoal, isGoalClaimed, claimGoal, makeShiny, buyHabitatEgg,
 } from '../pets.js';
@@ -301,9 +302,25 @@ function barnMode() {
 function barnToggleHtml(mode) {
   if (!worldSupported()) return '';
   const on = mode === 'list' ? 'list' : '3d';
-  return `<div class="barn-toggle" role="group" aria-label="มุมมองคอก">
-    <button type="button" class="barn-toggle-btn${on === '3d' ? ' is-on' : ''}" data-action="barn-mode" data-mode="3d" aria-pressed="${on === '3d'}">🌳 คอก</button>
+  return `<div class="barn-toggle" role="group" aria-label="มุมมองลาน">
+    <button type="button" class="barn-toggle-btn${on === '3d' ? ' is-on' : ''}" data-action="barn-mode" data-mode="3d" aria-pressed="${on === '3d'}">🌳 ลาน</button>
     <button type="button" class="barn-toggle-btn${on === 'list' ? ' is-on' : ''}" data-action="barn-mode" data-mode="list" aria-pressed="${on === 'list'}">📋 รายการ</button></div>`;
+}
+
+/** 🎁 ลานให้ของ: collect button with a fill bar up to the 6 h cap. */
+function yardGiftHtml(state) {
+  if (!state.pets.length) return '';
+  const pv = yardPreview(state);
+  const n = Object.values(pv.items).reduce((a, b) => a + b, 0);
+  const full = pv.fill >= 1;
+  const label = `🎁 ของขวัญจากลาน 🪙${pv.coins}${n ? ` +${n} ชิ้น` : ''}`;
+  return `<div class="yard-gift-row">
+    <button type="button" class="yard-gift${pv.coins > 0 || n > 0 ? ' has-gift' : ''}${full ? ' is-full' : ''}" data-action="yard-collect"
+      title="น้องๆ ที่อยู่บ้านสร้างของขวัญให้เรื่อยๆ (เก็บได้สูงสุด 6 ชม.) ตอนนี้ ~${Math.round(pv.perHour)} 🪙/ชม.">
+      <span class="yard-gift-t">${label}</span>
+      <span class="yard-gift-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pv.fill * 100)}"><i style="width:${(pv.fill * 100).toFixed(0)}%"></i></span>
+      <span class="yard-gift-s">${full ? 'เต็มแล้ว มาเก็บนะ!' : `เต็มใน ${formatDuration((1 - pv.fill) * 6 * 3600 * 1000)}`}</span>
+    </button></div>`;
 }
 
 function renderBarn(state) {
@@ -314,24 +331,26 @@ function renderBarn(state) {
   if (mode === '3d' || mode === 'loading') {
     return `<div class="barn-view barn-3d">
       <section class="barn-section">
-        <div class="barn-head"><h2 class="barn-title">🏠 คอกสัตว์</h2>
+        <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
           <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+        ${yardGiftHtml(state)}
         ${mode === '3d'
           ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
-          : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดคอก 3 มิติ…</div>'}
+          : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดลาน 3 มิติ…</div>'}
       </section></div>`;
   }
   const hasEgg = state.incubator.length > 0 || EGGS.some(eg => countItem(state, eg.id) > 0);
   const empty = `<div class="empty-state barn-empty">
       <div class="barn-empty-emoji">🥚</div>
-      <p>ยังไม่มีน้องในคอกเลย</p>
+      <p>ยังไม่มีน้องในลานเลย</p>
       <p class="muted">${hasEgg ? 'ใส่ไข่ในตู้ฟักด้านบน แล้วรอฟักเป็นเพื่อนตัวแรกของคุณ!' : 'ไปซื้อไข่ที่ร้านค้า 🛒 แล้วนำมาฟักในตู้ฟักได้เลย'}</p>
     </div>`;
   return `<div class="barn-view">
     ${renderIncubator(state, t)}
     <section class="barn-section">
-      <div class="barn-head"><h2 class="barn-title">🏠 คอกสัตว์</h2>
+      <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
         <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+      ${yardGiftHtml(state)}
       ${pets.length ? `<div class="barn-grid">${pets.map(p => renderPetCard(p, state)).join('')}</div>` : empty}
     </section></div>`;
 }
@@ -384,11 +403,13 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
     return `${head}<div class="b3-sheet-body">${foodListHtml(pet, state, 'data-b3')}</div>`;
   }
   const pers = persOf(pet);
+  const station = stationStatus(state, pet);
+  const stationLine = station ? `<div class="b3-station">📌 ${station.label} · ${station.emoji} ${station.text}</div>` : '';
   const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
       <b>${sp.rarity === 'legendary' ? '✦ ตำนานปรากฏตัว!' : pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
       <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
-  return `${head}<div class="b3-sheet-body">${reveal}
+  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}
       <div class="b3-sheet-line"><span class="pet-status">${statusLabel(pet, state)}</span>
         <span class="pet-hearts" title="ความผูกพัน ${bond.hearts}/5">${heartsHtml(bond.hearts)}</span></div>
       <div class="b3-stats">
@@ -574,6 +595,7 @@ function openDetails(petId) {
       <button type="button" class="btn btn-sm btn-ghost pet-release-btn" data-action="release-ask"${busy ? ' disabled title="น้องกำลังทำงานอยู่"' : ''}>👋 ปล่อยกลับธรรมชาติ</button>
       <div class="pet-release-confirm" hidden>
         <p>ปล่อย <b>${e(petName(pet))}</b> จริงๆ หรือ? จะไม่สามารถเอากลับมาได้ (ได้ 10 🪙 + ผงดาว ${(STARDUST_BY_RARITY[sp.rarity] || 1) * (pet.shiny ? 2 : 1)} ✨)</p>
+        ${stationStatus(state, pet) ? `<p class="pet-release-station">📌 ${stationStatus(state, pet).label} อยู่ — ปล่อยแล้วแปลงนี้จะว่าง</p>` : ''}
         <button type="button" class="btn btn-sm pet-release-yes" data-action="release-yes">ยืนยันปล่อย</button>
         <button type="button" class="btn btn-sm btn-ghost" data-action="release-no">ยกเลิก</button>
       </div>
@@ -645,6 +667,11 @@ function bindBarn(root) {
     hatch: btn => {
       const r = run(s => hatchReady(s, Number(btn.dataset.slot)));
       if (r && r.ok && r.pet) openHatchReveal(r.pet);
+    },
+    'yard-collect': btn => {
+      const rect = btn.getBoundingClientRect();
+      const r = run(s => collectYard(s));
+      if (r && r.ok && barn3d && barn3d.collectFx) barn3d.collectFx(rect, r); // coins fly from the pets to the button
     },
     'barn-mode': btn => {
       setBarnViewPref(btn.dataset.mode === 'list' ? 'list' : '3d');
@@ -787,6 +814,6 @@ function bindBook(root) {
 }
 
 export const views = [
-  { id: 'barn', icon: '🏠', label: 'คอก', render: renderBarn, bind: bindBarn },
+  { id: 'barn', icon: '🏡', label: 'ลาน', render: renderBarn, bind: bindBarn },
   { id: 'book', icon: '📖', label: 'สมุดสัตว์', render: renderBook, bind: bindBook },
 ];

@@ -228,6 +228,7 @@ export function buildPetModel(T, pet, species, opts = {}) {
     parts: {
       eyes: eyes ? [eyes] : [], ears: [earL, earR].filter(Boolean), earL, earR,
       tail: find('tail'), tailTip: find('tailTip'), wingL: find('wingL'), wingR: find('wingR'),
+      fluke: find('fluke'), spout: find('spout'),
       trunk: find('trunk'), mane: find('mane'), breath: find('breath'), crown: null,
     },
     crownY: tpl.crownY, crownLift: tpl.crownLift, baseHeight: tpl.baseHeight, baseRadius: tpl.baseRadius, height: tpl.baseHeight, radius: tpl.baseRadius,
@@ -469,7 +470,7 @@ function assemble(T, spec, shiny, seed, grad) {
     const tailG = new T.Group();
     tailG.position.set(0, by + B.h * (Ta.y ?? 0.15), -B.d * (Ta.z ?? 0.92));
     bodyG.add(tailG);
-    tailG.name = 'tail';
+    tailG.name = Ta.name || 'tail';
     tailG.userData.anim = true;
     const mat = tm(Ta.color);
     switch (Ta.type) {
@@ -503,6 +504,17 @@ function assemble(T, spec, shiny, seed, grad) {
       case 'fluffy': {
         tailG.rotation.x = Ta.rot ?? 0;
         put(tailG, 'sphL', mat, Ta.w ?? 0.1, Ta.h ?? 0.2, Ta.d ?? 0.1, 0, Ta.dy ?? 0.1, -(Ta.dz ?? 0.06));
+        break;
+      }
+      case 'fluke': {   // whale tail: stalk + two flat lobes on a pivot (name it 'fluke'; rotate .x to slap)
+        const w = Ta.s ?? 0.3, len = Ta.len ?? 0.5;
+        tailG.rotation.x = Ta.rot ?? 0.25;
+        const stalk = put(tailG, 'cone', mat, w * 0.5, len, w * 0.5);
+        stalk.rotation.x = -Math.PI / 2;                      // cone axis -> -Z (backwards)
+        for (const side of [-1, 1]) {
+          const l = put(tailG, 'sphL', tm(Ta.lobe || Ta.color), w * 0.9, w * 0.09, w * 0.38, side * w * 0.72, 0, -len - w * 0.12);
+          l.rotation.y = -side * 0.55;
+        }
         break;
       }
       case 'curly': {
@@ -706,14 +718,48 @@ function assemble(T, spec, shiny, seed, grad) {
         pivot.name = side > 0 ? 'wingL' : 'wingR';
         pivot.userData.anim = true;
         bodyG.add(pivot);
-        const armDir = V3(side * 0.8, 0.5, -0.2).normalize();
-        const arm = put(pivot, 'cyl', bone, s * 0.05, s * 0.55, s * 0.05);
+        const ad = o.armDir || [0.8, 0.5, -0.2], armLen = o.arm ?? 0.55;
+        const armDir = V3(side * ad[0], ad[1], ad[2]).normalize();
+        const arm = put(pivot, 'cyl', bone, s * 0.05, s * armLen, s * 0.05);
         along(arm, armDir);
-        const wrist = armDir.clone().multiplyScalar(s * 0.55);
-        for (const [dx, dy, dz, len, wd] of [[0.95, 0.25, -0.25, 0.85, 0.3], [0.9, -0.15, -0.5, 0.8, 0.3], [0.6, -0.5, -0.65, 0.65, 0.26]]) {
-          const f = put(pivot, 'cone', memb, s * 0.035, s * len, s * wd, wrist.x, wrist.y, wrist.z);
+        const wrist = armDir.clone().multiplyScalar(s * armLen);
+        const cols = o.colors ? o.colors.map(tm) : null;      // feather bands (eagle) instead of one membrane colour
+        (o.fingers || [[0.95, 0.25, -0.25, 0.85, 0.3], [0.9, -0.15, -0.5, 0.8, 0.3], [0.6, -0.5, -0.65, 0.65, 0.26]]).forEach(([dx, dy, dz, len, wd], i) => {
+          const f = put(pivot, 'cone', cols ? cols[i % cols.length] : memb, s * (o.thin ?? 0.035), s * len, s * wd, wrist.x, wrist.y, wrist.z);
           along(f, V3(side * dx, dy, dz));
-        }
+        });
+      }
+    },
+    /** Beetle shell halves as wing pivots (parts.wingL/wingR): hinged front-top, rotate .z to open. */
+    shells(o) {
+      const cols = o.colors || ['#18b5a0', '#7a4fd1', '#e9b830'];
+      for (const side of [1, -1]) {
+        const pivot = new T.Group();
+        pivot.position.set(side * B.w * 0.1, by + B.h * (o.y ?? 0.78), B.d * (o.z ?? 0.42));
+        pivot.rotation.z = side * (o.rest ?? 0);
+        pivot.name = side > 0 ? 'wingL' : 'wingR';
+        pivot.userData.anim = true;
+        bodyG.add(pivot);
+        put(pivot, 'sphM', tm(cols[0]), B.w * 0.56, B.h * 0.8, B.d * 1.02, side * B.w * 0.42, -B.h * 0.28, -B.d * 0.52);
+        put(pivot, 'sphL', tm(cols[1]), B.w * 0.3, B.h * 0.5, B.d * 0.86, side * B.w * 0.5, -B.h * 0.15, -B.d * 0.52);   // iridescent band
+        put(pivot, 'sphP', tm(cols[2]), B.w * 0.14, B.h * 0.3, B.d * 0.6, side * B.w * 0.62, -B.h * 0.05, -B.d * 0.5);
+      }
+    },
+    /** Empty anchor at the blowhole (parts.spout) for the water-spout fx. */
+    spout(o) {
+      const a = new T.Object3D();
+      a.name = 'spout';
+      const { p } = hs(0, o.el ?? 1.1);
+      a.position.set(p.x, p.y + hr * 0.04, p.z + hr * (o.dz ?? 0));
+      headG.add(a);
+    },
+    /** Static pectoral flippers (long, swept back). */
+    flippers(o) {
+      const mat = tm(o.color || B.color), s = o.s ?? 0.4;
+      for (const side of [1, -1]) {
+        const f = put(bodyG, 'sphL', mat, s * 0.16, s * 0.07, s * 0.55, side * B.w * (o.x ?? 0.92), by - B.h * (o.y ?? 0.2), B.d * (o.z ?? 0.15));
+        f.rotation.y = side * 0.5;
+        f.rotation.z = side * 0.35;
       }
     },
     /** Trunk on a pivot (parts.trunk): rotate .x to swing. */

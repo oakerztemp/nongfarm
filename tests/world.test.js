@@ -7,6 +7,7 @@ import {
 import * as engine from '../js/world3d/engine.js';
 import * as fx from '../js/world3d/fx.js';
 import { openSettings } from '../js/ui/settings.js';
+import * as THREE from '../vendor/three.module.min.js';
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const prefKeys = () => Object.keys(localStorage).filter(k => k.startsWith('nongfarm_pref_'));
@@ -591,4 +592,115 @@ test('fx: sprite effect caps and confetti scale with the tier; a legendary-hatch
       free();
     });
   }
+});
+
+// ---------------------------------------------------------------- V6: yard tiers + static props
+
+test('yard: capacity -> tier mapping and radii', () => {
+  const t = engine.yardTierForCapacity;
+  assertEq([t(3), t(5), t(6), t(9), t(10), t(14), t(15), t(20), t(0), t(99)], ['S', 'S', 'M', 'M', 'L', 'L', 'XL', 'XL', 'S', 'XL']);
+  assertEq(engine.yardTierConfig('xl').name, 'XL');
+  assertEq(engine.yardTierConfig(12).name, 'L');
+  assertEq(engine.yardTierConfig('nonsense').name, engine.DEFAULT_YARD_TIER);
+  const walk = engine.YARD_TIER_NAMES.map(n => engine.YARD_TIERS[n].walk);
+  assertEq(walk, [4.3, 5.0, 5.6, 6.2]);
+  for (const n of engine.YARD_TIER_NAMES) {
+    const c = engine.YARD_TIERS[n];
+    assert(c.walk < c.fence && c.fence < c.island, `${n}: walk < fence < island`);
+    assert(Math.abs(c.barnZ) < c.walk, `${n}: the barn sits inside the walkable area`);
+  }
+  assertEq([engine.WALK_RADIUS, engine.ISLAND_RADIUS], [5.6, 7.0], 'legacy constants = tier L');
+});
+
+test('yard: grow animation scale starts small, overshoots a little and settles at 1', () => {
+  assertEq(engine.yardGrowScale(0.8, 0), 0.8);
+  assert(Math.abs(engine.yardGrowScale(0.8, 1) - 1) < 1e-9);
+  const peak = Math.max(...[0.5, 0.6, 0.7, 0.8].map(u => engine.yardGrowScale(0.8, u)));
+  assert(peak > 1 && peak < 1.12, `small overshoot expected, got ${peak}`);
+});
+
+test('mergeStaticParts: many parts -> one coloured geometry, sources untouched', () => {
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  const cone = new THREE.ConeGeometry(0.5, 1, 6);
+  const before = box.attributes.position.array.slice();
+  const merged = engine.mergeStaticParts(THREE, [
+    { geometry: box, color: 0xff0000, position: [2, 0, 0] },
+    { geometry: box, color: 0x00ff00, position: [-2, 0, 0], scale: 2 },
+    { geometry: cone, color: 0x0000ff, rotation: [0, 1, 0] },
+  ]);
+  const verts = merged.attributes.position.count;
+  assertEq(verts, 36 + 36 + cone.toNonIndexed().attributes.position.count, 'vertex count = sum of parts');
+  assertEq([merged.attributes.color.count, merged.attributes.normal.count], [verts, verts]);
+  assertEq(Array.from(box.attributes.position.array), Array.from(before), 'source geometry not modified');
+  const x0 = merged.attributes.position.getX(0);
+  assert(x0 > 1 && x0 < 3, `first part translated to x=2, got ${x0}`);
+  let bad = 0;
+  for (let i = 0; i < verts; i++) {
+    const n = Math.hypot(merged.attributes.normal.getX(i), merged.attributes.normal.getY(i), merged.attributes.normal.getZ(i));
+    if (!(Math.abs(n - 1) < 1e-4)) bad++;
+  }
+  assertEq(bad, 0, 'normals stay unit length');
+  box.dispose(); cone.dispose(); merged.dispose();
+});
+
+test('yard world: setYardTier grows radii, camera and fence; props cost 1 call each; obstacles update in place', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto', yardTier: 'S' }, async world => {
+    assertEq([world.yardTier, world.walkRadius, world.islandRadius], ['S', 4.3, 5.7]);
+    const obstacles = world.obstacles;
+    assertEq(obstacles[0].z, -3.6, 'barn obstacle for tier S');
+    const changes = [];
+    const off = world.onYardChange(i => changes.push(i.tier));
+    const dist0 = world.camera.position.length();
+    assertEq(world.setYardTier('XL', { animate: true }), 'XL');
+    assertEq(world.setYardTier(18, { animate: true }), 'XL', 'same tier is a no-op');
+    assertEq(changes, ['XL'], 'listener fired once');
+    assertEq([world.yardTier, world.walkRadius, world.fenceRadius, world.islandRadius], ['XL', 6.2, 6.9, 7.6]);
+    assert(world.obstacles === obstacles && obstacles[0].z === -5.5, 'obstacles array updated in place');
+    await frames(world, 40);
+    await wait(1200);
+    await frames(world, 5);
+    assert(world.camera.position.length() > dist0, 'camera moved back to fit the bigger yard');
+    off();
+
+    // props: merged = 1 draw call however many parts; instanced = 1 draw call for N copies
+    world.renderer.render(world.scene, world.camera);
+    const base = world.renderer.info.render.calls;
+    const box = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    const parts = [];
+    for (let i = 0; i < 30; i++) parts.push({ geometry: box, color: 0x66aa66 + i * 1000, position: [i * 0.1 - 1.5, 0.15, 3] });
+    world.addMergedProp('pond', parts, { obstacle: { x: 0, z: 3, r: 1.5 } });
+    const items = [];
+    for (let i = 0; i < 60; i++) items.push({ position: [Math.sin(i) * 4, 0.15, Math.cos(i) * 4], scale: 0.5 + (i % 3) * 0.2, color: 0xffcc44 });
+    world.addInstancedProp('flowers', box, items);
+    assert(world.hasProp('pond') && world.hasProp('flowers'));
+    assert(obstacles.some(o => o.r === 1.5), 'prop obstacle registered');
+    await frames(world, 3);
+    world.renderer.render(world.scene, world.camera);
+    assert(world.renderer.info.render.calls - base <= 2, `2 props must cost <= 2 draw calls, got ${world.renderer.info.render.calls - base}`);
+    world.setYardTier('M', { animate: false });
+    assert(obstacles.some(o => o.r === 1.5) && obstacles[0].z === -4.3, 'prop obstacles survive a tier change');
+    assert(world.removeProp('pond') && !world.removeProp('pond'));
+    assert(!obstacles.some(o => o.r === 1.5), 'obstacle removed with the prop');
+    world.clearProps('flo');
+    assert(!world.hasProp('flowers'));
+    box.dispose();
+  });
+});
+
+test('yard world: dispose removes props and leaves nothing behind', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  const host = document.createElement('div');
+  host.style.cssText = 'width:300px;height:300px;position:fixed;left:0;top:0;';
+  document.body.appendChild(host);
+  const world = engine.createWorld(host, {}, { quality: 'low', yardTier: 'M' });
+  const scene = world.scene;
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  world.addMergedProp('a', [{ geometry: box, color: 0xffffff }]);
+  world.addInstancedProp('b', box, [{ position: [0, 0, 0] }]);
+  world.setYardTier('L', { animate: false });
+  world.dispose();
+  assert(!scene.children.some(o => o.isMesh || o.isInstancedMesh), 'no meshes left in the scene after dispose');
+  box.dispose();
+  host.remove();
 });

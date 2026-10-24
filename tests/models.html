@@ -71,7 +71,7 @@
       : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || (setName === 'farm') === isFarm(id));
     const extras = [];
     if (setName !== 'legendary') extras.push({ id: '_bb1', label: 'billboard \u{1F981}', emoji: '\u{1F981}' }, { id: '_bb2', label: 'fallback: dolphin', species: 'dolphin' });
-    if (setName !== 'farm') extras.push({ id: '_bb3', label: 'eagle (legendary billboard)', species: 'eagle' });
+    if (setName !== 'farm') extras.push({ id: '_bb3', label: 'shark (epic billboard)', species: 'shark' });
     const cells = ids.map(id => ({ id, label: id + (getSpecies(id).rarity === 'legendary' ? ' \u2726' : '') })).concat(q.get('only') ? [] : extras);
     const cols = Math.min(cells.length, q.get('only') ? cells.length : 6), gap = q.get('only') ? 2.6 : 1.9;
     const rows = Math.ceil(cells.length / cols);

@@ -7,8 +7,9 @@
 //   plot.fertilized  - true once fertilizer was used for this planting (max one per crop)
 //   plot.helperBonus / plot.helperPetIds - yield bonus + helpers snapshotted when the crop became ready
 //   plot.lastCropId  - crop last planted here (kept after harvest) for the one-tap replant button
+//   plot.stations    - petId pinned (pin) per slot index 0..2, kept across crops (V6); pet.station = { plotIndex, slot }
 import { now, randInt, pickWeighted, uid, addLog, notify, formatDuration, todayKey } from './util.js';
-import { addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, bumpStat } from './state.js';
+import { addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, bumpStat, repairStations as repairStationLinks } from './state.js';
 import { canWork, getWorkPower, traitEffect, addBond, addPetXp, getPet, petEmoji, petName } from './pets.js';
 import { CROPS, getCrop } from './data/crops.js';
 import { EGGS } from './data/eggs.js';
@@ -147,16 +148,18 @@ function isReady(plot) {
   return !!plot.cropId && Number(plot.progress) >= 1 - READY_EPS;
 }
 
-function newPlot(index) {
+// `stations` survive harvests and replanting (a pinned pet stays pinned to the plot), so callers pass the old ones.
+function newPlot(index, stations = null) {
   return {
     index, cropId: null, plantedAt: 0, progress: 0, watered: false, petIds: [], lastGrowAt: 0, xpCarryMs: [],
     fertilized: false, helperBonus: 0, helperPetIds: [], lastCropId: null, workMs: {}, growElapsedMs: 0,
+    stations: Array.isArray(stations) ? stations.slice(0, 3).concat([null, null, null]).slice(0, 3) : [null, null, null],
   };
 }
 
 function resetPlot(plot, index) {
   const last = plot.lastCropId || null;
-  const fresh = newPlot(index);
+  const fresh = newPlot(index, plot.stations);
   delete plot.petId; // pre-v3 field
   delete plot.helperPetId;
   Object.assign(plot, fresh, { lastCropId: last });
@@ -196,6 +199,127 @@ function releaseAll(state, plot, index) {
   }
   plot.petIds = Array.isArray(plot.petIds) ? plot.petIds.map(() => null) : [];
   return pets;
+}
+
+// ---------------------------------------------------------------- stations (V6)
+// A stationed pet is pinned to a plot slot: tickFarm sends it to work whenever the plot is growing and it
+// can work, sends it home to rest when tired / hungry / sick (the station is kept) and brings it back by itself.
+
+export const MAX_STATIONS = 3;
+const TIRED_BELOW = 20;   // same thresholds as canWork()
+const HUNGRY_BELOW = 15;
+
+function stationsOf(plot) {
+  if (!Array.isArray(plot.stations)) plot.stations = [];
+  while (plot.stations.length < MAX_STATIONS) plot.stations.push(null);
+  if (plot.stations.length > MAX_STATIONS) plot.stations.length = MAX_STATIONS;
+  return plot.stations;
+}
+
+const isStationedAt = (pet, index, slot) => !!(pet && pet.station && pet.station.plotIndex === index && (pet.station.slot || 0) === slot);
+
+/** Puts `pet` to work in `slot` (no stat bump: used by the automatic dispatch). */
+function placePet(plot, index, crop, slot, pet) {
+  ensureSlots(plot, crop);
+  carryArr(plot, slotCount(crop))[slot] = 0;
+  plot.petIds[slot] = pet.id;
+  pet.status = 'working';
+  pet.task = { type: 'plot', plotIndex: index, slot };
+}
+
+function clearStation(plot, slot, pet) {
+  if (plot && Array.isArray(plot.stations) && slot < plot.stations.length) plot.stations[slot] = null;
+  if (pet && pet.station) pet.station = null;
+}
+
+/** Pin `petId` to `slot` of plot `plotIndex` (persists across crops). */
+export function stationPet(state, plotIndex, slot, petId) {
+  const plot = getPlot(state, plotIndex);
+  if (!plot) return fail('ไม่พบแปลงนี้');
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_STATIONS) return fail('ไม่มีช่องนี้ในแปลง');
+  const crop = getCrop(plot.cropId);
+  if (crop && slot >= slotCount(crop)) return fail('พืชนี้ไม่มีช่องที่ ' + (slot + 1));
+  const pet = getPet(state, petId);
+  if (!pet) return fail('ไม่พบน้องตัวนี้');
+  if (pet.status === 'expedition') return fail('น้องออกสำรวจอยู่ ประจำแปลงไม่ได้');
+  if (pet.station && !(pet.station.plotIndex === plotIndex && (pet.station.slot || 0) === slot)) {
+    const other = getPlot(state, pet.station.plotIndex);
+    if (other && stationsOf(other)[pet.station.slot || 0] === pet.id) {
+      return fail(`${petEmoji(pet)} ${petName(pet)} ประจำแปลง #${pet.station.plotIndex + 1} อยู่แล้ว`);
+    }
+  }
+  const st = stationsOf(plot);
+  const holder = st[slot] ? getPet(state, st[slot]) : null;
+  if (holder && holder.id !== pet.id) return fail('ช่องนี้มีน้องประจำอยู่แล้ว');
+  st[slot] = pet.id;
+  pet.station = { plotIndex, slot };
+  return done(`📌 ${petEmoji(pet)} ${petName(pet)} ประจำแปลง #${plotIndex + 1} แล้ว จะกลับมาช่วยเองทุกรอบ`);
+}
+
+/** Remove the pin from a slot. A pet currently working that slot keeps working until the crop is ready. */
+export function unstationPet(state, plotIndex, slot) {
+  const plot = getPlot(state, plotIndex);
+  if (!plot) return fail('ไม่พบแปลงนี้');
+  const st = stationsOf(plot);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_STATIONS || !st[slot]) return fail('ช่องนี้ไม่มีน้องประจำ');
+  const pet = getPet(state, st[slot]);
+  clearStation(plot, slot, pet);
+  return done(pet ? `📌 เลิกให้ ${petEmoji(pet)} ${petName(pet)} ประจำแปลงแล้ว` : 'เลิกประจำแปลงแล้ว');
+}
+
+/** What the plot card shows for a slot: the stationed pet and why it is (not) working. */
+export function stationInfo(state, plotIndex, slot) {
+  const plot = getPlot(state, plotIndex);
+  const id = plot && Array.isArray(plot.stations) ? plot.stations[slot] : null;
+  const pet = id ? getPet(state, id) : null;
+  if (!pet) return null;
+  const crop = plot && getCrop(plot.cropId);
+  let kind = 'wait', emoji = '🏡', text = 'รอที่ลาน';
+  const working = pet.status === 'working' && pet.task && pet.task.type === 'plot' && pet.task.plotIndex === plotIndex && (pet.task.slot || 0) === slot;
+  const growing = !!(crop && !isReady(plot) && slot < slotCount(crop));
+  if (working) { kind = 'work'; emoji = '🛠️'; text = 'กำลังช่วย'; }
+  else if (pet.status === 'expedition') { kind = 'away'; emoji = '🧭'; text = 'ออกสำรวจ'; }
+  else if (pet.sick) { kind = 'sick'; emoji = '🤒'; text = 'ป่วย'; }
+  else if (pet.status === 'sleeping' || (pet.stats && pet.stats.energy < TIRED_BELOW)) { kind = 'rest'; emoji = '💤'; text = 'พัก'; }
+  else if (pet.stats && pet.stats.hunger < HUNGRY_BELOW) { kind = 'hungry'; emoji = '😋'; text = 'หิว'; }
+  else if (growing) { kind = 'ready'; emoji = '⏳'; text = 'กำลังไป'; }
+  return { pet, state: kind, emoji, text, working };
+}
+
+/** "ประจำแปลง #N" for a pet (yard sheet / pet card), or ''. */
+export function stationLabel(pet) {
+  return pet && pet.station ? `ประจำแปลง #${(Number(pet.station.plotIndex) || 0) + 1}` : '';
+}
+
+/** Re-syncs plot.stations <-> pet.station (state.js does the linking); pets away on an expedition lose their pin. */
+function repairStations(state) {
+  for (const pet of Array.isArray(state.pets) ? state.pets : []) {
+    if (pet && pet.station && pet.status === 'expedition') {
+      const plot = getPlot(state, pet.station.plotIndex);
+      clearStation(plot, pet.station.slot || 0, pet);
+    }
+  }
+  repairStationLinks(state);
+}
+
+/** Auto-dispatch: stationed idle pets that can work go to their growing plot; tired ones nap at home. */
+function tickStations(state) {
+  repairStations(state);
+  state.plots.forEach((plot, index) => {
+    if (!plot || !Array.isArray(plot.stations)) return;
+    const crop = getCrop(plot.cropId);
+    const growing = !!(crop && !isReady(plot));
+    for (let slot = 0; slot < MAX_STATIONS; slot++) {
+      const pet = plot.stations[slot] ? getPet(state, plot.stations[slot]) : null;
+      if (!pet || pet.status === 'working' || pet.status === 'expedition') continue;
+      if (growing && slot < slotCount(crop) && !(Array.isArray(plot.petIds) && plot.petIds[slot]) && canWork(pet).ok) {
+        placePet(plot, index, crop, slot, pet);
+      } else if (pet.status === 'idle' && !pet.sick && pet.stats && pet.stats.energy < TIRED_BELOW) {
+        pet.status = 'sleeping';                              // tired: rest at home, wakes at 100 (pets.js)
+        pet.task = null;
+      }
+    }
+  });
 }
 
 // Sum of the pets' speed contributions (with the full-team combo) for a validated team.
@@ -271,6 +395,7 @@ export function plotTeam(state, plot) {
       jobs: slotJobs(crop, slot),
       pet: found ? found.pet : null,
       power: found ? slotPower(found.pet, crop, slot, team.length, ms) : 0,
+      station: stationInfo(state, plot.index, slot),
     });
   }
   return { crop, slots, full, boost, speed: 1 + (plot.watered ? WATER_BOOST : 0) + boost };
@@ -313,6 +438,7 @@ export function tickFarm(state, nowMs) {
   for (let i = 0; i < state.plots.length; i++) tickPlot(state, state.plots[i], i, nowMs);
   tickExpeditions(state, nowMs);
   repairPetTasks(state);
+  tickStations(state);
   ensureOrders(state, todayKey());
 }
 
@@ -354,8 +480,10 @@ function tickPlot(state, plot, index, nowMs) {
     if (!t || t.type !== 'plot' || t.plotIndex !== index || (t.slot || 0) !== slot) {
       plot.petIds[slot] = null; // dangling id (pet released / task changed)
       carry[slot] = 0;
+    } else if (isStationedAt(pet, index, slot) && (pet.sick || !pet.stats || pet.stats.energy < TIRED_BELOW || pet.stats.hunger < HUNGRY_BELOW)) {
+      releaseSlot(state, plot, index, slot);   // 📌 goes home to rest; tickStations brings it back when it can work
     } else if (pet.sick || !pet.stats || !(pet.stats.energy > 0)) {
-      notify(`${petEmoji(pet)} ${petName(pet)} ${pet.sick ? 'ป่วย' : 'หมดแรง'} เลยกลับคอกแล้ว`, 'warn');
+      notify(`${petEmoji(pet)} ${petName(pet)} ${pet.sick ? 'ป่วย' : 'หมดแรง'} เลยกลับลานแล้ว`, 'warn');
       releaseSlot(state, plot, index, slot);
     }
   }
@@ -398,7 +526,7 @@ function tickPlot(state, plot, index, nowMs) {
     plot.helperBonus = det.reduce((t, d) => t + d.bonus, 0);
     plot.helperPetIds = det.filter(d => d.share >= HELPER_MIN_SHARE).map(d => d.pet.id);
     const names = team.map(t => petName(t.pet)).join(', ');
-    notify(`🌱 ${crop.nameTh} พร้อมเก็บแล้ว น้อง ${names} กลับคอกพักผ่อน`, 'success');
+    notify(`🌱 ${crop.nameTh} พร้อมเก็บแล้ว น้อง ${names} กลับลานพักผ่อน`, 'success');
     releaseAll(state, plot, index);
   }
 }
@@ -475,7 +603,7 @@ export function plantSeed(state, plotIndex, cropId) {
   if (state.player.level < crop.unlockLevel) return fail(`ปลูก${crop.nameTh}ได้ที่เลเวล ${crop.unlockLevel}`);
   if (!removeItem(state, 'seed_' + crop.id, 1)) return fail(`ไม่มีเมล็ด${crop.nameTh} ซื้อได้ที่ร้านค้า`);
   const t = now();
-  Object.assign(plot, newPlot(plotIndex), { cropId: crop.id, plantedAt: t, lastGrowAt: t, lastCropId: crop.id, petIds: Array(slotCount(crop)).fill(null), xpCarryMs: Array(slotCount(crop)).fill(0) });
+  Object.assign(plot, newPlot(plotIndex, plot.stations), { cropId: crop.id, plantedAt: t, lastGrowAt: t, lastCropId: crop.id, petIds: Array(slotCount(crop)).fill(null), xpCarryMs: Array(slotCount(crop)).fill(0) });
   delete plot.petId;
   bumpStat(state, 'planted');
   return done(`ปลูก ${crop.emoji} ${crop.nameTh} แล้ว`);
@@ -548,11 +676,13 @@ export function unassignPet(state, plotIndex, slot = null) {
   if (!ids.some(Boolean)) return fail('แปลงนี้ไม่มีน้องประจำอยู่');
   if (slot == null) {
     const pets = releaseAll(state, plot, plotIndex);
-    return done(pets.length ? `${pets.map(p => `${petEmoji(p)} ${petName(p)}`).join(', ')} กลับคอกแล้ว` : 'เรียกน้องกลับแล้ว');
+    for (const p of pets) if (p.station && p.station.plotIndex === plotIndex) clearStation(plot, p.station.slot || 0, p); // recalling = no longer pinned
+    return done(pets.length ? `${pets.map(p => `${petEmoji(p)} ${petName(p)}`).join(', ')} กลับลานแล้ว` : 'เรียกน้องกลับแล้ว');
   }
   if (!Number.isInteger(slot) || slot < 0 || slot >= ids.length || !ids[slot]) return fail('ช่องนี้ไม่มีน้องประจำอยู่');
   const pet = releaseSlot(state, plot, plotIndex, slot);
-  return done(pet ? `${petEmoji(pet)} ${petName(pet)} กลับคอกแล้ว` : 'เรียกน้องกลับแล้ว');
+  if (pet && isStationedAt(pet, plotIndex, slot)) clearStation(plot, slot, pet);  // ✕ on a 📌 chip = remove the pin too
+  return done(pet ? `${petEmoji(pet)} ${petName(pet)} กลับลานแล้ว` : 'เรียกน้องกลับแล้ว');
 }
 
 export function harvestPlot(state, plotIndex) {
@@ -842,6 +972,7 @@ export function startExpedition(state, petId, zoneId) {
   const t = now();
   const ex = { id: uid(), petId: pet.id, zoneId: zone.id, startAt: t, endAt: t + zone.durationMs, done: false, rewards: null };
   state.expeditions.push(ex);
+  if (pet.station) clearStation(getPlot(state, pet.station.plotIndex), pet.station.slot || 0, pet); // leaving on a trip drops the pin
   pet.status = 'expedition';
   pet.task = { type: 'expedition', expeditionId: ex.id };
   bumpStat(state, 'expeditionsStarted');
@@ -933,12 +1064,33 @@ export function barnUpgradePrice(state) {
   return tidy(BARN_BASE * BARN_GROWTH ** k);
 }
 
+// Yard tiers (V6 §4): what the next upgrade adds, for the shop preview.
+export const YARD_TIERS = [
+  { id: 'S', nameTh: 'ทุ่งหญ้าเล็ก', from: 3, to: 5, adds: 'ทุ่งหญ้าเล็กๆ ล้อมรั้ว' },
+  { id: 'M', nameTh: 'ลานบ่อน้ำ', from: 6, to: 9, adds: '💧 บ่อน้ำ + 🌳 ต้นไม้ใหญ่' },
+  { id: 'L', nameTh: 'ลานสวน', from: 10, to: 14, adds: '🌷 แปลงดอกไม้ + 🛝 สนามเด็กเล่นเล็กๆ' },
+  { id: 'XL', nameTh: 'ลานเนินเขา', from: 15, to: 20, adds: '⛰️ เนินเขามีศาลา + 🏮 โคมไฟที่ส่องสว่างตอนกลางคืน' },
+];
+export const yardTierOf = cap => YARD_TIERS.find(t => cap >= t.from && cap <= t.to) || YARD_TIERS[YARD_TIERS.length - 1];
+
+/** One-line preview for the shop card: what the next slot / the next tier gives. */
+export function yardUpgradePreview(state) {
+  const cap = Number(state.barnCapacity) || START_BARN;
+  if (cap >= MAX_BARN) return 'ลานใหญ่สุดแล้ว';
+  const cur = yardTierOf(cap);
+  const next = yardTierOf(cap + 1);
+  if (next.id !== cur.id) return `ขยายแล้วลานเลื่อนเป็น "${next.nameTh}" ได้ ${next.adds} · ลานกว้างขึ้น`;
+  const left = cur.to - cap;
+  const after = YARD_TIERS[YARD_TIERS.indexOf(cur) + 1];
+  return `เพิ่มช่องเลี้ยงอีก 1${after ? ` · อีก ${left} ช่องลานจะเป็น "${after.nameTh}": ${after.adds}` : ''}`;
+}
+
 export function upgradeBarn(state) {
   const price = barnUpgradePrice(state);
-  if (price == null) return fail(`คอกใหญ่สุดแล้ว (${MAX_BARN} ช่อง)`);
+  if (price == null) return fail(`ลานใหญ่สุดแล้ว (${MAX_BARN} ช่อง)`);
   if (!spendCoins(state, price)) return fail(`เหรียญไม่พอ (ต้องใช้ ${price} 🪙)`);
   state.barnCapacity = (Number(state.barnCapacity) || START_BARN) + 1;
-  return done(`ขยายคอกแล้ว! จุได้ ${state.barnCapacity} ตัว (-${price} 🪙)`);
+  return done(`ขยายลานแล้ว! จุได้ ${state.barnCapacity} ตัว (-${price} 🪙)`);
 }
 
 // Incubator slots: 1 -> 3. Price is null when maxed.

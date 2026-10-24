@@ -65,6 +65,18 @@ export function nestSpot(i, n) {
   return { x: (i - (n - 1) / 2) * 1.25, z: YARD.nestZ };
 }
 
+/**
+ * Nursery crib i (0..2) beside the nest row, to the left of it and behind the wander limit, so pets never walk through
+ * a crib. n = how many nests stand in the row.
+ */
+export function cribSpot(i, n = 1) {
+  const half = ((Math.max(1, Number(n) || 1) - 1) / 2) * 1.25;
+  const x0 = -(half + 1.55);
+  const slots = [[0, 0], [0, -1.0], [-1.1, -0.5]];
+  const [dx, dz] = slots[((Number(i) || 0) % 3 + 3) % 3];
+  return { x: x0 + dx, z: YARD.nestZ + dz };
+}
+
 /** Small seeded rng (mulberry32). Returns () => [0,1). */
 export function makeRng(seed = 1) {
   let a = (seed >>> 0) || 1;
@@ -218,6 +230,67 @@ export function signatureFor(speciesId) {
 /** Share of awake pets that may nap at the same time (keeps the yard from being full of 💤). */
 export const NAP_CAP = 0.25;
 
+// ── Placed decor (CONTRACT_V7 §3): pets walk to it and use it. Cosmetic only. ────────────────────────────────
+/** decorId -> what a pet does with it (the sign has no use). Mirrors `use` in js/data/decor.js; a test keeps them in sync. */
+export const DECOR_USE = { bed: 'nap', bowl: 'eat', ball: 'kick', horse: 'rock', leaves: 'jump' };
+export const DECOR_USE_TYPES = new Set(['nap', 'eat', 'kick', 'rock', 'jump']);
+/** Pets bigger than this radius skip the rocking horse. */
+export const ROCK_MAX_RADIUS = 0.8;
+
+/** Where a pet stands to use a decor lying at (x, z): the bowl is eaten from the front, the ball is kicked from the side. */
+export function decorStand(use, x, z) {
+  switch (use) {
+    case 'eat': return clampToYard(x, z + 0.62);
+    case 'kick': return clampToYard(x - 0.62, z + 0.18);
+    default: return clampToYard(x, z);
+  }
+}
+
+/** Seconds a pet spends on one visit (after walking there). */
+function decorDuration(use, rng) {
+  switch (use) {
+    case 'nap': return 8 + rng() * 6;
+    case 'eat': return 4 + rng() * 2.5;
+    case 'kick': return 5 + rng() * 1.5;
+    case 'rock': return 6 + rng() * 3;
+    default: return 4 + rng() * 1.5;
+  }
+}
+
+/**
+ * The decor a pet may visit right now, with weights: [{ d, use, wt }]. `actorState.decor` = [{ id, decorId, x, z, busy }]
+ * (busy = somebody is already using it). Sleepy pets love the bed, gluttons the bowl, cheerful / naughty pets the ball
+ * and the leaves; only small pets climb the rocking horse. Nearer decor is a little more attractive.
+ */
+export function decorOptions(pet, actorState = {}) {
+  const list = Array.isArray(actorState.decor) ? actorState.decor : [];
+  if (!list.length || !pet) return [];
+  const st = pet.stats || {};
+  const pers = PERS[pet.personality] || DEFAULT_PERS;
+  const happy = num(st.happy, 100), energy = num(st.energy, 100), hunger = num(st.hunger, 100);
+  const ax = num(actorState.x), az = num(actorState.z);
+  const size = Number.isFinite(actorState.size) ? actorState.size : 0.5;
+  const out = [];
+  for (const d of list) {
+    if (!d || d.busy || !Number.isFinite(d.x) || !Number.isFinite(d.z)) continue;
+    const use = DECOR_USE[d.decorId];
+    if (!use) continue;
+    let wt = 0;
+    switch (use) {
+      case 'nap': wt = (num(actorState.napRatio) >= NAP_CAP) ? 0 : pers.nap * 2 + (energy < 60 ? 1.6 : 0) + 0.3; break;
+      case 'eat': wt = (hunger < 95 ? 0.8 : 0.25) * (pet.personality === 'glutton' ? 3 : 1); break;
+      case 'kick': wt = happy < 25 ? 0 : 0.5 + pers.hop * 0.8; break;
+      case 'rock': wt = happy < 25 || size > ROCK_MAX_RADIUS ? 0 : 0.45 + pers.hop * 0.6; break;
+      case 'jump': wt = happy < 25 ? 0 : 0.5 + pers.hop * 0.9; break;
+      default: break;
+    }
+    if (wt <= 0) continue;
+    wt /= 1 + dist(ax, az, d.x, d.z) * 0.1;
+    out.push({ d, use, wt });
+  }
+  return out;
+}
+
 const pause = (rng, mult, lo = 3, hi = 8) => (lo + rng() * (hi - lo)) * mult;
 
 /**
@@ -295,7 +368,10 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
     nap: (pers.nap + (energy < 30 ? 1.5 : 0)) * (energy >= 95 ? 0.15 : 1) * (last === 'sleep' ? 0.2 : 1),
     approach: others.length && !sad ? pers.approach : 0,
     signature: 0,
+    decor: 0,
   };
+  const decorOpts = decorOptions(pet, { ...actorState, x: ax, z: az });
+  if (decorOpts.length) w.decor = decorOpts.reduce((a, o) => a + o.wt, 0);
   // staggered naps: when a quarter of the awake pets already nap, nobody starts another one
   if ((Number(actorState.napRatio) || 0) >= NAP_CAP) w.nap = 0;
   const sig = signatureFor(pet && pet.speciesId);
@@ -303,6 +379,14 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
   const choice = weightedPick(Object.entries(w), rng);
 
   switch (choice) {
+    case 'decor': {
+      let r = rng() * w.decor, pick = decorOpts[decorOpts.length - 1];
+      for (const o of decorOpts) { r -= o.wt; if (r < 0) { pick = o; break; } }
+      return {
+        type: 'decor', use: pick.use, decorId: pick.d.decorId, instId: pick.d.id, target: decorStand(pick.use, pick.d.x, pick.d.z),
+        speed: pace, duration: decorDuration(pick.use, rng), nap: pick.use === 'nap',
+      };
+    }
     case 'wander':
       return { type: 'wander', target: pickTarget(rng, ax, az, others, pet && pet.personality === 'shy'), speed: pace, duration: 0 };
     case 'signature':
@@ -333,6 +417,7 @@ const WALKS = new Set(['wander', 'approach', 'walkTo']);
 export const DEFAULT_DUR = {
   idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3,
   flyCircle: 9, soar: 8, gallop: 6, sprint: 5, breach: 2.2, roar: 2.6, munch: 5, snowPuff: 3, shimmer: 2.4, flourish: 1.4,
+  wave: 1.7, decor: 5,
 };
 
 /** Shortest signed angle from a to b. */
@@ -359,11 +444,19 @@ export function advanceActor(A, dt, decide) {
   const act = A.act;
   act.t += dt;
   const finish = () => { if (A.act === act) decide(A); }; // a callback may already have started a new action
-  if (WALKS.has(act.type)) {
+  // A decor visit first walks to its stand point (act.arrived = false), then uses the decor for `dur` seconds from arrival.
+  const walkingToDecor = act.type === 'decor' && !act.arrived;
+  if (WALKS.has(act.type) || walkingToDecor) {
     const tgt = act.target;
     if (!tgt || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.z)) { finish(); return { moving: false, decided: true }; }
     const dx = tgt.x - A.x, dz = tgt.z - A.z, d = Math.hypot(dx, dz);
     if (d < 0.12 || act.t > 25) {
+      if (walkingToDecor) {
+        act.arrived = true;
+        act.t = 0;
+        if (act.onArrive) act.onArrive(A);
+        return { moving: false, decided: false };
+      }
       if (act.onArrive) act.onArrive(A);
       finish();
       return { moving: false, decided: true };

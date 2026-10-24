@@ -154,6 +154,27 @@
 
 .bag-summary { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-weight: 700; }
 
+/* ขยายลาน / ตกแต่งลาน (V7): requirement chips with ✅/❌ */
+.mat-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.mat-chip {
+  display: inline-flex; align-items: center; gap: 3px; padding: 1px 8px; border-radius: 999px;
+  font-size: 0.78rem; line-height: 1.5; white-space: nowrap;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+}
+.mat-chip b { font-variant-numeric: tabular-nums; }
+.mat-chip.is-ok { border-color: var(--success); }
+.mat-chip.is-miss { color: var(--text-dim); border-style: dashed; }
+.yard-card.is-tier-up { border-color: var(--accent); }
+.decor-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.decor-card {
+  display: flex; gap: 8px; align-items: center; padding: 8px 10px; min-width: 0;
+  border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border);
+}
+.decor-emoji { font-size: 1.7rem; line-height: 1; flex: none; width: 2rem; text-align: center; }
+.decor-info { flex: 1 1 auto; min-width: 0; }
+.decor-btns { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.pet-picker-item.is-best { border-color: var(--primary); }
+
 /* ---------------------------------------------------------- narrow screens */
 
 @media (max-width: 480px) {
@@ -161,6 +182,9 @@
   .shop-item, .bag-row { flex-wrap: wrap; }
   .shop-info, .bag-info { flex-basis: calc(100% - 3.5rem); }
   .shop-buy, .bag-actions { flex-basis: 100%; justify-content: flex-start; }
+  .decor-card { flex-wrap: wrap; }
+  .decor-info { flex-basis: calc(100% - 3rem); }
+  .decor-btns { flex-direction: row; flex-basis: 100%; }
   .zone-card { flex-wrap: wrap; }
   .zone-info { flex-basis: calc(100% - 3.5rem); }
   .zone-action { flex-basis: 100%; }

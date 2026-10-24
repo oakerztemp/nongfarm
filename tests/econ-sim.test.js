@@ -3,7 +3,7 @@
 // evening window, every 3 hours otherwise) and "clicker24" (every 10 minutes, all day; report-only).
 // Time between sessions is replayed exactly like main.js does it: 60 s catch-up steps (offline decay).
 // The report (coins/hour + level by day) goes to console.log and window.__econReport.
-import { test, assert, withFakeNow } from './harness.js';
+import { test, assert, assertEq, withFakeNow } from './harness.js';
 import { createNewState, addItem, countItem } from '../js/state.js';
 import { todayKey, now, randInt } from '../js/util.js';
 import {
@@ -14,9 +14,11 @@ import { SPECIES } from '../js/data/species.js';
 import { CROPS, getCrop } from '../js/data/crops.js';
 import { EGGS } from '../js/data/eggs.js';
 import { ITEMS, getItem } from '../js/data/items.js';
+import { DECOR } from '../js/data/decor.js';
 import {
-  tickFarm, plantSeed, waterPlot, assignPet, stationPet, unstationPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
-  buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, upgradeIncubator, incubatorUpgradePrice,
+  tickFarm, plantSeed, waterPlot, assignPet, unassignPet, stationPet, unstationPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
+  buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, barnUpgradeCost, barnUpgradeStatus, upgradeIncubator, incubatorUpgradePrice,
+  buildDecor, placeDecor, removeDecor, decorSpotList, decorBuildStatus, TIER_ENTRY_ITEMS, YARD_TIERS, yardTierOf,
   completeOrder, ensureOrders, nextMidnight, fertilize, harvestPlot, replantPlot, ZONES, effectivePower, plotTeam, slotPowerPreview,
 } from '../js/farm.js';
 
@@ -134,6 +136,76 @@ function collectYardGifts(s, bot) {
   bot.by.yard += value;
 }
 
+
+// ── V7 §3: yard materials + decor ───────────────────────────────────────────
+// What the next `n` yard upgrades need (an empty bag is assumed, so the L entry is the berry option).
+function upgradeNeedsAhead(s, n) {
+  const need = {};
+  const cap = s.barnCapacity;
+  for (let i = 0; i < n && cap + i < 20; i++) {
+    const c = barnUpgradeCost({ barnCapacity: cap + i, inventory: {}, player: { coins: 0 } });
+    for (const [id, k] of Object.entries(c.items)) need[id] = (need[id] || 0) + k;
+  }
+  return need;
+}
+
+// The bot stocks the next two upgrades' worth of materials (and never sells them).
+const STOCK_AHEAD = 2;
+function materialTarget(s) { return upgradeNeedsAhead(s, STOCK_AHEAD); }
+
+// Expected units per trip of `itemId` in `zone` for a pet of effective power `eff`.
+function zoneYield(zone, itemId, eff) {
+  const tw = zone.loot.reduce((a, l) => a + l.weight, 0);
+  const l = zone.loot.find(x => x.itemId === itemId);
+  return l ? (zone.baseRolls + 0.75 * eff) * (l.weight / tw) * ((l.min + l.max) / 2) : 0;
+}
+
+// Best zone to fetch the still-missing materials: useful units per hour of the pet's time.
+function gatherZone(s, pet, missing, cadence, zones) {
+  let best = null;
+  for (const z of zones) {
+    const eff = effectivePower(getWorkPower(pet, [z.job], { kind: 'expedition', jobs: [z.job], zoneId: z.id, hour: new Date(now()).getHours() }));
+    let units = 0;
+    const gain = {};
+    for (const [id, m] of Object.entries(missing)) {
+      const y = Math.min(m, zoneYield(z, id, eff));
+      if (y > 0) { gain[id] = zoneYield(z, id, eff); units += y; }
+    }
+    const cycle = Math.max(cadence, Math.ceil(z.durationMs / cadence) * cadence);
+    const v = units / (cycle / HOUR);
+    if (units > 0 && (!best || v > best.value)) best = { zone: z, value: v, gain };
+  }
+  return best;
+}
+
+// Decors in the order the bot wants them: kinds it has not placed yet first, cheaper coins first. Only when "rich"
+// (decor coins are a rounding error) and a spot is free.
+function decorWishlist(s) {
+  if (!decorSpotList(s).some(x => !x.placed)) return [];
+  const placedIds = new Set(s.decor.map(x => x.decorId));
+  return [...DECOR].sort((a, b) => (placedIds.has(a.id) - placedIds.has(b.id)) || (a.coins - b.coins))
+    .filter(d => s.player.coins >= d.coins * 40 + 100);
+}
+
+// Build and place a decor when the bot is rich: it never touches the materials the next upgrades still need.
+function buildDecorWhenRich(s, bot) {
+  const keep = materialTarget(s);
+  for (const spot of decorSpotList(s)) {
+    if (spot.placed) continue;
+    for (const d of decorWishlist(s)) {
+      if (Object.entries(d.items).some(([id, n]) => countItem(s, id) - n < (keep[id] || 0))) continue;
+      const before = s.player.coins;
+      if (!buildDecor(s, d.id).ok) continue;
+      bot.decorSpent += before - s.player.coins;
+      bot.decorBuilt++;
+      if (placeDecor(s, d.id, spot.spot).ok) bot.decorPlaced++;
+      break;
+    }
+  }
+}
+
+const canWorkAfterRecall = p => p.stats.energy >= 20 && p.stats.hunger >= 15 && !p.sick;
+
 function session(s, bot, cadence) {
   const startCoins = () => s.player.coins;
   collectYardGifts(s, bot);
@@ -151,6 +223,12 @@ function session(s, bot, cadence) {
 
   // 3. sell the rest of crops/forage (keep what open orders still need)
   const keep = orderNeeds(s);
+  const stock = materialTarget(s);
+  for (const [id, n] of Object.entries(stock)) keep[id] = Math.max(keep[id] || 0, n);   // yard materials are never sold
+  // the next tier's themed item is kept early too (a shell found on day 1 waits for tier M)
+  const wish = decorWishlist(s)[0];   // ...and so are the items of the decor it wants to build next
+  if (wish) for (const [id, n] of Object.entries(wish.items)) keep[id] = Math.max(keep[id] || 0, (stock[id] || 0) + n);
+  for (const e of Object.values(TIER_ENTRY_ITEMS)) for (const [id, n] of Object.entries(e)) keep[id] = Math.max(keep[id] || 0, n);
   for (const [id, n] of Object.entries({ ...s.inventory })) {
     const it = getItem(id);
     if (!it || (it.type !== 'crop' && it.type !== 'forage') || it.sell == null) continue;
@@ -203,6 +281,15 @@ function session(s, bot, cadence) {
 
   // 6. put idle pets to work: expedition or helper on a growing plot, whichever pays more per hour
   const zones = ZONES.filter(z => z.unlockLevel <= s.player.level);
+  // V7: when the yard is (nearly) full and the coins are within reach, idle pets fetch the missing wood/stone/themed items first.
+  const missing = {};
+  const bpNow = barnUpgradePrice(s);
+  if (bpNow != null && s.pets.length + s.incubator.length >= s.barnCapacity - 1 && s.player.coins >= 0.25 * bpNow) {
+    for (const [id, n] of Object.entries(materialTarget(s))) {
+      const m = n - countItem(s, id) - Object.values(s.expeditions).reduce((t, ex) => t + (ex.mat && ex.mat[id] || 0), 0);
+      if (m > 0.5) missing[id] = m;
+    }
+  }
   for (const pet of s.pets) {
     if (!canWork(pet).ok) continue;
     if (pet.station) {
@@ -211,6 +298,17 @@ function session(s, bot, cadence) {
       const sc = sp && getCrop(sp.cropId);
       if (sc && !isReady(sp) && pet.station.slot < (sc.slots || 1)) continue;
       unstationPet(s, pet.station.plotIndex, pet.station.slot);
+    }
+    if (pet.stage >= 1 && Object.keys(missing).length) {
+      const g = gatherZone(s, pet, missing, cadence, zones);
+      if (g && startExpedition(s, pet.id, g.zone.id).ok) {
+        const ex = s.expeditions[s.expeditions.length - 1];
+        ex.mat = g.gain;   // sim bookkeeping only: what this trip is expected to bring
+        for (const [id, y] of Object.entries(g.gain)) if (id in missing) missing[id] -= y;
+        for (const id of Object.keys(missing)) if (missing[id] <= 0.5) delete missing[id];
+        bot.gathers++;
+        continue;
+      }
     }
     let best = { value: 0 };
     if (pet.stage >= 1) {
@@ -242,6 +340,26 @@ function session(s, bot, cadence) {
     }
   }
 
+  // 6b. still short of materials and nobody idle: recall a few plot helpers for a gathering trip (like a player would)
+  let recalls = 1 + Math.floor(s.pets.length / 4);
+  while (Object.keys(missing).length && recalls-- > 0) {
+    const cands = s.pets.filter(p => p.stage >= 1 && canWorkAfterRecall(p) && ((p.status === 'working' && p.task && p.task.type === 'plot') || (p.status === 'idle' && p.station)));
+    let pick = null;
+    for (const pet of cands) {
+      const g = gatherZone(s, pet, missing, cadence, zones);
+      if (g && (!pick || g.value > pick.g.value)) pick = { pet, g };
+    }
+    if (!pick) break;
+    const { pet, g } = pick;
+    if (pet.status === 'working') unassignPet(s, pet.task.plotIndex, pet.task.slot || 0);
+    if (pet.station) unstationPet(s, pet.station.plotIndex, pet.station.slot);
+    if (!startExpedition(s, pet.id, g.zone.id).ok) continue;
+    s.expeditions[s.expeditions.length - 1].mat = g.gain;
+    for (const [id, y] of Object.entries(g.gain)) if (id in missing) missing[id] -= y;
+    for (const id of Object.keys(missing)) if (missing[id] <= 0.5) delete missing[id];
+    bot.gathers++;
+  }
+
   // 7. invest what is left
   for (const e of EGGS) {
     while (countItem(s, e.id) > 0 && s.incubator.length < s.incubatorCapacity) {
@@ -262,9 +380,12 @@ function session(s, bot, cadence) {
       if (egg && buyItem(s, egg.id, 1).ok) { putEggInIncubator(s, egg.id); continue; }
     }
     if (ip != null && spare >= ip * 1.2 && s.pets.length >= 2) { upgradeIncubator(s); continue; }
-    if (bp != null && petsTotal >= s.barnCapacity && spare >= bp * 1.3) { upgradeBarn(s); continue; }
+    if (bp != null && petsTotal >= s.barnCapacity && spare >= bp * 1.3 && barnUpgradeStatus(s).itemsOk) {
+      if (upgradeBarn(s).ok) { bot.upgrades++; continue; }
+    }
     break;
   }
+  buildDecorWhenRich(s, bot);
 }
 
 function claimDaily(s) {
@@ -299,12 +420,13 @@ function runSim(profile, seed) {
     Math.random = mulberry32(seed);
     try {
       const s = createNewState();
-      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
+      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
       let last = START;
       let lastRowAt = START;
       let lastEarned = 0;
       let lastYard = 0;
+      const tierDay = {};   // virtual days (fractional) until the yard first reached tier M / L / XL
       const t0 = Date.now();
       for (let t = START; t <= START + DAYS * DAY; t = next(t)) {
         clock.set(t);
@@ -312,6 +434,7 @@ function runSim(profile, seed) {
         last = t;
         claimDaily(s);
         session(s, bot, Math.max(10 * MIN, next(t) - t));
+        for (const [id, cap] of [['M', 6], ['L', 10], ['XL', 15]]) if (!(id in tierDay) && s.barnCapacity >= cap) tierDay[id] = +((t - START) / DAY).toFixed(2);
         if (t >= START + (rows.length + 1) * DAY) {
           rows.push({
             day: rows.length + 1, level: s.player.level, coins: Math.floor(s.player.coins),
@@ -324,7 +447,7 @@ function runSim(profile, seed) {
           lastRowAt = t;
         }
       }
-      return { rows, assigns: bot.assigns, combos: bot.combos, autoDispatch: bot.autoDispatch, by: bot.by, earned: bot.earned, perHour: bot.earned / (DAYS * 24), ms: Date.now() - t0, state: s };
+      return { rows, assigns: bot.assigns, combos: bot.combos, autoDispatch: bot.autoDispatch, by: bot.by, bot, earned: bot.earned, perHour: bot.earned / (DAYS * 24), ms: Date.now() - t0, tierDay, state: s };
     } finally {
       Math.random = realRandom;
     }
@@ -340,6 +463,7 @@ async function result(name) {
 function table(name, r) {
   const share = k => Math.round((100 * r.by[k]) / Math.max(1, r.earned));
   const lines = [`[econ-sim] ${name}: ${Math.round(r.perHour)} coins/h earned on average (${r.ms} ms); income mix crops ${share('crop')}% / forage ${share('forage')}% / orders ${share('orders')}% / yard ${share('yard')}%; plot-helper assignments ${r.assigns}, full-team combos ${r.combos}`,
+    `yard tiers reached (virtual days) M ${r.tierDay.M} / L ${r.tierDay.L} / XL ${r.tierDay.XL}; ${r.bot.upgrades} upgrades, ${r.bot.gathers} gathering trips; decor built ${r.bot.decorBuilt}, placed ${r.bot.decorPlaced}, ${r.bot.decorSpent} coins`,
     'day  lvl  plots pets inc barn orders  coins/h(day)  yard%   coins'];
   for (const x of r.rows) {
     lines.push(`${String(x.day).padStart(3)}  ${String(x.level).padStart(3)}  ${String(x.plots).padStart(5)} ${String(x.pets).padStart(4)} ${String(x.inc).padStart(3)} ${String(x.barn).padStart(4)} ${String(x.orders).padStart(6)}  ${String(Math.round(x.perHour)).padStart(12)}  ${String(Math.round(100 * x.yardShare)).padStart(4)}%  ${String(x.coins).padStart(7)}`);
@@ -550,4 +674,111 @@ test('econ: even a yard of 20 maxed legendary pets stays well under 20% of the d
   const day14 = a.rows.find(x => x.day === 14).perHour;
   console.log(`[econ-sim] worst-case yard: ${Math.round(worst)} coins/h vs ${Math.round(day14)} coins/h at day 14 (${(100 * worst / day14).toFixed(1)}%)`);
   assert(worst <= 0.2 * day14, `worst-case yard ${Math.round(worst)} coins/h > 20% of ${Math.round(day14)}`);
+});
+
+
+// ── ขยายลานด้วยวัสดุ + ของตกแต่ง (CONTRACT_V7 §3) ───────────────────────────
+// V6 baseline, recorded BEFORE materials existed (same bot, same seed 20260302, coin-only upgrades): the virtual day on
+// which the yard first reached tier M (6 slots) / L (10) / XL (15). The V7 bot also gathers wood/stone/shell/... by
+// expeditions and builds decor; the time to every tier has to stay within +-25 % of these.
+const V6_BASELINE_TIER_DAYS = {
+  '3h':      { M: 1.75, L: 3.0, XL: 5.5 },
+  realistic: { M: 0.53, L: 1.5, XL: 3.79 },
+};
+const TIER_TOLERANCE = 0.25;
+
+test('econ: time to yard tier M / L / XL stays within +-25% of the V6 (coins only) baseline', async () => {
+  const lines = [];
+  for (const name of ['3h', 'realistic']) {
+    const r = await result(name);
+    for (const tier of ['M', 'L', 'XL']) {
+      const base = V6_BASELINE_TIER_DAYS[name][tier];
+      const got = r.tierDay[tier];
+      lines.push(`${name} ${tier}: ${got} d (baseline ${base} d, ${got == null ? 'never' : (100 * (got / base - 1)).toFixed(0) + '%'})`);
+      assert(got != null, `${name}: yard never reached tier ${tier} in ${DAYS} days\n${table(name, r)}`);
+      assert(got >= base * (1 - TIER_TOLERANCE) && got <= base * (1 + TIER_TOLERANCE),
+        `${name}: tier ${tier} reached on day ${got}, baseline ${base} (allowed ${(base * (1 - TIER_TOLERANCE)).toFixed(2)}-${(base * (1 + TIER_TOLERANCE)).toFixed(2)})\n${table(name, r)}`);
+    }
+  }
+  globalThis.__econTiers = lines;
+  console.log('[econ-sim] days to yard tier vs V6 baseline: ' + lines.join(' | '));
+});
+
+test('econ: the bot really uses materials (gathers by expeditions, pays for every upgrade, builds + places decor)', async () => {
+  for (const name of ['3h', 'realistic']) {
+    const r = await result(name);
+    assert(r.bot.gathers > 20, `${name}: only ${r.bot.gathers} gathering trips`);
+    assert(r.bot.upgrades >= 17, `${name}: ${r.bot.upgrades} upgrades (the yard should be 20 by day 14, it is ${r.state.barnCapacity})`);
+    assert(r.state.barnCapacity === 20, `${name}: barn ${r.state.barnCapacity} on day 14`);
+    assert(r.bot.decorBuilt >= 1 && r.bot.decorPlaced >= 1, `${name}: the rich bot built ${r.bot.decorBuilt} / placed ${r.bot.decorPlaced} decor`);
+    // decor is a (small) coin sink: coins out, nothing back
+    assert(r.bot.decorSpent > 0, `${name}: decor cost no coins`);
+  }
+});
+
+test('econ: materials and decor open no buy->sell loop (materials cannot be bought; decor cannot be sold; removing refunds nothing)', () => withFakeNow(START, () => {
+  const matIds = new Set();
+  const cap = { barnCapacity: 3, inventory: {}, player: { coins: 0 } };
+  for (let c = 3; c < 20; c++) {
+    cap.barnCapacity = c;
+    const cost = barnUpgradeCost(cap);
+    for (const id of [...Object.keys(cost.items), ...Object.keys(cost.alt || {})]) matIds.add(id);
+  }
+  for (const d of DECOR) for (const id of Object.keys(d.items)) matIds.add(id);
+  assert(matIds.size >= 8, 'materials found: ' + [...matIds]);
+  for (const id of matIds) {
+    const it = getItem(id);
+    assert(it && it.type === 'forage', id + ' is gathered forage');
+    assert(it.buy == null, `${id} must not be sold in the shop (it would be a buy->sell loop)`);
+    assert(it.sell == null || it.sell <= 260, `${id} sells for ${it.sell}`);
+  }
+  // the coins in a decor are strictly worth more than anything the materials sell for... but they can't be sold at all:
+  const s = createNewState();
+  s.player.coins = 1000;
+  s.barnCapacity = 20;
+  for (const d of DECOR) {
+    for (const [id, n] of Object.entries(d.items)) addItem(s, id, n);
+    const before = s.player.coins;
+    assert(buildDecor(s, d.id).ok, 'build ' + d.id);
+    assertEq(s.player.coins, before - d.coins, d.id + ' costs its coins');
+    assert(!sellItem(s, d.id, 1).ok && !buyItem(s, d.id, 1).ok, 'decor is not an item (no sell / buy)');
+  }
+  const placed = [];
+  DECOR.forEach((d, i) => { const r = placeDecor(s, d.id, i); assert(r.ok, r.reason); });
+  placed.push(...s.decor.map(x => x.id));
+  const coinsBefore = s.player.coins;
+  const invBefore = JSON.stringify(s.inventory);
+  for (const id of placed) assert(removeDecor(s, id).ok, 'remove');
+  assertEq(s.player.coins, coinsBefore, 'removing decor refunds no coins');
+  assertEq(JSON.stringify(s.inventory), invBefore, 'removing decor refunds no materials');
+  // a full build -> place -> remove -> place cycle can only cost coins
+  const total = DECOR.reduce((t, d) => t + d.coins, 0);
+  assertEq(s.player.coins, 1000 - total);
+  // and an upgrade never pays out
+  const u = createNewState();
+  u.player.coins = 100000;
+  const c0 = barnUpgradeCost(u);
+  for (const [id, n] of Object.entries(c0.items)) addItem(u, id, n);
+  const worth = Object.entries(c0.items).reduce((t, [id, n]) => t + getItem(id).sell * n, 0);
+  const before = u.player.coins;
+  assert(upgradeBarn(u).ok, 'upgrade');
+  assert(before - u.player.coins === c0.coins && c0.coins > worth, `upgrade costs ${c0.coins} coins, materials sell for ${worth}`);
+}));
+
+test('econ: every yard material is obtainable by the level a player reaches that tier (drop tables)', () => {
+  const firstZoneLevel = id => Math.min(...ZONES.filter(z => z.loot.some(l => l.itemId === id)).map(z => z.unlockLevel));
+  // levels at which the bot (and a normal player) is entering each tier in the baseline sim: M ~Lv3-5, L ~Lv5-7, XL ~Lv8-12
+  const levelAtTier = { S: 1, M: 3, L: 5, XL: 8 };
+  const cap = { barnCapacity: 3, inventory: {}, player: { coins: 0 } };
+  for (let c = 3; c < 20; c++) {
+    cap.barnCapacity = c;
+    const cost = barnUpgradeCost(cap);
+    const tier = yardTierOf(c).id;
+    for (const id of Object.keys(cost.items)) {
+      const lvl = firstZoneLevel(id);
+      assert(Number.isFinite(lvl), `${id} (needed for the slot ${c}->${c + 1}) drops nowhere`);
+      assert(lvl <= Math.max(levelAtTier[tier], levelAtTier[cost.enters || tier]), `${id} needs a zone of Lv.${lvl} but slot ${c}->${c + 1} is reachable at Lv.${levelAtTier[tier]}`);
+    }
+  }
+  for (const d of DECOR) for (const id of Object.keys(d.items)) assert(Number.isFinite(firstZoneLevel(id)), `${id} for ${d.id} drops nowhere`);
 });

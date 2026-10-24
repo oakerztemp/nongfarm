@@ -12,11 +12,15 @@ import { getTraitDef, TRAIT_SCALE } from '../data/traits.js';
 import {
   STAGES, PERSONALITIES, petEmoji, petName, petMood, getPet,
   putEggInIncubator, hatchReady, feedPet, playWithPet, cleanPet, pickPoop,
-  giveToy, healPet, toggleSleep, renamePet, releasePet, foodEffect,
-  collectYard, yardPreview, stationStatus,
+  giveToy, healPet, toggleSleep, renamePet, rehomePet, rehomeDust, foodEffect,
+  collectYard, collectPetGift, petGift, yardPreview, stationStatus,
   getTrait, bondProgress, giftAvailable, claimGift, BOND_DAILY_CAP, GIFT_MIN_HEARTS,
   STARDUST_BY_RARITY, BOOK_GOALS, getGoal, isGoalClaimed, claimGoal, makeShiny, buyHabitatEgg,
+  RELEASE_COINS, NURSERY_SLOTS, nurseryPets, getNurseryPet, adoptFromNursery, swapWithNursery, compareCandidates,
+  arrivedPostcards, unreadPostcardCount, markPostcardRead,
 } from '../pets.js';
+import * as farmLogic from '../farm.js'; // decor build / place / remove (namespace import: guarded, in case it is missing)
+import { DECOR, getDecor } from '../data/decor.js';
 
 const e = escapeHtml;
 const RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
@@ -69,6 +73,7 @@ function xpProgress(pet) {
 function statusLabel(pet, state) {
   switch (pet.status) {
     case 'sleeping': return '💤 กำลังนอนหลับ';
+    case 'nursery': return '👶 นอนในเปลอนุบาล';
     case 'working': {
       const idx = pet.task && pet.task.type === 'plot' ? pet.task.plotIndex : null;
       return idx == null ? '🌾 กำลังทำงาน' : `🌾 ทำงานที่แปลง ${idx + 1}`;
@@ -217,6 +222,11 @@ function renderPetCard(pet, state) {
   const notIdle = pet.status !== 'idle';
   const bond = bondProgress(pet);
 
+  const gift = petGift(state, pet.id);
+  const giftBadge = gift.has
+    ? `<button type="button" class="pet-gift-badge${gift.full ? ' is-full' : ''}" data-action="pet-gift" data-pet-id="${e(pet.id)}"
+        title="เก็บของขวัญ 🪙${gift.coins}${gift.itemCount ? ` +${gift.itemCount} ชิ้น` : ''}" aria-label="เก็บของขวัญจาก${e(petName(pet))}">${gift.full ? '🎁✨' : '🎁'}</button>`
+    : '';
   const poops = Array.from({ length: pet.poop }, () =>
     `<button type="button" class="pet-poop" data-action="poop" data-pet-id="${e(pet.id)}" title="เก็บอึ" aria-label="เก็บอึ">💩</button>`).join('');
 
@@ -235,6 +245,7 @@ function renderPetCard(pet, state) {
         ${pet.sick ? '<span class="pet-sicko" aria-hidden="true">🤒</span>' : ''}
       </button>
       <span class="pet-mood" title="${mood.text}">${mood.emoji}</span>
+      ${giftBadge}
       <div class="pet-poops">${poops}</div>
     </div>
     <div class="pet-head">
@@ -260,6 +271,209 @@ function renderPetCard(pet, state) {
     </div>
   </article>`;
 }
+
+// ── เปลอนุบาล + ตัวช่วยเปรียบเทียบ + ส่งไปบ้านใหม่ (CONTRACT_V7 §5) ─────────────────────────────────
+/** 👶 Nursery rows (list view): frozen babies waiting for a yard slot. Empty string when the nursery is empty. */
+function renderNursery(state) {
+  const babies = nurseryPets(state);
+  if (!babies.length) return '';
+  const yardFull = state.pets.length >= state.barnCapacity;
+  const rows = babies.map(pet => {
+    const sp = getSpecies(pet.speciesId);
+    const pers = persOf(pet);
+    return `<div class="nursery-row${pet.shiny ? ' is-shiny' : ''}" data-pet-id="${e(pet.id)}" style="--rar:${sp ? RARITIES[sp.rarity].color : '#8e9aa6'}">
+      <span class="nursery-emoji" aria-hidden="true">${petEmoji(pet)}<i class="nursery-zzz">💤</i></span>
+      <div class="nursery-info">
+        <div class="nursery-name"><b>${e(petName(pet))}</b> ${sp ? rarityBadge(sp) : ''}${pet.shiny ? ' <span class="pet-shiny-tag">✨ ไชนี่</span>' : ''}</div>
+        <div class="nursery-sub muted">${sp ? e(sp.nameTh) : ''} · ${pers.emoji} ${pers.nameTh} ${traitBadge(sp)}</div>
+        <div class="nursery-acts">
+          <button type="button" class="btn btn-sm btn-primary" data-action="nursery-adopt" data-pet-id="${e(pet.id)}"${yardFull ? ' disabled title="ลานเต็ม — สลับกับน้องในลานแทนนะ"' : ''}>🏡 รับเข้าลาน</button>
+          <button type="button" class="btn btn-sm" data-action="nursery-swap" data-pet-id="${e(pet.id)}">🔄 สลับกับน้องในลาน…</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-action="nursery-rehome" data-pet-id="${e(pet.id)}">💌 ส่งไปบ้านใหม่</button>
+        </div>
+      </div></div>`;
+  }).join('');
+  return `<section class="nursery-section card">
+    <div class="barn-head"><h2 class="barn-title">👶 เปลอนุบาล</h2><span class="badge">${babies.length}/${NURSERY_SLOTS}</span></div>
+    <p class="muted nursery-note">ลานเต็ม น้องใหม่เลยหลับรออยู่ในเปล — ไม่หิว ไม่โต ไม่ทำงาน จนกว่าจะรับเข้าลาน</p>
+    <div class="nursery-list">${rows}</div></section>`;
+}
+
+/** Bottom sheet for a nursery baby in the 3D yard (pure string; buttons carry data-b3 so barn3d can handle them). */
+function nurserySheetHtml(pet, state, opts = {}) {
+  const sp = getSpecies(pet.speciesId);
+  const pers = persOf(pet);
+  const yardFull = state.pets.length >= state.barnCapacity;
+  const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
+      <b>${sp.rarity === 'legendary' ? '✦ ตำนานปรากฏตัว!' : pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
+      <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
+      <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
+  return `<div class="b3-sheet-head">
+      <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
+      <div class="b3-sheet-title"><b>${e(petName(pet))}</b>
+        <small>${sp ? e(sp.nameTh) : ''} · 👶 นอนในเปลอนุบาล${pet.shiny ? ' · ✨' : ''}</small></div>
+      <button type="button" class="b3-sheet-close" data-b3="close" aria-label="ปิด">✕</button></div>
+    <div class="b3-sheet-body">${reveal}
+      <p class="muted b3-nursery-note">${yardFull ? 'ลานเต็มอยู่ — สลับกับน้องในลาน หรือขยายลานก่อนนะ' : 'ลานมีที่ว่างแล้ว รับน้องเข้าลานได้เลย!'}</p>
+      <div class="pet-actions b3-acts b3-acts-3">
+        <button type="button" class="btn btn-sm btn-primary pet-act" data-b3="nursery-adopt" data-pet-id="${e(pet.id)}"${yardFull ? ' disabled title="ลานเต็ม"' : ''}>🏡 รับเข้าลาน</button>
+        <button type="button" class="btn btn-sm pet-act" data-b3="nursery-swap" data-pet-id="${e(pet.id)}">🔄 สลับกับน้องในลาน…</button>
+        <button type="button" class="btn btn-sm btn-ghost pet-act" data-b3="nursery-rehome" data-pet-id="${e(pet.id)}">💌 ส่งไปบ้านใหม่</button>
+      </div></div>`;
+}
+
+/**
+ * One candidate of the compare picker (pure string, exported for tests): emoji, name, stage, power, hearts, shiny, station,
+ * rarity and "ซ้ำ ×N" (how many of the species you own, the baby included). Duplicates carry a soft "ตัวซ้ำ แนะนำ" hint.
+ */
+export function compareRowHtml(row) {
+  const st = STAGES[row.stage] || STAGES[0];
+  const sp = getSpecies(row.pet.speciesId);
+  const chips = [
+    `<span class="cmp-chip" title="พลังทำงาน">💪 ${row.power}</span>`,
+    `<span class="cmp-chip" title="ความผูกพัน ${row.hearts}/5">❤️ ${row.hearts}</span>`,
+    row.shiny ? '<span class="cmp-chip is-shiny" title="ไชนี่">✨ ไชนี่</span>' : '',
+    row.station ? `<span class="cmp-chip is-warn" title="ถ้าน้องไป แปลงนี้จะว่าง">📌 ${e(row.station)}</span>` : '',
+    row.dup > 1 ? `<span class="cmp-chip is-dup" title="มีสายพันธุ์นี้ ${row.dup} ตัว">ซ้ำ ×${row.dup}</span>` : '',
+    row.where === 'nursery' ? '<span class="cmp-chip">👶 ในเปล</span>' : '',
+  ].join('');
+  return `<button type="button" class="pet-picker-item cmp-item${row.suggest ? ' is-suggest' : ''}" data-pet-id="${e(row.id)}"${row.eligible ? '' : ` disabled title="${e(row.reason)}"`}>
+    <span class="cmp-emoji${row.shiny ? ' is-shiny' : ''}" aria-hidden="true">${row.emoji}</span>
+    <span class="cmp-main"><span class="cmp-name"><b>${e(row.name)}</b> <small>${st.icon} ${st.nameTh}</small>${sp ? ` ${rarityBadge(sp)}` : ''}</span>
+      <span class="cmp-chips">${chips}</span>
+      ${row.suggest ? '<span class="cmp-hint">💡 ตัวซ้ำ แนะนำ</span>' : ''}${row.eligible ? '' : `<span class="cmp-hint is-off">${e(row.reason)}</span>`}</span></button>`;
+}
+
+/** Modal that lists compare rows; nothing is pre-selected. onPick(petId) runs after the modal closes. */
+function openComparePicker({ title, intro = '', rows, onPick }) {
+  const html = `${intro ? `<p class="muted cmp-intro">${intro}</p>` : ''}${rows.length
+    ? `<div class="pet-picker-list cmp-list">${rows.map(compareRowHtml).join('')}</div>`
+    : '<p class="muted pet-picker-empty">ยังไม่มีน้องให้เลือกเลย</p>'}`;
+  let close = () => {};
+  close = openModal({
+    title,
+    html,
+    onMount(el) {
+      el.addEventListener('click', ev => {
+        const b = ev.target.closest('.cmp-item');
+        if (!b || b.disabled) return;
+        const id = b.dataset.petId;
+        close();
+        if (onPick) onPick(id);
+      });
+    },
+  });
+  return close;
+}
+
+/** "สลับกับน้องในลาน…": pick the yard pet that goes to the crib instead of the baby. */
+function openSwapPicker(babyId) {
+  const state = getState();
+  if (!getNurseryPet(state, babyId)) return;
+  openComparePicker({
+    title: '🔄 เลือกน้องในลานที่จะสลับ',
+    intro: 'น้องที่เลือกจะไปนอนในเปลแทน (ของขวัญที่ถืออยู่จะถูกเก็บให้ก่อน) และน้องในเปลจะเข้าลานทันที',
+    rows: compareCandidates(state, { scope: 'yard' }),
+    onPick: yardId => run(s => swapWithNursery(s, babyId, yardId)),
+  });
+}
+
+/** Confirm step of "ส่งไปบ้านใหม่ 🏡💌" (always asked: it cannot be undone). */
+function confirmRehome(petId) {
+  const state = getState();
+  const pet = getPet(state, petId) || getNurseryPet(state, petId);
+  if (!pet) return;
+  const gift = petGift(state, petId);
+  const station = stationStatus(state, pet);
+  let close = () => {};
+  close = openModal({
+    title: '💌 ส่งไปบ้านใหม่',
+    html: `<div class="rehome-confirm">${petChipHtml(pet)}
+      <p>ส่ง <b>${e(petName(pet))}</b> ไปอยู่บ้านใหม่จริงๆ หรือ? จะไม่สามารถเอากลับมาได้ แต่น้องอาจส่งโปสการ์ดมาหาในอีกสองสามวัน 💌</p>
+      <p class="muted">ได้ ${RELEASE_COINS} 🪙 และผงดาว ${rehomeDust(pet)} ✨${gift.has ? ` · ของขวัญที่น้องถืออยู่ (🪙${gift.coins}${gift.itemCount ? ` +${gift.itemCount} ชิ้น` : ''}) จะถูกเก็บให้ก่อน` : ''}</p>
+      ${station ? `<p class="pet-release-station">📌 ${station.label} อยู่ — ส่งไปแล้วแปลงนี้จะว่าง</p>` : ''}
+      <div class="rehome-actions"><button type="button" class="btn btn-sm pet-release-yes" data-action="yes">💌 ส่งไปบ้านใหม่</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-action="no">ยกเลิก</button></div></div>`,
+    onMount(el) {
+      delegate(el, {
+        yes: () => { close(); run(s => rehomePet(s, petId)); },
+        no: () => close(),
+      });
+    },
+  });
+}
+
+/** Both the yard and the nursery are full: pick who moves on (compare helper, never auto-selected). */
+function openRehomePicker(intro = 'ลานกับเปลเต็มแล้ว เลือกน้องที่จะส่งไปบ้านใหม่ เพื่อเปิดที่ให้น้องใหม่') {
+  openComparePicker({
+    title: '💌 เลือกน้องที่จะส่งไปบ้านใหม่',
+    intro,
+    rows: compareCandidates(getState(), { scope: 'all' }),
+    onPick: id => confirmRehome(id),
+  });
+}
+
+/** 💌 mailbox: postcards from pets in their new homes, newest first. Opening it marks them read. */
+function openMailbox() {
+  const state = getState();
+  const cards = arrivedPostcards(state);
+  const t = now();
+  const html = cards.length
+    ? `<div class="mail-list">${cards.map(c => {
+        const sp = getSpecies(c.speciesId);
+        return `<article class="mail-card${c.read ? '' : ' is-new'}">
+          <div class="mail-head"><span class="mail-emoji" aria-hidden="true">${sp ? sp.emoji : '💌'}</span><b>${e(c.petName)}</b>
+            <small class="muted">${c.read ? '' : '✨ ใหม่ · '}${formatDuration(t - c.at)}ที่แล้ว</small></div>
+          <p class="mail-text">${e(c.text)}</p></article>`;
+      }).join('')}</div>`
+    : '<p class="muted pet-picker-empty">ยังไม่มีโปสการ์ด — น้องที่ส่งไปบ้านใหม่จะเขียนมาหาในอีก 12–36 ชม. 💌</p>';
+  openModal({ title: '💌 โปสการ์ดจากบ้านใหม่', html });
+  if (cards.some(c => !c.read)) update(s => { for (const c of arrivedPostcards(s)) markPostcardRead(s, c.id); });
+}
+
+/** Decor picker for one spot of the 3D yard: place something you built, or take the placed one back. */
+function openDecorPicker(spot) {
+  const state = getState();
+  const placed = (state.decor || []).find(d => d.spot === spot) || null;
+  const built = Object.entries(state.inventoryDecor || {}).filter(([, n]) => n > 0).map(([id, n]) => ({ d: getDecor(id), n })).filter(r => r.d);
+  const cur = placed && getDecor(placed.decorId);
+  const list = built.length
+    ? `<div class="pet-picker-list">${built.map(r => `<button type="button" class="pet-picker-item decor-pick" data-decor-id="${e(r.d.id)}">
+        <span class="decor-pick-emoji" aria-hidden="true">${r.d.emoji}</span>
+        <span class="incu-pick-main"><b>${e(r.d.nameTh)}</b> <small>×${r.n}</small></span>
+        <span class="pet-picker-desc">${e(r.d.useTh)}</span></button>`).join('')}</div>`
+    : '<p class="muted pet-picker-empty">ยังไม่มีของตกแต่งที่สร้างไว้ — ไปสร้างได้ที่ร้านค้า 🛒 (ตกแต่งลาน) ใช้วัสดุจากการสำรวจนะ</p>';
+  let close = () => {};
+  close = openModal({
+    title: `✨ จุดตกแต่ง #${spot + 1}`,
+    html: `${cur ? `<div class="decor-current"><span class="decor-pick-emoji">${cur.emoji}</span> <b>${e(cur.nameTh)}</b> วางอยู่ตรงนี้
+        <button type="button" class="btn btn-sm btn-ghost" data-decor-take="${e(placed.id)}">เก็บกลับกระเป๋า</button></div>` : ''}
+      ${built.length || !cur ? `<h4 class="pet-detail-h">${cur ? 'เปลี่ยนเป็น' : 'วางอะไรดี?'}</h4>` : ''}${list}`,
+    onMount(el) {
+      el.addEventListener('click', ev => {
+        const take = ev.target.closest('[data-decor-take]');
+        if (take) { close(); run(s => farmLogic.removeDecor(s, take.dataset.decorTake)); return; }
+        const b = ev.target.closest('.decor-pick');
+        if (!b) return;
+        close();
+        run(s => {
+          if (placed) { const r = farmLogic.removeDecor(s, placed.id); if (!r.ok) return r; }
+          return farmLogic.placeDecor(s, b.dataset.decorId, spot);
+        });
+      });
+    },
+  });
+}
+
+/** What barn3d may do with decor (all guarded: farm.js decor API is Coder C's). */
+const decorApi = {
+  available: () => typeof farmLogic.placeDecor === 'function' && typeof farmLogic.removeDecor === 'function',
+  openPicker: spot => openDecorPicker(spot),
+  emoji: decorId => { const d = getDecor(decorId); return d ? d.emoji : '✨'; },
+  info: decorId => getDecor(decorId),
+  all: DECOR,
+};
+
 
 // 3D barn lifecycle (CONTRACT_V4). The world modules are loaded lazily: if any of them is missing or WebGL is
 // unavailable, the card grid below is used and everything keeps working.
@@ -307,20 +521,21 @@ function barnToggleHtml(mode) {
     <button type="button" class="barn-toggle-btn${on === 'list' ? ' is-on' : ''}" data-action="barn-mode" data-mode="list" aria-pressed="${on === 'list'}">📋 รายการ</button></div>`;
 }
 
-/** 🎁 ลานให้ของ: collect button with a fill bar up to the 6 h cap. */
-function yardGiftHtml(state) {
-  if (!state.pets.length) return '';
+/** Small "🎁 N" chip (list view): N = pets holding a gift; collects every pet's gift. Empty string when nothing waits. */
+function giftChipHtml(state) {
   const pv = yardPreview(state);
+  if (!pv.pets) return '';
   const n = Object.values(pv.items).reduce((a, b) => a + b, 0);
-  const full = pv.fill >= 1;
-  const label = `🎁 ของขวัญจากลาน 🪙${pv.coins}${n ? ` +${n} ชิ้น` : ''}`;
-  return `<div class="yard-gift-row">
-    <button type="button" class="yard-gift${pv.coins > 0 || n > 0 ? ' has-gift' : ''}${full ? ' is-full' : ''}" data-action="yard-collect"
-      title="น้องๆ ที่อยู่บ้านสร้างของขวัญให้เรื่อยๆ (เก็บได้สูงสุด 6 ชม.) ตอนนี้ ~${Math.round(pv.perHour)} 🪙/ชม.">
-      <span class="yard-gift-t">${label}</span>
-      <span class="yard-gift-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pv.fill * 100)}"><i style="width:${(pv.fill * 100).toFixed(0)}%"></i></span>
-      <span class="yard-gift-s">${full ? 'เต็มแล้ว มาเก็บนะ!' : `เต็มใน ${formatDuration((1 - pv.fill) * 6 * 3600 * 1000)}`}</span>
-    </button></div>`;
+  return `<button type="button" class="yard-chip${pv.fullPets ? ' is-full' : ''}" data-action="yard-collect"
+    title="เก็บของขวัญจากน้องทุกตัว 🪙${pv.coins}${n ? ` +${n} ชิ้น` : ''}" aria-label="เก็บของขวัญจากน้อง ${pv.pets} ตัว">🎁 ${pv.pets}</button>`;
+}
+
+/** 💌 on the yard header once a postcard has arrived; the number counts the unread ones. */
+function mailBtnHtml(state) {
+  const arrived = arrivedPostcards(state);
+  if (!arrived.length) return '';
+  const unread = arrived.filter(c => !c.read).length;
+  return `<button type="button" class="yard-mail${unread ? ' has-new' : ''}" data-action="open-mail" aria-label="โปสการ์ดจากบ้านใหม่${unread ? ` (ใหม่ ${unread})` : ''}">💌${unread ? `<b class="yard-mail-n">${unread}</b>` : ''}</button>`;
 }
 
 function renderBarn(state) {
@@ -332,8 +547,7 @@ function renderBarn(state) {
     return `<div class="barn-view barn-3d">
       <section class="barn-section">
         <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
-          <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
-        ${yardGiftHtml(state)}
+          <div class="barn-head-r">${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
         ${mode === '3d'
           ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
           : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดลาน 3 มิติ…</div>'}
@@ -347,10 +561,10 @@ function renderBarn(state) {
     </div>`;
   return `<div class="barn-view">
     ${renderIncubator(state, t)}
+    ${renderNursery(state)}
     <section class="barn-section">
       <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
-        <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
-      ${yardGiftHtml(state)}
+        <div class="barn-head-r">${giftChipHtml(state)}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
       ${pets.length ? `<div class="barn-grid">${pets.map(p => renderPetCard(p, state)).join('')}</div>` : empty}
     </section></div>`;
 }
@@ -436,7 +650,13 @@ const barnCtx = {
   run, esc: e, petSheetHtml, foodTrayHtml,
   openDetails: id => openDetails(id),
   openEggPicker: () => openEggPicker(),
-  revealHatch: pet => openHatchReveal(pet), // the list's normal reveal, used when the 3D ceremony is cut short
+  revealHatch: (pet, toNursery) => openHatchReveal(pet, !!toNursery), // the list's normal reveal, used when the 3D ceremony is cut short
+  nurserySheetHtml,
+  nurseryAdopt: id => run(s => adoptFromNursery(s, id)),
+  nurserySwap: id => openSwapPicker(id),
+  nurseryRehome: id => confirmRehome(id),
+  onHatchBlocked: () => openRehomePicker(),
+  decor: decorApi,
   onFatal(err) {
     console.error('3D barn failed, falling back to the list view', err);
     worldDeps = false;
@@ -592,11 +812,11 @@ function openDetails(petId) {
       <button type="button" class="btn btn-sm btn-primary" data-action="rename-save">บันทึก</button>
     </div>
     <div class="pet-release">
-      <button type="button" class="btn btn-sm btn-ghost pet-release-btn" data-action="release-ask"${busy ? ' disabled title="น้องกำลังทำงานอยู่"' : ''}>👋 ปล่อยกลับธรรมชาติ</button>
+      <button type="button" class="btn btn-sm btn-ghost pet-release-btn" data-action="release-ask"${busy ? ' disabled title="น้องกำลังทำงานอยู่"' : ''}>💌 ส่งไปบ้านใหม่ 🏡</button>
       <div class="pet-release-confirm" hidden>
-        <p>ปล่อย <b>${e(petName(pet))}</b> จริงๆ หรือ? จะไม่สามารถเอากลับมาได้ (ได้ 10 🪙 + ผงดาว ${(STARDUST_BY_RARITY[sp.rarity] || 1) * (pet.shiny ? 2 : 1)} ✨)</p>
-        ${stationStatus(state, pet) ? `<p class="pet-release-station">📌 ${stationStatus(state, pet).label} อยู่ — ปล่อยแล้วแปลงนี้จะว่าง</p>` : ''}
-        <button type="button" class="btn btn-sm pet-release-yes" data-action="release-yes">ยืนยันปล่อย</button>
+        <p>ส่ง <b>${e(petName(pet))}</b> ไปบ้านใหม่จริงๆ หรือ? จะไม่สามารถเอากลับมาได้ (ได้ ${RELEASE_COINS} 🪙 + ผงดาว ${rehomeDust(pet)} ✨) ของขวัญที่น้องถืออยู่จะถูกเก็บให้ก่อน และน้องอาจส่งโปสการ์ดมาหา 💌</p>
+        ${stationStatus(state, pet) ? `<p class="pet-release-station">📌 ${stationStatus(state, pet).label} อยู่ — ส่งไปแล้วแปลงนี้จะว่าง</p>` : ''}
+        <button type="button" class="btn btn-sm pet-release-yes" data-action="release-yes">ยืนยันส่งไปบ้านใหม่</button>
         <button type="button" class="btn btn-sm btn-ghost" data-action="release-no">ยกเลิก</button>
       </div>
     </div></div>`;
@@ -623,7 +843,7 @@ function openDetails(petId) {
         'release-ask': () => { confirmBox.hidden = false; askBtn.hidden = true; },
         'release-no': () => { confirmBox.hidden = true; askBtn.hidden = false; },
         'release-yes': () => {
-          const r = run(s => releasePet(s, petId));
+          const r = run(s => rehomePet(s, petId));
           if (r && r.ok) close();
         },
       });
@@ -631,7 +851,7 @@ function openDetails(petId) {
   });
 }
 
-function openHatchReveal(pet) {
+function openHatchReveal(pet, toNursery = false) {
   const sp = getSpecies(pet.speciesId);
   if (!sp) return;
   const pers = persOf(pet);
@@ -641,7 +861,8 @@ function openHatchReveal(pet) {
       <div class="pet-reveal-emoji pet-emoji">${sp.emoji}</div>
       <h3>${e(petName(pet))}</h3>
       <p>${e(sp.nameTh)} ${rarityBadge(sp)}</p>
-      <p class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</p></div>`,
+      <p class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</p>
+      ${toNursery ? '<p class="nursery-note">👶 ลานเต็ม น้องเลยพักอยู่ในเปลอนุบาล — รับเข้าลานได้เมื่อมีที่ว่าง หรือสลับกับน้องในลานก็ได้</p>' : ''}</div>`,
   });
 }
 
@@ -666,13 +887,15 @@ function bindBarn(root) {
     'put-egg': () => openEggPicker(),
     hatch: btn => {
       const r = run(s => hatchReady(s, Number(btn.dataset.slot)));
-      if (r && r.ok && r.pet) openHatchReveal(r.pet);
+      if (r && r.ok && r.pet) openHatchReveal(r.pet, !!r.nursery);
+      else if (r && !r.ok && /เปลเต็ม/.test(r.reason || '')) openRehomePicker();   // yard and nursery both full: who moves on?
     },
-    'yard-collect': btn => {
-      const rect = btn.getBoundingClientRect();
-      const r = run(s => collectYard(s));
-      if (r && r.ok && barn3d && barn3d.collectFx) barn3d.collectFx(rect, r); // coins fly from the pets to the button
-    },
+    'yard-collect': () => { run(s => collectYard(s)); },
+    'pet-gift': withPet(id => { run(s => collectPetGift(s, id)); }),
+    'nursery-adopt': withPet(id => { run(s => adoptFromNursery(s, id)); }),
+    'nursery-swap': withPet(id => openSwapPicker(id)),
+    'nursery-rehome': withPet(id => confirmRehome(id)),
+    'open-mail': () => openMailbox(),
     'barn-mode': btn => {
       setBarnViewPref(btn.dataset.mode === 'list' ? 'list' : '3d');
       rerenderBarn(); // (barnMode() starts loading the 3D modules when needed)
@@ -737,7 +960,7 @@ function renderStardustShop(state) {
   const canShiny = dust >= 100 && state.pets.some(p => !p.shiny);
   return `<section class="card book-shop">
     <div class="barn-head"><h2 class="barn-title">✨ ร้านผงดาว</h2><span class="badge book-dust">✨ ${dust}</span></div>
-    <p class="muted book-shop-hint">ปล่อยน้องกลับธรรมชาติเพื่อรับผงดาว (ยิ่งหายากยิ่งได้เยอะ) แล้วนำมาแลกของที่นี่</p>
+    <p class="muted book-shop-hint">ส่งน้องไปบ้านใหม่ 💌 เพื่อรับผงดาว (ยิ่งหายากยิ่งได้เยอะ) แล้วนำมาแลกของที่นี่</p>
     <div class="book-shop-row">
       <button type="button" class="btn btn-sm btn-primary" data-action="make-shiny"${canShiny ? '' : ' disabled'}>🌈 เปลี่ยนน้องเป็นร่างไชนี่ <small>100 ✨</small></button>
     </div>

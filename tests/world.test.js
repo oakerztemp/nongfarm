@@ -660,7 +660,7 @@ test('yard world: setYardTier grows radii, camera and fence; props cost 1 call e
     await frames(world, 40);
     await wait(1200);
     await frames(world, 5);
-    assert(world.camera.position.length() > dist0, 'camera moved back to fit the bigger yard');
+    assert(Math.abs(world.camera.position.length() - dist0) < 1e-6, 'the camera distance is the same for every tier (CONTRACT_V7)');
     off();
 
     // props: merged = 1 draw call however many parts; instanced = 1 draw call for N copies
@@ -703,4 +703,273 @@ test('yard world: dispose removes props and leaves nothing behind', async () => 
   assert(!scene.children.some(o => o.isMesh || o.isInstancedMesh), 'no meshes left in the scene after dispose');
   box.dispose();
   host.remove();
+});
+
+// ---------------------------------------------------------------- V7: fixed camera, wilderness, pan, decor spots
+
+test('v7 camera: one distance for every yard tier (the fit of tier M); zoom bounds widened', () => {
+  const d = engine.fixedCameraDistance(0.6);
+  assertEq(d, engine.fitDistance(0.6, engine.CAMERA_FOV, engine.PITCH_DEFAULT, engine.YARD_TIERS.M.island), 'tier M fit');
+  assertEq(engine.CAMERA_FIT_TIER, 'M');
+  assert(engine.fixedCameraDistance(0.5) > engine.fixedCameraDistance(1.8), 'a narrow phone view is further away');
+  assertEq([engine.ZOOM_MIN, engine.ZOOM_MAX], [0.4, 1.5]);
+  assertEq(engine.clampZoom(9), 1.5);
+});
+
+test('v7 pan helpers: clamp to the island, drag direction, double tap', () => {
+  assertEq(engine.clampPan(3, 4, 10), { x: 3, z: 4 }, 'inside stays');
+  const c = engine.clampPan(30, 40, 10);
+  assert(Math.abs(c.x - 6) < 1e-9 && Math.abs(c.z - 8) < 1e-9, 'outside is projected on the circle');
+  assertEq(engine.clampPan(0, 0, 0), { x: 0, z: 0 });
+  // yaw 0: finger left -> target +x; finger up -> target +z (towards the camera); finger right/down the opposite
+  const l = engine.panDelta(-100, 0, 0, 0.9, 12, 38, 500);
+  assert(l.x > 0 && Math.abs(l.z) < 1e-9, `left: ${JSON.stringify(l)}`);
+  const u = engine.panDelta(0, -100, 0, 0.9, 12, 38, 500);
+  assert(u.z > 0 && Math.abs(u.x) < 1e-9, `up: ${JSON.stringify(u)}`);
+  const r = engine.panDelta(100, 100, 0, 0.9, 12, 38, 500);
+  assert(r.x < 0 && r.z < 0, 'right + down');
+  const quarter = engine.panDelta(-100, 0, Math.PI / 2, 0.9, 12, 38, 500);
+  assert(Math.abs(quarter.z) > 0 && Math.abs(quarter.x) < 1e-9, 'yaw 90deg turns the axes');
+  const side = engine.panDelta(100, 0, 0, 0.9, 12, 38, 500);
+  assert(Math.hypot(u.x, u.z) > Math.hypot(side.x, side.z), 'vertical drag is stretched by the ground tilt');
+  assert(engine.pixelsPerUnit(12, 38, 500) > 0);
+  const t = { x: 10, y: 10, t: 1000 };
+  assert(engine.isDoubleTap(t, { x: 20, y: 14, t: 1250 }), 'close and quick');
+  assert(!engine.isDoubleTap(t, { x: 20, y: 14, t: 1400 }), 'too slow');
+  assert(!engine.isDoubleTap(t, { x: 90, y: 10, t: 1100 }), 'too far');
+  assert(!engine.isDoubleTap(null, t));
+});
+
+test('v7 wild layout: deterministic, outside the lawn, off the stream, scaled by quality', () => {
+  const a = engine.layoutWild(1);
+  const b = engine.layoutWild(1);
+  assertEq(a, b, 'same seed -> same meadow');
+  const n = k => Object.values(engine.layoutWild(k)).reduce((s, x) => s + x.length, 0);
+  assert(n(0.45) < n(0.7) && n(0.7) < n(1), 'quality scales the count');
+  assert(n(1) <= 800, `instance count stays small, got ${n(1)}`);
+  const W = engine.WILD;
+  for (const [kind, items] of Object.entries(a)) {
+    assert(items.length > 10, `${kind}: some of each`);
+    for (const it of items) {
+      assert(it.r >= W.rMin - 1e-9 && it.r <= W.rMax + 1e-9, `${kind} radius ${it.r}`);
+      assert(Math.abs(Math.hypot(it.x, it.z) - it.r) < 1e-6, `${kind} r matches x,z`);
+      const sx = W.streamX + W.streamAmp * Math.sin(it.z * W.streamFreq);
+      assert(!(Math.abs(it.x - sx) < 1.5 && Math.abs(it.z) < W.streamHalf), `${kind} sits in the stream at ${it.x.toFixed(1)},${it.z.toFixed(1)}`);
+      assert(Number.isFinite(it.s) && it.s > 0 && Number.isFinite(it.color), `${kind} sane`);
+    }
+  }
+  assert(a.tree.every(t => t.r >= 7), 'trees keep a gap from the yard edge');
+  const XL = engine.YARD_TIERS.XL;
+  assert(W.rMin >= engine.YARD_TIERS.S.island, 'wild starts at the S lawn edge');
+  assert(W.streamX - W.streamAmp - 1.55 > XL.island + 1.5, 'the stream stays clear of even the XL yard');
+  assertEq(engine.wildClearance('S'), 6.0);
+  assert(engine.wildClearance('M') > engine.wildClearance('S') && engine.wildClearance(20) === engine.wildClearance('XL'));
+  assert(W.meadow >= XL.island + 4, 'meadow reaches at least 4 beyond the biggest island');
+});
+
+test('v7 decor spots: 2 / 4 / 6 / 8, stable per index, clear of every prop, nest and the barn in every tier', async () => {
+  const pb = await import('../js/petBehaviour.js');
+  const names = engine.YARD_TIER_NAMES;
+  assertEq(names.map(n => engine.decorSpotsForTier(n).length), [2, 4, 6, 8]);
+  assertEq(engine.decorSpotsForTier(3).length, 2);
+  assertEq(engine.decorSpotsForTier(20).length, 8);
+  const full = engine.decorSpotsForTier('XL');
+  assertEq(full.map(s => s.index), [0, 1, 2, 3, 4, 5, 6, 7]);
+  for (const n of names) assertEq(engine.decorSpotsForTier(n), full.slice(0, engine.DECOR_SPOT_COUNT[n]), `${n}: a prefix of the XL list, so placed decor never moves`);
+  try {
+    for (const tier of names) {
+      pb.configureYard(tier);
+      const lay = engine.YARD_TIERS[tier];
+      const props = pb.yardProps(tier);
+      const nests = Array.from({ length: 6 }, (_, i) => pb.nestSpot(i, 6));
+      for (const sp of engine.decorSpotsForTier(tier)) {
+        const unlock = Math.floor(sp.index / 2);
+        const where = `spot ${sp.index} at tier ${tier}`;
+        assert(Math.hypot(sp.x, sp.z) <= engine.YARD_TIERS[names[unlock]].walk - 0.2, `${where}: inside the walk radius of the tier that unlocks it`);
+        assert(sp.z >= pb.YARD.backLimit + 0.3, `${where}: pets can reach it (z ${sp.z} vs back limit ${pb.YARD.backLimit})`);
+        for (const p of props) assert(Math.hypot(sp.x - p.x, sp.z - p.z) >= p.r + 0.7, `${where}: touches ${p.id}`);
+        for (const nst of nests) assert(Math.hypot(sp.x - nst.x, sp.z - nst.z) >= 1.4, `${where}: too close to a nest`);
+        assert(Math.hypot(sp.x, sp.z - lay.barnZ) >= 2.7, `${where}: inside the barn`);
+        assert(Math.hypot(sp.x - pb.YARD.bowl.x, sp.z - pb.YARD.bowl.z) >= 1.4, `${where}: on the food bowl`);
+      }
+    }
+    // spots never overlap each other, nor a prop of ANY tier (a spot unlocked at S must survive the XL hill and lanterns)
+    for (const a of full) for (const b of full) if (a.index < b.index) assert(Math.hypot(a.x - b.x, a.z - b.z) >= 1.7, `spots ${a.index}/${b.index} overlap`);
+    for (const p of pb.yardProps('XL')) for (const sp of full) assert(Math.hypot(sp.x - p.x, sp.z - p.z) >= p.r + 0.7, `spot ${sp.index} vs ${p.id}`);
+  } finally {
+    pb.configureYard('L');
+  }
+});
+
+test('v7 world: camera distance is identical at every tier; wilderness costs <= 6 draw calls; decor spots follow the tier', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto', yardTier: 'S' }, async world => {
+    assertEq(world.decorSpots.length, 2);
+    world.setView({ zoom: 0.56, pan: { x: 0, z: 0 } });
+    await frames(world, 60); // let the zoom ease settle first
+    const distAt = async tier => {
+      world.setYardTier(tier, { animate: false });
+      await frames(world, 4);
+      return world.camera.position.distanceTo(new THREE.Vector3(0, 0.4, 0));
+    };
+    const d = [];
+    for (const t of engine.YARD_TIER_NAMES) d.push(await distAt(t));
+    assert(d.every(x => Math.abs(x - d[0]) < 1e-6), `camera distance changed with the tier: ${d}`);
+    const expected = engine.fixedCameraDistance(world.camera.aspect) * 0.56;
+    assert(Math.abs(d[0] - expected) < 1e-3, `distance ${d[0]} should be M fit x zoom = ${expected}`);
+
+    const info = world.wildInfo();
+    assertEq(info.meshes, 6, 'meadow + grass + bushes + trees + rocks + stream');
+    world.setYardTier('XL', { animate: false });
+    assertEq(world.decorSpots.length, 8);
+    assertEq(world.decorSpots, engine.decorSpotsForTier('XL'));
+    world.renderer.render(world.scene, world.camera);
+    const withWild = world.renderer.info.render.calls;
+    world.wildGroup.visible = false;
+    world.renderer.render(world.scene, world.camera);
+    const without = world.renderer.info.render.calls;
+    world.wildGroup.visible = true;
+    assert(withWild - without === info.meshes && info.meshes <= 6, `wilderness cost ${withWild - without} calls`);
+    assert(withWild <= 30, `an empty XL yard should be cheap, got ${withWild} calls`);
+    world.setYardTier('S', { animate: false });
+    world.renderer.render(world.scene, world.camera);
+    assert(world.renderer.info.render.calls <= 30, 'an empty S yard is cheap too');
+    assertEq(world.decorSpots.length, 2, 'spots shrink with the tier');
+  });
+});
+
+test('v7 world: wild props inside a bigger yard sink away (animated), and onYardChange reports spots + clearance', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto', yardTier: 'S' }, async world => {
+    const s0 = world.wildInfo();
+    assertEq([s0.clearance, s0.visible === s0.items, s0.animating], [engine.wildClearance('S'), true, false]);
+    const seen = [];
+    world.onYardChange(i => seen.push(i));
+    world.setYardTier('XL', { animate: true });
+    assertEq([seen.length, seen[0].tier, seen[0].decorSpots, seen[0].wildClearance], [1, 'XL', 8, engine.wildClearance('XL')]);
+    assert(world.wildInfo().animating, 'sink animation running');
+    assert(world.wildInfo().visible < s0.visible, 'props inside the new fence are on their way out');
+    await frames(world, 3);
+    await wait(1300);
+    await frames(world, 3);
+    const s1 = world.wildInfo();
+    assert(!s1.animating, 'animation finished');
+    const hidden = s0.visible - s1.visible;
+    assert(hidden >= 5 && hidden < s0.items * 0.4, `a handful of props sank, got ${hidden} of ${s0.items}`);
+    // going back to a smaller yard grows them again; an instant switch has no animation
+    world.setYardTier('S', { animate: false });
+    assertEq(world.wildInfo().visible, s0.visible, 'back at S everything is there again');
+    assert(!world.wildInfo().animating);
+  });
+});
+
+test('v7 world: one finger pans (clamped), small moves stay taps, double tap re-centres, wheel zoom is bounded', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  const host = document.createElement('div');
+  host.style.cssText = 'width:360px;height:420px;position:fixed;left:0;top:0;';
+  document.body.appendChild(host);
+  const taps = [], grounds = [];
+  const world = engine.createWorld(host, { onTap: id => taps.push(id), onTapGround: p => grounds.push(p) }, { quality: 'low', yardTier: 'XL' });
+  try {
+    const { THREE: T } = world;
+    const g = new T.Group();
+    const body = new T.Mesh(new T.SphereGeometry(0.4, 8, 6), new T.MeshBasicMaterial({ color: 0xff8844 }));
+    body.position.y = 0.4;
+    g.add(body);
+    g.position.set(1, 0, 1);
+    world.addActor('pet:1', g, { radius: 0.5, height: 0.8 });
+    assertEq(world.canvas.style.touchAction, 'none', 'one-finger gestures must not scroll the page');
+    world.setView({ zoom: 0.56 });
+    await frames(world, 4);
+    const rect = world.canvas.getBoundingClientRect();
+    const fire = (type, x, y, id = 1) => world.canvas.dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: 'touch', clientX: rect.left + x, clientY: rect.top + y, bubbles: true, button: 0,
+    }));
+    const drag = (x0, y0, x1, y1, id = 1, steps = 10) => {
+      fire('pointerdown', x0, y0, id);
+      for (let i = 1; i <= steps; i++) fire('pointermove', x0 + ((x1 - x0) * i) / steps, y0 + ((y1 - y0) * i) / steps, id);
+      fire('pointerup', x1, y1, id);
+    };
+    const settle = () => frames(world, 25);
+
+    // a drag on empty ground pans: finger left/up -> the target moves +x / +z
+    drag(250, 300, 150, 240);
+    let pan = world.getPan();
+    assert(pan.x > 0.5 && pan.z > 0.3, `dragging left/up should move the target +x/+z, got ${JSON.stringify(pan)}`);
+    assertEq([taps.length, grounds.length], [0, 0], 'a drag is never a tap');
+    assert(Math.abs(world.getView().pan.x - pan.x) < 1e-9, 'getView reports the pan');
+
+    // a drag that STARTS on a pet still pans and does not tap it (the camera follows the pan, so project again)
+    world.setPan(0, 0);
+    await settle();
+    const petScreen = world.worldToScreen(new T.Vector3(1, 0.4, 1));
+    drag(petScreen.x, petScreen.y, petScreen.x - 60, petScreen.y, 2);
+    assertEq(taps.length, 0, 'dragging from a pet is not a tap');
+    assert(world.getPan().x > 0.3, 'pan moved');
+
+    // threshold: a few px of finger travel stays a tap and does not pan
+    world.setPan(0, 0);
+    await settle();
+    const ps = world.worldToScreen(new T.Vector3(1, 0.4, 1));
+    fire('pointerdown', ps.x, ps.y, 3); fire('pointermove', ps.x + 5, ps.y + 4, 3); fire('pointerup', ps.x + 5, ps.y + 4, 3);
+    assertEq(taps, ['pet:1'], 'a wobbly tap on a pet still taps it');
+    assertEq(world.getPan(), { x: 0, z: 0 }, 'and does not pan');
+
+    // pan is clamped to the island radius
+    for (let k = 0; k < 4; k++) drag(340, 200, 5, 200, 4 + k, 30);
+    pan = world.getPan();
+    assert(Math.hypot(pan.x, pan.z) <= world.islandRadius + 1e-9, `pan ${Math.hypot(pan.x, pan.z)} beyond island ${world.islandRadius}`);
+    assert(Math.hypot(pan.x, pan.z) > world.islandRadius - 0.01, 'and it does reach the edge');
+    world.setYardTier('S', { animate: false });
+    assert(Math.hypot(world.getPan().x, world.getPan().z) <= world.islandRadius + 1e-9, 'a smaller yard pulls the pan back inside');
+
+    // double tap on empty ground re-centres, and only the first tap reaches onTapGround
+    world.setYardTier('XL', { animate: false });
+    world.setPan(3, 2);
+    await settle();
+    grounds.length = 0;
+    fire('pointerdown', 40, 390, 10); fire('pointerup', 40, 390, 10);
+    fire('pointerdown', 44, 388, 11); fire('pointerup', 44, 388, 11);
+    assertEq(world.getPan(), { x: 0, z: 0 }, 'double tap re-centred');
+    assert(grounds.length <= 1, 'second tap of a double tap is swallowed');
+    // double tap ON a pet is two ordinary taps (the per-pet gift flow needs both)
+    await settle();
+    const pp = world.worldToScreen(new T.Vector3(1, 0.4, 1));
+    taps.length = 0;
+    fire('pointerdown', pp.x, pp.y, 12); fire('pointerup', pp.x, pp.y, 12);
+    fire('pointerdown', pp.x, pp.y, 13); fire('pointerup', pp.x, pp.y, 13);
+    assertEq(taps, ['pet:1', 'pet:1'], 'two taps on a pet stay two taps');
+
+    // wheel zoom stays inside the bounds, both ways
+    for (let i = 0; i < 40; i++) world.canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, bubbles: true, cancelable: true }));
+    assertEq(world.getView().zoom, engine.ZOOM_MAX);
+    for (let i = 0; i < 80; i++) world.canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true, cancelable: true }));
+    assertEq(world.getView().zoom, engine.ZOOM_MIN);
+  } finally {
+    world.dispose();
+    host.remove();
+  }
+});
+
+test('v7 world: mouse right-drag and shift-drag still orbit, without panning', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'low', yardTier: 'M' }, async world => {
+    await frames(world, 3);
+    const rect = world.canvas.getBoundingClientRect();
+    const fire = (type, x, y, extra = {}) => world.canvas.dispatchEvent(new PointerEvent(type, {
+      pointerId: 1, pointerType: 'mouse', clientX: rect.left + x, clientY: rect.top + y, bubbles: true, ...extra,
+    }));
+    const yaw0 = world.getView().yaw;
+    fire('pointerdown', 100, 200, { button: 2 });
+    for (let i = 1; i <= 8; i++) fire('pointermove', 100 + i * 10, 200, { button: 2 });
+    fire('pointerup', 180, 200, { button: 2 });
+    assert(Math.abs(world.getView().yaw - yaw0) > 0.3, 'yaw changed');
+    assertEq(world.getPan(), { x: 0, z: 0 }, 'no pan');
+    const yaw1 = world.getView().yaw;
+    fire('pointerdown', 100, 200, { button: 0, shiftKey: true });
+    for (let i = 1; i <= 8; i++) fire('pointermove', 100 - i * 10, 200, { button: 0, shiftKey: true });
+    fire('pointerup', 20, 200, { button: 0, shiftKey: true });
+    assert(world.getView().yaw > yaw1 + 0.3, 'shift-drag orbits');
+    assertEq(world.getPan(), { x: 0, z: 0 });
+  });
 });

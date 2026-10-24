@@ -24,16 +24,17 @@
 // Host element: give it a height (e.g. CSS `height: 60vh`). Put it inside a `data-morph="skip"` wrapper so util.morph
 // never touches it, and give that wrapper a data-key. Create the world ONCE per view; sync actors when state changes.
 //
-// Coordinates: y up, ground disc centred at (0,0,0) (island radius world.islandRadius = 5.7 / 6.4 / 7.0 / 7.6 by yard tier). Pets should stay within
+// Coordinates: y up, lawn disc centred at (0,0,0) (island radius world.islandRadius = 5.7 / 6.4 / 7.0 / 7.6 by yard tier). Pets should stay within
 // world.walkRadius (see yard tiers below) and outside world.obstacles ([{ x, z, r }] circles, e.g. the barn prop). The barn prop is at
 // the back (-z) with its door facing +z; the default camera looks from +z. Actors' positions are never saved.
 //
 // YARD TIERS + PROPS (CONTRACT_V6 §4; the yard grows with barnCapacity: S 3-5, M 6-9, L 10-14, XL 15-20):
 //   yardTierForCapacity(cap) -> 'S'|'M'|'L'|'XL'      (pure; also createWorld(host, h, { yardTier: 'M' }))
-//   world.setYardTier(tierOrCapacity, { animate })    rebuilds ground/fence/tufts/flowers/barn spot for the tier, eases the
-//                                                     camera fit, and (animate:true, ~0.9 s) grows the fence ring from the old
-//                                                     size with a small overshoot. Call with animate:false when mounting, true
-//                                                     when the player upgrades (then fire fx.confetti / a "ลานกว้างขึ้น!" toast).
+//   world.setYardTier(tierOrCapacity, { animate })    rebuilds lawn/fence/tufts/flowers/barn spot for the tier and (animate:true,
+//                                                     ~0.9 s) grows the fence ring from the old size with a small overshoot.
+//                                                     The camera distance does NOT change with the tier (CONTRACT_V7 §2).
+//                                                     Call with animate:false when mounting, true when the player upgrades
+//                                                     (then fire fx.confetti / a "ลานกว้างขึ้น!" toast).
 //   world.yardTier / walkRadius (4.3 / 5.0 / 5.6 / 6.2) / fenceRadius / islandRadius are live getters; world.yardInfo();
 //   world.onYardChange(fn(info)) -> unsubscribe. world.obstacles is one array updated IN PLACE (barn + prop obstacles).
 //   Static props (never actors, not pickable, freed on removeProp/dispose; geometry you pass stays yours unless noted):
@@ -45,9 +46,22 @@
 //     world.removeProp(id) / hasProp(id) / clearProps(prefix)
 //   Budget (contract): all props together <= +15 draw calls at XL. Props are static: no per-frame work.
 //
-// Interaction: horizontal drag orbits (yaw); with a mouse, vertical drag tilts within clamped pitch. Touch keeps
-// `touch-action: pan-y`, so a vertical swipe scrolls the page instead. Pinch / wheel zoom is clamped. A press that
-// moves < 8 px and lasts < 500 ms is a tap. Taps pick actors by raycast first, then by screen proximity with a
+// WILDERNESS + PAN + DECOR SPOTS (CONTRACT_V7 §2):
+//   The fenced yard sits in a wide meadow (soft-edged ground disc, radius WILD.meadow) with instanced tall grass, bushes, trees,
+//   rocks and a stream on the +x side: 6 draw calls in total, all engine-owned and static. Wild props that end up inside a
+//   bigger yard sink away when setYardTier runs (same 0.9 s as the fence); `world.wildInfo()` -> { clearance, items, visible,
+//   animating, meshes } and `wildClearance(tier)` (pure) tell barn3d where the wild starts (= island radius + 0.3).
+//   Camera: one fixed distance for every tier (the fit of tier M); zoom 0.4..1.5 is relative to it. One-finger / left-mouse drag
+//   PANS the camera target (clamped to the current island radius); a press that moves < 8 px is still a tap. Mouse: right button
+//   (or shift/ctrl + left) drag orbits, wheel zooms; touch: two fingers pinch-zoom and twist to rotate. A double tap on empty
+//   ground re-centres (never when the 2nd tap lands on an actor, so double-tapping a pet still reaches onTap twice).
+//   world.recenter() / world.setPan(x, z) / world.getPan(); world.getView() also returns { pan:{x,z} }.
+//   The canvas sets touch-action:none, so the page does not scroll while a finger is on the 3D view.
+//   world.decorSpots -> [{ index, x, z }] : 2 / 4 / 6 / 8 spots (S / M / L / XL) on walkable ground away from the barn, nests,
+//   pond and other yard props. Spot i keeps its position in every tier (a placed decor never moves); the array is replaced on
+//   setYardTier and onYardChange info carries the count. `decorSpotsForTier(tierOrCapacity)` is the pure version.
+//
+// Interaction: see PAN above. Pinch / wheel zoom is clamped. A press that moves < 8 px and lasts < 500 ms is a tap. Taps pick actors by raycast first, then by screen proximity with a
 // minimum 44 px radius, so small pets are easy to hit (set `userData.noPick = true` on a mesh to exclude it).
 //
 // Rendering: toon (MeshToonMaterial) look - use world.toonGradient as `gradientMap` for visual consistency. Lights:
@@ -71,7 +85,7 @@ export const PITCH_MIN = 0.55;
 export const PITCH_MAX = 1.15;
 export const PITCH_DEFAULT = 0.9;
 export const ZOOM_MIN = 0.4;
-export const ZOOM_MAX = 1.15;
+export const ZOOM_MAX = 1.5;
 export const ZOOM_DEFAULT = 0.85;
 export const CAMERA_FOV = 38;
 /** Yard tiers (CONTRACT_V6 §4): walkable radius grows with barnCapacity; island = walk + 1.4, fence = walk + 0.7. */
@@ -87,15 +101,22 @@ export const ISLAND_RADIUS = YARD_TIERS.L.island; // legacy constants = tier L
 export const FENCE_RADIUS = YARD_TIERS.L.fence;
 export const WALK_RADIUS = YARD_TIERS.L.walk;
 export const YARD_GROW_MS = 900;
+/** The camera distance is the fit of this tier for every tier, so pets keep one size on screen while the yard grows (CONTRACT_V7 §2). */
+export const CAMERA_FIT_TIER = 'M';
+export const DOUBLE_TAP_MS = 320;
+export const DOUBLE_TAP_PX = 36;
+/** Wilderness: soft-edged meadow disc (radius `meadow`), props scattered in [rMin, rMax], a stream on the +x side. */
+export const WILD = { meadow: 40, rMin: 6.0, rMax: 24, seed: 20261024, streamX: 12.5, streamAmp: 1.6, streamFreq: 0.22, streamHalf: 20 };
+export const WILD_CLEARANCE_MARGIN = 0.3;
 const MAX_DT = 0.1;
 const MAX_SHADOWS = 128; // actors beyond this simply have no blob shadow
 const YAW_PER_PX = 0.008;
 const PITCH_PER_PX = 0.005;
 
 export const QUALITY_TIERS = {
-  high:   { name: 'high',   pixelRatioCap: 1.5,  antialias: true,  posts: 36, tufts: 80, flowers: 24 },
-  medium: { name: 'medium', pixelRatioCap: 1.25, antialias: true,  posts: 28, tufts: 50, flowers: 14 },
-  low:    { name: 'low',    pixelRatioCap: 1,    antialias: false, posts: 20, tufts: 24, flowers: 8 },
+  high:   { name: 'high',   pixelRatioCap: 1.5,  antialias: true,  posts: 36, tufts: 80, flowers: 24, wild: 1 },
+  medium: { name: 'medium', pixelRatioCap: 1.25, antialias: true,  posts: 28, tufts: 50, flowers: 14, wild: 0.7 },
+  low:    { name: 'low',    pixelRatioCap: 1,    antialias: false, posts: 20, tufts: 24, flowers: 8, wild: 0.45 },
 };
 const TIER_ORDER = ['high', 'medium', 'low'];
 
@@ -159,6 +180,11 @@ export function orbitPosition(yaw, pitch, dist, target = { x: 0, y: 0, z: 0 }) {
   };
 }
 
+/** Camera distance used for every yard tier: the fit of CAMERA_FIT_TIER (M). */
+export function fixedCameraDistance(aspect, fovDeg = CAMERA_FOV, pitch = PITCH_DEFAULT) {
+  return fitDistance(aspect, fovDeg, pitch, YARD_TIERS[CAMERA_FIT_TIER].island);
+}
+
 /** Distance at which a disc of `radius` fits the view horizontally and (tilted by pitch) vertically. */
 export function fitDistance(aspect, fovDeg, pitch, radius) {
   const tanHalf = Math.tan((fovDeg * Math.PI) / 360);
@@ -198,6 +224,57 @@ export function yardTierForCapacity(capacity) {
   const c = Number(capacity) || 0;
   return c >= 15 ? 'XL' : c >= 10 ? 'L' : c >= 6 ? 'M' : 'S';
 }
+/** Where the wilderness starts for a tier: just outside its lawn. Wild props closer than this are sunk away. */
+export function wildClearance(tierOrCapacity) {
+  return yardTierConfig(tierOrCapacity).island + WILD_CLEARANCE_MARGIN;
+}
+
+/** Camera target kept inside a disc of `radius` around the origin. */
+export function clampPan(x, z, radius) {
+  const d = Math.hypot(x, z);
+  if (!(d > radius)) return { x, z };
+  const k = radius / d;
+  return { x: x * k, z: z * k };
+}
+
+/**
+ * Ground distance the camera target moves for a finger drag of (dxPx, dyPx), so the ground follows the finger.
+ * yaw: camera yaw; vertical movement is stretched by 1/sin(pitch) because the ground is seen at an angle.
+ */
+export function panDelta(dxPx, dyPx, yaw, pitch, distance, fovDeg, viewportHeightPx) {
+  const u = 1 / pixelsPerUnit(distance, fovDeg, viewportHeightPx);
+  const right = -dxPx * u;                                  // finger right -> the camera target moves left
+  const back = -dyPx * u / Math.max(0.2, Math.sin(pitch));  // finger up (dy < 0) -> the target moves towards the camera
+  // camera right = (cos yaw, 0, -sin yaw); camera back (away from the view direction) = (sin yaw, 0, cos yaw)
+  return {
+    x: Math.cos(yaw) * right + Math.sin(yaw) * back,
+    z: -Math.sin(yaw) * right + Math.cos(yaw) * back,
+  };
+}
+
+/** Second tap of a double tap? prev/cur: { x, y, t } (px, ms). */
+export function isDoubleTap(prev, cur, maxMs = DOUBLE_TAP_MS, maxPx = DOUBLE_TAP_PX) {
+  return !!prev && cur.t - prev.t <= maxMs && Math.hypot(cur.x - prev.x, cur.y - prev.y) <= maxPx;
+}
+
+/**
+ * Decor spots (CONTRACT_V7 §3): spot i is fixed in every tier. Chosen to stay >= 0.7 from every yard prop of every tier
+ * (see petBehaviour.yardProps), clear of the barn, the nest rows and the food bowl, and inside the walk radius of the tier
+ * that unlocks it (two per tier). A test keeps this list in sync with the props.
+ */
+export const DECOR_SPOTS = [
+  { x: 0.0, z: 3.3 }, { x: 3.4, z: 1.2 },      // S
+  { x: -2.6, z: 3.4 }, { x: -1.6, z: 0.4 },    // + M
+  { x: 0.0, z: 5.1 }, { x: 1.9, z: -0.2 },     // + L
+  { x: -5.3, z: 1.0 }, { x: 5.3, z: 0.6 },     // + XL
+];
+export const DECOR_SPOT_COUNT = { S: 2, M: 4, L: 6, XL: 8 };
+/** [{ index, x, z }] for a tier name or barnCapacity (2 / 4 / 6 / 8 spots). */
+export function decorSpotsForTier(tierOrCapacity) {
+  const n = DECOR_SPOT_COUNT[yardTierConfig(tierOrCapacity).name];
+  return DECOR_SPOTS.slice(0, n).map((p, index) => ({ index, x: p.x, z: p.z }));
+}
+
 /** Accepts a tier name ('S'..'XL', any case) or a capacity number; returns the tier config (default L). */
 export function yardTierConfig(tierOrCapacity) {
   if (typeof tierOrCapacity === 'number') return YARD_TIERS[yardTierForCapacity(tierOrCapacity)];
@@ -308,12 +385,27 @@ function buildEnvironment(tier, gradient, yard) {
   const toon = color => own(new THREE.MeshToonMaterial({ color, gradientMap: gradient }));
   const rand = mulberry32(20261023);
 
-  // island: grass top + dirt rim
-  const islandGeo = own(new THREE.CylinderGeometry(yard.island, yard.island - 0.5, 0.7, 48));
-  const island = new THREE.Mesh(islandGeo, [toon(0xe0b084), toon(0x8ccf6a), toon(0x9b6b43)]);
-  island.position.y = -0.35;
-  island.userData.noPick = true;
-  group.add(island);
+  // lawn: a mown disc on the meadow (one draw call), green with a dirt-coloured edge
+  const lawnGeo = own(new THREE.RingGeometry(0, yard.island, 48, 8));
+  lawnGeo.rotateX(-Math.PI / 2);
+  const lawnCol = [];
+  const lawnPos = lawnGeo.attributes.position;
+  const grassC = new THREE.Color(0x8ccf6a);
+  const dirtC = new THREE.Color(0xd2b184);
+  const mixC = new THREE.Color();
+  for (let i = 0; i < lawnPos.count; i++) {
+    const t = Math.min(1, Math.max(0, (Math.hypot(lawnPos.getX(i), lawnPos.getZ(i)) / yard.island - 0.86) / 0.14));
+    mixC.copy(grassC).lerp(dirtC, t);
+    lawnCol.push(mixC.r, mixC.g, mixC.b);
+  }
+  lawnGeo.setAttribute('color', new THREE.Float32BufferAttribute(lawnCol, 3));
+  const lawnMat = own(new THREE.MeshToonMaterial({
+    vertexColors: true, gradientMap: gradient, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+  }));
+  const lawn = new THREE.Mesh(lawnGeo, lawnMat);
+  lawn.position.y = 0.01;
+  lawn.userData.noPick = true;
+  group.add(lawn);
 
   // dirt path from the barn door to the middle
   const pathMat = own(new THREE.MeshToonMaterial({
@@ -455,6 +547,225 @@ function buildEnvironment(tier, gradient, yard) {
   };
 }
 
+// ---------------------------------------------------------------- wilderness (CONTRACT_V7 §2)
+
+const streamCenterX = z => WILD.streamX + WILD.streamAmp * Math.sin(z * WILD.streamFreq);
+
+/**
+ * Deterministic wild layout: { grass, bush, tree, rock }: [{ x, z, r, rot, s, color }] outside the stream, in [WILD.rMin, WILD.rMax].
+ * `k` scales the counts (quality tier). Pure: no geometry, only THREE.Color for the tints.
+ */
+export function layoutWild(k = 1) {
+  const rand = mulberry32(WILD.seed);
+  const area = () => {
+    const r = Math.sqrt(WILD.rMin ** 2 + rand() ** 1.5 * (WILD.rMax ** 2 - WILD.rMin ** 2)); // denser near the yard
+    const a = rand() * Math.PI * 2;
+    return { x: Math.sin(a) * r, z: Math.cos(a) * r, r };
+  };
+  const nearStream = (x, z, d) => Math.abs(x - streamCenterX(z)) < d && Math.abs(z) < WILD.streamHalf + 2;
+  const c = new THREE.Color();
+  const make = (n, minR, streamGap, tint, size, minGap = 0) => {
+    const out = [];
+    for (let tries = 0; out.length < n && tries < n * 30; tries++) {
+      const p = area();
+      if (p.r < minR || nearStream(p.x, p.z, streamGap)) continue;
+      if (minGap && out.some(o => Math.hypot(o.x - p.x, o.z - p.z) < minGap)) continue;
+      c.setHSL(...tint(rand));
+      out.push({ ...p, rot: rand() * Math.PI * 2, s: size(rand), color: c.getHex() });
+    }
+    return out;
+  };
+  // grass grows in patches: most clumps around a handful of centres, the rest anywhere
+  const centres = Array.from({ length: 16 }, area);
+  const grass = [];
+  const gN = Math.round(560 * k);
+  for (let tries = 0; grass.length < gN && tries < gN * 20; tries++) {
+    let p = area();
+    if (rand() < 0.8) {
+      const q = centres[Math.floor(rand() * centres.length)];
+      const a = rand() * Math.PI * 2, d = Math.abs(rand() + rand() - 1) * 3.2;
+      const x = q.x + Math.sin(a) * d, z = q.z + Math.cos(a) * d;
+      p = { x, z, r: Math.hypot(x, z) };
+    }
+    if (p.r < WILD.rMin || p.r > WILD.rMax || nearStream(p.x, p.z, 1.9)) continue;
+    c.setHSL(0.25 + rand() * 0.06, 0.5, 0.36 + rand() * 0.14);
+    grass.push({ ...p, rot: rand() * Math.PI * 2, s: 0.8 + rand() * 0.9, color: c.getHex() });
+  }
+  return {
+    grass,
+    bush: make(Math.round(80 * k), WILD.rMin, 2.4, r => [0.27 + r() * 0.08, 0.45, 0.3 + r() * 0.12], r => 0.7 + r() * 0.8, 1.2),
+    tree: make(Math.round(48 * k), 7.0, 2.8, r => [0, 0, 0.78 + r() * 0.22], r => 0.85 + r() * 0.85, 2.4),
+    rock: make(Math.round(44 * k), WILD.rMin, 1.6, r => [0.1, 0.06, 0.5 + r() * 0.15], r => 0.6 + r() * 0.9, 1.0),
+  };
+}
+
+/**
+ * The meadow ring beyond the fence: soft-edged ground disc + instanced grass / bushes / trees / rocks + a stream = 6 draw calls.
+ * Props closer to the centre than `clearance` are hidden (scale 0); setClearance() sinks / grows them over YARD_GROW_MS.
+ */
+function buildWilderness(tier, gradient, clearance) {
+  const group = new THREE.Group();
+  group.name = 'wilderness';
+  const disposables = [];
+  const own = o => { disposables.push(o); return o; };
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  const layout = layoutWild(tier.wild ?? 1);
+
+  // meadow: transparent rim so it melts into the sky behind the canvas (drawn before the blob shadows)
+  const meadowGeo = own(new THREE.RingGeometry(0, WILD.meadow, 56, 10));
+  meadowGeo.rotateX(-Math.PI / 2);
+  const mp = meadowGeo.attributes.position;
+  const mc = [];
+  const near = new THREE.Color(0x76bb58), far = new THREE.Color(0x66a84e);
+  for (let i = 0; i < mp.count; i++) {
+    const t = Math.hypot(mp.getX(i), mp.getZ(i)) / WILD.meadow;
+    col.copy(near).lerp(far, t);
+    mc.push(col.r, col.g, col.b, 1 - Math.min(1, Math.max(0, (t - 0.55) / 0.45)));
+  }
+  meadowGeo.setAttribute('color', new THREE.Float32BufferAttribute(mc, 4));
+  const meadow = new THREE.Mesh(meadowGeo, own(new THREE.MeshToonMaterial({ vertexColors: true, transparent: true, gradientMap: gradient })));
+  meadow.renderOrder = -2;
+  meadow.userData.noPick = true;
+  group.add(meadow);
+
+  // shared materials / geometry
+  const plainMat = own(new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: gradient }));
+  const vcMat = own(new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap: gradient }));
+  const geo = {
+    grass: own(mergeStaticParts(THREE, [
+      { geometry: new THREE.ConeGeometry(0.07, 0.55, 4), color: 0xffffff, position: [0, 0.27, 0] },
+      { geometry: new THREE.ConeGeometry(0.06, 0.42, 4), color: 0xe6f2dc, position: [0.1, 0.2, 0.04], rotation: [0, 0, -0.35] },
+      { geometry: new THREE.ConeGeometry(0.06, 0.38, 4), color: 0xe6f2dc, position: [-0.09, 0.18, -0.03], rotation: [0.2, 0, 0.4] },
+    ])),
+    bush: own(new THREE.IcosahedronGeometry(0.5, 1)),
+    tree: own(mergeStaticParts(THREE, [
+      { geometry: new THREE.CylinderGeometry(0.1, 0.16, 0.9, 6), color: 0x8d5a34, position: [0, 0.45, 0] },
+      { geometry: new THREE.IcosahedronGeometry(0.72, 1), color: 0x4fae56, position: [0, 1.4, 0] },
+      { geometry: new THREE.IcosahedronGeometry(0.5, 1), color: 0x66c46d, position: [0.28, 1.95, 0.08] },
+    ])),
+    rock: own(new THREE.IcosahedronGeometry(0.4, 0)),
+  };
+  const kinds = {
+    grass: { y: 0, mat: vcMat, squash: 1 },
+    bush: { y: 0.18, mat: plainMat, squash: 0.75 },
+    tree: { y: 0, mat: vcMat, squash: 1 },
+    rock: { y: 0.1, mat: plainMat, squash: 0.65 },
+  };
+  const meshes = [];
+  const movable = []; // { kind, i, item, vis, from, to }: props that a bigger yard can swallow
+  let totalItems = 0;
+  for (const [kind, def] of Object.entries(kinds)) {
+    const items = layout[kind];
+    const mesh = new THREE.InstancedMesh(geo[kind], def.mat, Math.max(1, items.length));
+    mesh.count = items.length;
+    mesh.frustumCulled = false;
+    mesh.userData.noPick = true;
+    items.forEach((it, i) => {
+      col.setHex(it.color);
+      mesh.setColorAt(i, col);
+      if (it.r < wildClearance('XL')) movable.push({ kind, i, item: it, vis: 1, from: 1, to: 1 });
+    });
+    totalItems += items.length;
+    def.mesh = mesh;
+    meshes.push(mesh);
+    group.add(mesh);
+  }
+  const writeItem = (kind, i, vis) => {
+    const it = layout[kind][i];
+    const v = Math.max(0.001, vis);
+    dummy.position.set(it.x, kinds[kind].y * it.s - (1 - v) * 0.5, it.z);
+    dummy.rotation.set(0, it.rot, 0);
+    dummy.scale.set(it.s * v, it.s * v * kinds[kind].squash, it.s * v);
+    dummy.updateMatrix();
+    kinds[kind].mesh.setMatrixAt(i, dummy.matrix);
+  };
+  for (const [kind, items] of Object.entries(layout)) items.forEach((_, i) => writeItem(kind, i, 1));
+
+  // stream on the +x side: sandy bank + water with lighter edges, one merged vertex-coloured mesh, tapering at both ends
+  {
+    const pos = [], nor = [], colr = [], idx = [];
+    const bankC = new THREE.Color(0xd9c48f), waterC = new THREE.Color(0x4fb6e4), foamC = new THREE.Color(0x9be3f5);
+    const strip = (half, y, edgeC, midC) => {
+      const base = pos.length / 3;
+      const steps = WILD.streamHalf * 2;
+      for (let j = 0; j <= steps; j++) {
+        const z = -WILD.streamHalf + j;
+        const slope = WILD.streamAmp * WILD.streamFreq * Math.cos(z * WILD.streamFreq);
+        const len = Math.hypot(1, slope);
+        const nx = 1 / len, nz = -slope / len;
+        const w = half * Math.min(1, (WILD.streamHalf - Math.abs(z)) / 4);
+        const cx = streamCenterX(z);
+        for (const [f, c] of [[-1, edgeC], [0, midC], [1, edgeC]]) {
+          pos.push(cx + nx * w * f, y, z + nz * w * f);
+          nor.push(0, 1, 0);
+          colr.push(c.r, c.g, c.b);
+        }
+        if (j < steps) {
+          const a = base + j * 3;
+          idx.push(a, a + 3, a + 1, a + 1, a + 3, a + 4, a + 1, a + 4, a + 2, a + 2, a + 4, a + 5);
+        }
+      }
+    };
+    strip(1.55, 0.012, bankC, bankC);
+    strip(1.0, 0.02, foamC, waterC);
+    const g = own(new THREE.BufferGeometry());
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+    g.setIndex(idx);
+    const mat = own(new THREE.MeshToonMaterial({
+      vertexColors: true, gradientMap: gradient, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    }));
+    const stream = new THREE.Mesh(g, mat);
+    stream.name = 'stream';
+    stream.userData.noPick = true;
+    group.add(stream);
+    meshes.push(stream);
+  }
+
+  let anim = null; // { age }
+  let current = clearance;
+  const applyVis = () => {
+    for (const m of movable) writeItem(m.kind, m.i, m.vis);
+    for (const def of Object.values(kinds)) def.mesh.instanceMatrix.needsUpdate = true;
+  };
+  function setClearance(r, animate) {
+    current = r;
+    for (const m of movable) {
+      m.from = m.vis;
+      m.to = m.item.r >= r ? 1 : 0;
+    }
+    if (animate && movable.some(m => m.from !== m.to)) anim = { age: 0 };
+    else { anim = null; for (const m of movable) m.vis = m.from = m.to; applyVis(); }
+  }
+  setClearance(clearance, false);
+
+  return {
+    group,
+    setClearance,
+    get clearance() { return current; },
+    get animating() { return !!anim; },
+    info() {
+      const hidden = movable.filter(m => m.to === 0).length;
+      return { clearance: current, items: totalItems, visible: totalItems - hidden, animating: !!anim, meshes: meshes.length + 1 }; // + the meadow
+    },
+    update(dt) {
+      if (!anim) return;
+      anim.age += dt * 1000;
+      const u = Math.min(1, anim.age / YARD_GROW_MS);
+      const e = u * u * (3 - 2 * u);
+      for (const m of movable) m.vis = m.from + (m.to - m.from) * e;
+      applyVis();
+      if (u >= 1) { anim = null; for (const m of movable) m.vis = m.from = m.to; applyVis(); }
+    },
+    dispose() {
+      for (const o of disposables) o.dispose();
+      for (const def of Object.values(kinds)) def.mesh.dispose();
+    },
+  };
+}
+
 // ---------------------------------------------------------------- the world
 
 /**
@@ -472,7 +783,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
   const canvas = document.createElement('canvas');
   canvas.className = 'world3d-canvas';
   canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', 'ฉากลาน 3 มิติ — ลากเพื่อหมุนมุมมอง แตะน้องเพื่อดูรายละเอียด');
+  canvas.setAttribute('aria-label', 'ฉากลาน 3 มิติ — ลากเพื่อเลื่อนมุมมอง บีบนิ้วเพื่อซูม แตะน้องเพื่อดูรายละเอียด แตะสองครั้งที่พื้นเพื่อกลับตรงกลาง');
+  canvas.style.touchAction = 'none'; // one finger pans the view, so the page must not scroll under it
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: tier.antialias, alpha: true, powerPreference: 'default' });
@@ -493,7 +805,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     hostEl.appendChild(canvas);
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 80);
+    const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 140);
     const toonGradient = makeToonGradient();
     const blobTexture = makeBlobTexture();
     const blobGeo = new THREE.PlaneGeometry(1, 1);
@@ -531,6 +843,10 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     let env = buildEnvironment(tier, toonGradient, yardCfg);
     undo.push(() => env.dispose());
     scene.add(env.group, env.barn);
+    const wild = buildWilderness(tier, toonGradient, wildClearance(yardCfg.name));
+    undo.push(() => wild.dispose());
+    scene.add(wild.group);
+    let decorSpots = decorSpotsForTier(yardCfg.name);
     const obstacles = env.obstacles.map(o => ({ ...o })); // mutable list shared with scenes (world.obstacles)
     const props = new Map();   // id -> { object, obstacle, ownGeometry }
     const yardListeners = new Set();
@@ -605,7 +921,10 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       env = buildEnvironment(tier, toonGradient, next);
       scene.add(env.group, env.barn);
       syncObstacles();
-      baseDistT = fitDistance(camera.aspect, CAMERA_FOV, PITCH_DEFAULT, next.island);
+      decorSpots = decorSpotsForTier(next.name);
+      wild.setClearance(wildClearance(next.name), animate);
+      const keep = clampPan(panT.x, panT.z, next.island);
+      panT.x = keep.x; panT.z = keep.z;
       if (animate) {
         const from = Math.min(1, old.fence / next.fence);
         yardAnim = { age: 0, from, barnFrom: old.barnZ, barnTo: next.barnZ };
@@ -613,14 +932,16 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         env.barn.position.z = yardAnim.barnFrom - next.barnZ; // barn child sits at next.barnZ; shift back to the old spot
         boostUntil = Math.max(boostUntil, performance.now() + YARD_GROW_MS + 300);
       } else {
-        baseDist = baseDistT;
         yardAnim = null;
       }
       for (const fn of [...yardListeners]) { try { fn(yardInfo()); } catch (e) { console.error(e); } }
       return next.name;
     }
 
-    const yardInfo = () => ({ tier: yardCfg.name, walkRadius: yardCfg.walk, fenceRadius: yardCfg.fence, islandRadius: yardCfg.island });
+    const yardInfo = () => ({
+      tier: yardCfg.name, walkRadius: yardCfg.walk, fenceRadius: yardCfg.fence, islandRadius: yardCfg.island,
+      wildClearance: wild.clearance, decorSpots: decorSpots.length,
+    });
 
     function updateYardAnim(dt) {
       if (!yardAnim) return;
@@ -677,6 +998,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
 
     // ---- camera state (current values ease toward targets)
     const target = { x: 0, y: 0.4, z: 0 };
+    const pan = { x: 0, z: 0 };   // current camera target offset on the ground (eases toward panT)
+    const panT = { x: 0, z: 0 };
     const view = {
       yaw: 0, yawT: 0, pitch: PITCH_DEFAULT, pitchT: PITCH_DEFAULT, zoom: ZOOM_DEFAULT, zoomT: ZOOM_DEFAULT,
     };
@@ -686,6 +1009,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     let baseDistT = 12;
 
     function updateCamera() {
+      target.x = pan.x; target.z = pan.z;
       const p = orbitPosition(view.yaw, view.pitch, baseDist * view.zoom, target);
       camera.position.set(p.x, p.y, p.z);
       camera.lookAt(target.x, target.y, target.z);
@@ -698,7 +1022,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       width = w; height = h;
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
-      baseDistT = fitDistance(camera.aspect, CAMERA_FOV, PITCH_DEFAULT, yardCfg.island);
+      baseDistT = fixedCameraDistance(camera.aspect); // the same for every yard tier
       baseDist = baseDistT;
       camera.updateProjectionMatrix();
       updateCamera();
@@ -740,7 +1064,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
 
     function isEasing() {
       return Math.abs(view.yaw - view.yawT) > 0.0005 || Math.abs(view.pitch - view.pitchT) > 0.0005 ||
-        Math.abs(view.zoom - view.zoomT) > 0.0005 || Math.abs(baseDist - baseDistT) > 0.005 || !!yardAnim;
+        Math.abs(view.zoom - view.zoomT) > 0.0005 || Math.abs(baseDist - baseDistT) > 0.005 || !!yardAnim || wild.animating ||
+        Math.abs(pan.x - panT.x) > 0.001 || Math.abs(pan.z - panT.z) > 0.001;
     }
 
     function downgrade() {
@@ -780,8 +1105,10 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       view.pitch += (view.pitchT - view.pitch) * k;
       view.zoom += (view.zoomT - view.zoom) * k;
       baseDist += (baseDistT - baseDist) * k;
-      if (!isEasing()) { view.yaw = view.yawT; view.pitch = view.pitchT; view.zoom = view.zoomT; baseDist = baseDistT; }
+      pan.x += (panT.x - pan.x) * k; pan.z += (panT.z - pan.z) * k;
+      if (!isEasing()) { view.yaw = view.yawT; view.pitch = view.pitchT; view.zoom = view.zoomT; baseDist = baseDistT; pan.x = panT.x; pan.z = panT.z; }
       updateYardAnim(dt);
+      wild.update(dt);
       updateCamera();
 
       for (const fn of [...frameFns]) {
@@ -871,16 +1198,21 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     const onContextMenu = e => e.preventDefault();
     canvas.addEventListener('contextmenu', onContextMenu);
 
+    let lastGroundTap = null; // { x, y, t } of the previous tap that hit no actor (double tap = re-centre)
+
     function onPointerDown(e) {
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return;
       if (pointers.size === 0) gestureMulti = false;
+      // mouse: right button (or shift / ctrl + left) orbits; everything else (touch, pen, plain left button) pans
+      const orbit = e.pointerType === 'mouse' && (e.button === 2 || e.shiftKey || e.ctrlKey);
       pointers.set(e.pointerId, {
-        x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, startT: performance.now(), moved: false, type: e.pointerType,
+        x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY,
+        startT: performance.now(), moved: false, type: e.pointerType, orbit, button: e.button,
       });
       try { canvas.setPointerCapture(e.pointerId); } catch { /* capture not available */ }
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
-        pinch = { dist: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), zoom: view.zoomT };
+        pinch = { dist: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), zoom: view.zoomT, ang: Math.atan2(b.y - a.y, b.x - a.x), yaw: view.yawT };
         gestureMulti = true;
       }
       boostUntil = Math.max(boostUntil, performance.now() + 250);
@@ -889,19 +1221,30 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     function onPointerMove(e) {
       const p = pointers.get(e.pointerId);
       if (!p) return;
-      const dx = e.clientX - p.x;
-      const dy = e.clientY - p.y;
       p.x = e.clientX; p.y = e.clientY;
       if (pointers.size >= 2 && pinch) {
         const [a, b] = [...pointers.values()];
         const d = Math.max(10, Math.hypot(a.x - b.x, a.y - b.y));
         view.zoomT = clampZoom(pinch.zoom * (pinch.dist / d));
+        if (pinch.ang != null) { // twist with two fingers = rotate the view
+          let da = Math.atan2(b.y - a.y, b.x - a.x) - pinch.ang;
+          da = Math.atan2(Math.sin(da), Math.cos(da));
+          view.yawT = pinch.yaw - da;
+        }
         return;
       }
       if (!p.moved && Math.hypot(p.x - p.startX, p.y - p.startY) > TAP_MAX_MOVE_PX) p.moved = true;
-      if (p.moved) {
-        view.yawT -= dx * YAW_PER_PX;
-        if (p.type === 'mouse') view.pitchT = clampPitch(view.pitchT + dy * PITCH_PER_PX);
+      if (!p.moved) return;
+      // from the moment the 8 px threshold is crossed the view follows the finger (including the first 8 px)
+      const mx = p.x - p.lastX, my = p.y - p.lastY;
+      p.lastX = p.x; p.lastY = p.y;
+      if (p.orbit) {
+        view.yawT -= mx * YAW_PER_PX;
+        view.pitchT = clampPitch(view.pitchT + my * PITCH_PER_PX);
+      } else {
+        const d = panDelta(mx, my, view.yawT, view.pitchT, baseDist * view.zoomT, CAMERA_FOV, Math.max(1, height));
+        const c = clampPan(panT.x + d.x, panT.z + d.z, yardCfg.island);
+        panT.x = c.x; panT.z = c.z;
       }
     }
 
@@ -912,15 +1255,31 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (pointers.size < 2) pinch = null;
       boostUntil = Math.max(boostUntil, performance.now() + 250);
       if (e.type === 'pointercancel' || gestureMulti) return;
-      const kind = classifyPointer({ x: p.startX, y: p.startY, t: p.startT }, { x: e.clientX, y: e.clientY, t: performance.now() });
+      if (p.button === 2) return; // right button only orbits
+      const endT = performance.now();
+      const kind = classifyPointer({ x: p.startX, y: p.startY, t: p.startT }, { x: e.clientX, y: e.clientY, t: endT });
       if (kind !== 'tap') return;
       const hit = pick(e.clientX, e.clientY);
       try {
-        if (hit.id) { if (onTap) onTap(hit.id, { point: hit.point }); }
-        else if (hit.point && onTapGround) onTapGround(hit.point);
+        if (hit.id) {
+          lastGroundTap = null;
+          if (onTap) onTap(hit.id, { point: hit.point });
+        } else {
+          const tap = { x: e.clientX, y: e.clientY, t: endT };
+          if (isDoubleTap(lastGroundTap, tap)) { lastGroundTap = null; recenter(); }
+          else {
+            lastGroundTap = tap;
+            if (hit.point && onTapGround) onTapGround(hit.point);
+          }
+        }
       } catch (err) {
         console.error('world tap handler failed', err);
       }
+    }
+
+    function recenter() {
+      panT.x = 0; panT.z = 0;
+      boostUntil = Math.max(boostUntil, performance.now() + 600);
     }
 
     function onWheel(e) {
@@ -979,6 +1338,12 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       get fenceRadius() { return yardCfg.fence; },
       /** Yard tier name 'S' | 'M' | 'L' | 'XL' (not the same as `tier`, which is graphics quality). */
       get yardTier() { return yardCfg.name; },
+      /** Decor spots of the current tier: [{ index, x, z }] (2 / 4 / 6 / 8). Replaced (new array) when the tier changes. */
+      get decorSpots() { return decorSpots; },
+      /** Wilderness state: { clearance, items, visible, animating, meshes } (meshes = draw calls it costs). */
+      wildInfo: () => wild.info(),
+      /** The wilderness group (meadow + instanced props + stream), e.g. to hide it in a screenshot. */
+      wildGroup: wild.group,
       /** Walkable obstacles [{x,z,r}] (barn + props with an obstacle). The array is updated in place on tier changes. */
       obstacles,
       /** Switch yard size by tier name or barnCapacity. Rebuilds ground/fence/flowers; { animate:true } grows the fence ring. Returns the tier. */
@@ -1010,13 +1375,19 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       isActive: () => shouldRun(),
       /** Render at full rate (no 30 fps cap) for `ms` milliseconds, e.g. during a hatch ceremony. */
       boost(ms = 1000) { boostUntil = Math.max(boostUntil, performance.now() + ms); },
-      /** Camera presets: { yaw, pitch, zoom } (radians / 0.4..1.15). Eased. */
+      /** Camera presets: { yaw, pitch, zoom, pan:{x,z} } (radians / 0.4..1.5 / ground units). Eased. */
       setView(v = {}) {
         if (v.yaw != null) view.yawT = v.yaw;
         if (v.pitch != null) view.pitchT = clampPitch(v.pitch);
         if (v.zoom != null) view.zoomT = clampZoom(v.zoom);
+        if (v.pan) { const c = clampPan(Number(v.pan.x) || 0, Number(v.pan.z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; }
       },
-      getView: () => ({ yaw: view.yawT, pitch: view.pitchT, zoom: view.zoomT }),
+      getView: () => ({ yaw: view.yawT, pitch: view.pitchT, zoom: view.zoomT, pan: { x: panT.x, z: panT.z } }),
+      /** Camera target offset on the ground, clamped to the current island radius (eased). */
+      setPan(x = 0, z = 0) { const c = clampPan(Number(x) || 0, Number(z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; },
+      getPan: () => ({ x: panT.x, z: panT.z }),
+      /** Back to the middle of the yard (what a double tap on empty ground does). */
+      recenter,
       /** Scene dimming for ceremonies: k 0 (normal) .. 1 (very dark). Dims both lights and the CSS sky behind the canvas. */
       setDim(k) {
         const d = Math.min(1, Math.max(0, Number(k) || 0));
@@ -1060,6 +1431,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         for (const id of [...props.keys()]) removeProp(id);
         propMaterial.dispose(); instMaterial.dispose();
         env.dispose();
+        wild.dispose();
         scene.remove(blobMesh); blobMesh.dispose(); blobGeo.dispose(); blobMat.dispose(); blobTexture.dispose(); toonGradient.dispose();
         renderer.dispose();
         try { renderer.forceContextLoss(); } catch { /* already lost */ }

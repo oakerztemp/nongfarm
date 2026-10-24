@@ -40,6 +40,8 @@ Everyone codes against this file in parallel. **Do not change a signature here o
 
 ## 2. State shape (single JSON-serializable object; saved as-is)
 
+> The shape below is v1. Later versions add fields (v2-v3 plots/bond, v4 stations + yard, v5 `yard.byPet` / `nursery` / `decor` / `inventoryDecor` / `postcards`): see CONTRACT_V2..V7 and `createNewState()` + `MIGRATIONS` in `js/state.js` (source of truth; constants `NURSERY_SLOTS`, `POSTCARDS_MAX` are exported from there).
+
 ```js
 {
   version: 1,

@@ -390,24 +390,30 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
   background: linear-gradient(180deg, #5a3a0a, #2e1d05); box-shadow: 0 0 14px rgba(242, 165, 22, 0.75), var(--shadow);
 }
 
-/* ───────── ลานให้ของ: collect button ───────── */
-.yard-gift-row { display: block; }
-.yard-gift {
-  position: relative; width: 100%; min-height: 48px; display: grid; gap: 3px; text-align: left; padding: 8px 12px;
-  border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text);
-  font: inherit; cursor: pointer;
+/* ───────── ของขวัญอยู่ที่ตัวน้อง (CONTRACT_V7 §4): small chip, 🎁 badges ───────── */
+.yard-chip, .yard-mail, .b3-chip {
+  position: relative; min-height: 34px; min-width: 44px; padding: 0 12px; border-radius: 99px; border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface)); color: var(--text);
+  font: inherit; font-size: 0.9rem; font-weight: 800; line-height: 1; cursor: pointer; white-space: nowrap; box-shadow: var(--shadow);
 }
-.yard-gift.has-gift { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
-.yard-gift.is-full { border-color: var(--success); animation: pet-twinkle 2s ease-in-out infinite; }
-.yard-gift:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.yard-gift-t { font-weight: 700; }
-.yard-gift-s { font-size: 0.75rem; color: var(--text-dim); }
-.yard-gift-bar { display: block; height: 7px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
-.yard-gift-bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width 0.4s; }
-.yard-gift.is-full .yard-gift-bar i { background: var(--success); }
+.yard-chip.is-full, .b3-chip.is-full { border-color: var(--success); animation: pet-twinkle 2s ease-in-out infinite; }
+.yard-chip:focus-visible, .yard-mail:focus-visible, .b3-chip:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.yard-mail { border-color: var(--border); background: var(--surface); padding: 0 10px; }
+.yard-mail.has-new { border-color: var(--danger); animation: pet-twinkle 2.4s ease-in-out infinite; }
+.yard-mail-n {
+  position: absolute; top: -6px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 99px;
+  background: var(--danger); color: #fff; font-size: 0.7rem; display: grid; place-items: center;
+}
+.pet-gift-badge {
+  position: absolute; bottom: 4px; left: 6px; min-width: 40px; min-height: 40px; padding: 0 6px; font-size: 22px; line-height: 1;
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface)); border: 2px solid var(--accent); border-radius: 99px;
+  box-shadow: var(--shadow); cursor: pointer; animation: pet-bob 2.4s ease-in-out infinite;
+}
+.pet-gift-badge.is-full { border-color: var(--success); font-size: 20px; }
+.pet-gift-badge:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .b3-station { padding: 4px 10px; border-radius: 10px; background: var(--surface-2); font-size: 0.82rem; font-weight: 600; }
 .b3-flycoin { position: fixed; left: 0; top: 0; z-index: 400; font-size: 22px; line-height: 1; pointer-events: none; will-change: transform, opacity; }
-@media (prefers-reduced-motion: reduce) { .yard-gift.is-full { animation: none; } .yard-gift-bar i { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .yard-chip.is-full, .b3-chip.is-full, .yard-mail.has-new, .pet-gift-badge { animation: none; } }
 .b3-banner {
   position: absolute; top: 14%; left: 50%; transform: translateX(-50%); z-index: 5; padding: 8px 18px; border-radius: 99px;
   font-weight: 800; font-size: 1.05rem; color: #fff8ea; background: linear-gradient(180deg, #2b8a50, #1f6b3c);
@@ -415,3 +421,71 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 }
 @keyframes b3-banner { 0% { opacity: 0; transform: translate(-50%, -12px) scale(0.8); } 12% { opacity: 1; transform: translate(-50%, 0) scale(1.08); } 20% { transform: translate(-50%, 0) scale(1); } 85% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .b3-banner { animation: none; } }
+
+/* ───────── เปลอนุบาล (CONTRACT_V7 §5) ───────── */
+.nursery-section { display: grid; gap: 8px; }
+.nursery-note { margin: 0; font-size: 0.85rem; }
+.nursery-list { display: grid; gap: 8px; }
+.nursery-row {
+  display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: center; padding: 8px 10px;
+  border: 1px solid var(--border); border-left: 5px solid var(--rar, var(--border)); border-radius: var(--radius); background: var(--surface-2);
+}
+.nursery-row.is-shiny { border-color: var(--accent); }
+.nursery-emoji { position: relative; font-size: 44px; line-height: 1; text-align: center; opacity: 0.9; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.nursery-zzz { position: absolute; top: -8px; right: 2px; font-size: 18px; font-style: normal; animation: pet-float 2.8s ease-in-out infinite; }
+.nursery-info { display: grid; gap: 4px; min-width: 0; }
+.nursery-sub { font-size: 0.8rem; }
+.nursery-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.nursery-acts .btn { min-height: 40px; }
+.b3-acts.b3-acts-3 { grid-template-columns: repeat(3, 1fr); }
+.b3-nursery-note { margin: 0; font-size: 0.82rem; }
+
+/* compare picker (swap + send to a new home) */
+.cmp-intro { margin: 0 0 8px; font-size: 0.85rem; }
+.cmp-item { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: center; text-align: left; }
+.cmp-item:disabled { opacity: 0.55; cursor: not-allowed; }
+.cmp-item.is-suggest { border-color: var(--success); background: color-mix(in srgb, var(--success) 8%, var(--surface)); }
+.cmp-emoji { font-size: 36px; line-height: 1; text-align: center; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.cmp-emoji.is-shiny { filter: drop-shadow(0 0 5px var(--accent)); }
+.cmp-main { display: grid; gap: 4px; min-width: 0; }
+.cmp-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; }
+.cmp-name small { color: var(--text-dim); }
+.cmp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cmp-chip { padding: 1px 8px; border-radius: 99px; font-size: 0.74rem; font-weight: 700; background: var(--surface-2); border: 1px solid var(--border); }
+.cmp-chip.is-dup { background: color-mix(in srgb, var(--success) 18%, var(--surface)); border-color: var(--success); }
+.cmp-chip.is-warn { background: color-mix(in srgb, var(--warn) 22%, var(--surface)); border-color: var(--warn); }
+.cmp-chip.is-shiny { border-color: var(--accent); }
+.cmp-hint { font-size: 0.78rem; font-weight: 700; color: var(--success); }
+.cmp-hint.is-off { color: var(--text-dim); font-weight: 600; }
+.rehome-confirm { display: grid; gap: 8px; }
+.rehome-confirm p { margin: 0; }
+.rehome-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.nursery-note { padding: 6px 10px; border-radius: 10px; background: var(--surface-2); }
+
+/* postcards */
+.mail-list { display: grid; gap: 10px; }
+.mail-card { padding: 10px 12px; border-radius: var(--radius); border: 1px dashed var(--border); background: color-mix(in srgb, #ffe9b8 28%, var(--surface)); }
+.mail-card.is-new { border: 2px solid var(--accent); }
+.mail-head { display: flex; align-items: center; gap: 8px; }
+.mail-head small { margin-left: auto; }
+.mail-emoji { font-size: 28px; line-height: 1; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.mail-text { margin: 6px 0 0; line-height: 1.5; }
+
+/* decor (3D yard) */
+.decor-pick { display: grid; grid-template-columns: 40px 1fr auto; gap: 10px; align-items: center; text-align: left; }
+.decor-pick-emoji { font-size: 30px; line-height: 1; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.decor-current { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-2); margin-bottom: 8px; }
+.decor-current .btn { margin-left: auto; }
+.b3-top-r { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.b3-top-r > .b3-egg-btn { margin-left: 0; }
+.b3-chip[hidden], .b3-decor-btn[hidden] { display: none; }
+.b3-decor-btn { min-height: 40px; background: var(--surface); box-shadow: var(--shadow); }
+.b3-decor-btn.is-on { background: var(--primary); color: var(--primary-text); }
+.b3-chip.b3-top-chip { min-height: 40px; }
+@media (prefers-reduced-motion: reduce) { .nursery-zzz { animation: none; } }
+.b3-gift { position: absolute; left: 0; top: 0; font-size: 15px; line-height: 1; will-change: transform; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35)); font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.b3-gift > span { display: block; animation: pet-bob 1.6s ease-in-out infinite; }
+.b3-gift.is-full > span { animation-duration: 0.8s; font-size: 18px; }
+@media (prefers-reduced-motion: reduce) { .b3-gift > span { animation: none; } }
+/* less chrome over the scene: the pets are the star */
+.b3-top-r .b3-egg-btn, .b3-top-r .b3-decor-btn, .b3-chip.b3-top-chip { min-height: 34px; padding: 0 10px; font-size: 0.82rem; }

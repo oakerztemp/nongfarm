@@ -12,7 +12,10 @@ import {
   generateDailyOrders, generateWeeklyOrder, forageDropsPerTrip, cropProducedPerDay, effectivePower, ZONES, MAX_PLOTS,
   slotJobs, plotTeam, plotSpeed, TEAM_COMBO, plotBonusPreview,
   stationPet, unstationPet, stationInfo, stationLabel, yardTierOf, yardUpgradePreview,
+  barnUpgradeCost, barnUpgradeStatus, SLOT_MATERIALS, TIER_ENTRY_ITEMS, DECOR_SPOTS, decorSpotCount, decorSpotList, decorBuildStatus,
+  buildDecor, placeDecor, removeDecor, sortPetsForSlot,
 } from '../js/farm.js';
+import { DECOR, getDecor } from '../js/data/decor.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -48,6 +51,11 @@ function fresh(level = 1) {
   s.player.coins = 100000;
   s.barnCapacity = 10;
   return s;
+}
+
+/** Everything a yard upgrade could ask for (plenty of each), so older tests can keep upgrading with coins alone. */
+function stockYardMaterials(s, n = 100) {
+  for (const id of ['forage_wood', 'forage_stone', 'forage_shell', 'forage_berry', 'forage_honey', 'forage_gem']) addItem(s, id, n);
 }
 
 function mkPet(s, over = {}) {
@@ -442,6 +450,7 @@ test('upgrades: plots (max 16), barn (max 20), incubator (max 3)', () => withFak
   assertEq(s.plots.length, MAX_PLOTS, 'max plots');
   assert(!buyPlot(s).ok, 'no more plots');
   assertEq(s.plots[15].index, 15, 'new plot index');
+  stockYardMaterials(s);
   while (barnUpgradePrice(s) != null) assert(upgradeBarn(s).ok, 'upgrade barn');
   assertEq(s.barnCapacity, 20, 'max barn');
   assert(!upgradeBarn(s).ok, 'barn maxed');
@@ -1027,9 +1036,226 @@ test('yard tiers: preview line says what the next upgrade adds', () => {
 test('rename: no "คอก" left in the farm logic user texts', () => {
   const s = fresh(10);
   s.player.coins = 1e6;
+  stockYardMaterials(s);
   assert(upgradeBarn(s).msg.includes('ลาน'));
   const pet = mkPet(s);
   plant(s, 'carrot');
   assignPet(s, 0, pet.id);
   assert(unassignPet(s, 0, 0).msg.includes('ลาน') && !unassignPet(s, 0).reason.includes('คอก'));
 });
+
+// ── V7 §3: ขยายลานด้วยวัสดุ ─────────────────────────────────────────────────
+test('yard upgrade cost: coins + wood + stone per slot, a themed item on tier entry (M shell, L berry or honey, XL gem)', () => {
+  const s = createNewState();
+  s.barnCapacity = 3;
+  const c0 = barnUpgradeCost(s);
+  assertEq(c0.coins, barnUpgradePrice(s), 'coins match the old price API');
+  assertEq(c0.items, SLOT_MATERIALS.S, 'mid-S slot: wood + stone only');
+  assertEq(c0.enters, null);
+  // the slot that enters M
+  s.barnCapacity = 5;
+  assertEq(barnUpgradeCost(s).items, { ...SLOT_MATERIALS.S, forage_shell: 1 }, 'entering M needs a shell');
+  assertEq(barnUpgradeCost(s).enters, 'M');
+  // inside M: more wood/stone
+  s.barnCapacity = 7;
+  assertEq(barnUpgradeCost(s).items, SLOT_MATERIALS.M);
+  assert(SLOT_MATERIALS.M.forage_wood > SLOT_MATERIALS.S.forage_wood && SLOT_MATERIALS.M.forage_stone > SLOT_MATERIALS.S.forage_stone, 'later tiers need more');
+  // entering L: 4 berries, or 1 honey when berries are short
+  s.barnCapacity = 9;
+  assertEq(barnUpgradeCost(s).items, { ...SLOT_MATERIALS.M, forage_berry: 4 }, 'berry by default');
+  addItem(s, 'forage_honey', 1);
+  assertEq(barnUpgradeCost(s).items, { ...SLOT_MATERIALS.M, forage_honey: 1 }, 'honey when berries are short');
+  assertEq(barnUpgradeCost(s).alt, { forage_berry: 4 }, 'the other option is shown');
+  addItem(s, 'forage_berry', 4);
+  assertEq(barnUpgradeCost(s).items, { ...SLOT_MATERIALS.M, forage_berry: 4 }, 'enough berries -> berries');
+  // entering XL: gem
+  s.barnCapacity = 14;
+  assertEq(barnUpgradeCost(s).items, { ...SLOT_MATERIALS.L, forage_gem: 1 });
+  assertEq(barnUpgradeCost(s).enters, 'XL');
+  // inside XL and maxed
+  s.barnCapacity = 17;
+  assertEq(barnUpgradeCost(s).items, SLOT_MATERIALS.XL);
+  s.barnCapacity = 20;
+  assertEq(barnUpgradeCost(s), null, 'maxed');
+  assertEq(barnUpgradeStatus(s), null);
+  assertEq(barnUpgradePrice(s), null);
+  assertEq(TIER_ENTRY_ITEMS.M, { forage_shell: 1 });
+});
+
+test('upgradeBarn spends coins AND materials, atomically, and says what is missing', () => {
+  const s = createNewState();
+  s.barnCapacity = 5;
+  s.player.coins = 100000;
+  const cost = barnUpgradeCost(s);
+  let r = upgradeBarn(s);
+  assert(!r.ok && r.reason.includes('วัสดุ') && r.reason.includes('เปลือกหอย'), 'nothing in the bag: ' + r.reason);
+  assertEq([s.barnCapacity, s.player.coins], [5, 100000], 'a failed upgrade changes nothing');
+  for (const [id, n] of Object.entries(cost.items)) addItem(s, id, n - 1);   // one short of everything
+  r = upgradeBarn(s);
+  assert(!r.ok && s.barnCapacity === 5 && s.player.coins === 100000, 'one short: ' + r.reason);
+  const st = barnUpgradeStatus(s);
+  assert(st.coinsOk && !st.itemsOk && !st.ok, 'status: coins ok, items not');
+  assert(st.rows.length === Object.keys(cost.items).length && st.rows.every(x => !x.ok && x.have === x.need - 1), 'rows say how many are missing');
+  for (const id of Object.keys(cost.items)) addItem(s, id, 2);                 // now need + 1 of each
+  s.player.coins = cost.coins - 1;
+  r = upgradeBarn(s);
+  assert(!r.ok && r.reason.includes('เหรียญ') && s.barnCapacity === 5, 'coins short: ' + r.reason);
+  assertEq(countItem(s, 'forage_shell'), cost.items.forage_shell + 1, 'materials untouched when coins are short');
+  s.player.coins = cost.coins + 10;
+  r = upgradeBarn(s);
+  assert(r.ok && s.barnCapacity === 6, 'upgrade ok: ' + r.reason);
+  assertEq(s.player.coins, 10, 'coins spent');
+  for (const id of Object.keys(cost.items)) assertEq(countItem(s, id), 1, id + ': exactly the cost was spent');
+});
+
+test('upgradeBarn: honey pays for the L tier when there are no berries, and is the one that is spent', () => {
+  const s = createNewState();
+  s.barnCapacity = 9;
+  s.player.coins = 1e6;
+  addItem(s, 'forage_wood', 20); addItem(s, 'forage_stone', 20); addItem(s, 'forage_honey', 2);
+  assert(upgradeBarn(s).ok && s.barnCapacity === 10, 'honey upgrade');
+  assertEq(countItem(s, 'forage_honey'), 1, 'one honey spent');
+  assertEq(countItem(s, 'forage_berry'), 0);
+  assertEq(countItem(s, 'forage_wood'), 20 - SLOT_MATERIALS.M.forage_wood);
+});
+
+test('materials are gathered, never bought: no shop price, own description', () => {
+  const ids = new Set();
+  for (let c = 3; c < 20; c++) {
+    const cost = barnUpgradeCost({ barnCapacity: c, inventory: {}, player: { coins: 0 } });
+    for (const id of [...Object.keys(cost.items), ...Object.keys(cost.alt || {})]) ids.add(id);
+  }
+  for (const id of ids) {
+    const it = getItem(id);
+    assert(it && it.buy == null, id + ' is not for sale');
+    assert(it.desc.includes('ลาน'), id + ' says what it is for: ' + it.desc);
+  }
+  const s = fresh();
+  assert(!buyItem(s, 'forage_wood', 1).ok && !buyItem(s, 'forage_gem', 1).ok, 'cannot buy materials');
+});
+
+test('every yard material drops somewhere reachable early (forest: wood + stone + berry + honey; pond: shell + gem)', () => {
+  const zone = id => ZONES.find(z => z.id === id);
+  const drops = (z, item) => zone(z).loot.some(l => l.itemId === item);
+  assert(drops('forest', 'forage_wood') && drops('forest', 'forage_stone') && drops('forest', 'forage_berry') && drops('forest', 'forage_honey'), 'forest (Lv.1) has wood, stone, berry, honey');
+  assert(drops('pond', 'forage_shell') && drops('pond', 'forage_gem') && drops('mountain', 'forage_gem') && drops('mountain', 'forage_stone'), 'pond / mountain');
+  assertEq(zone('forest').unlockLevel, 1);
+  for (const d of DECOR) for (const id of Object.keys(d.items)) assert(ZONES.some(z => z.loot.some(l => l.itemId === id)), `${id} for ${d.id} drops somewhere`);
+  // expected wood and stone per forest trip (average pet) are worth a slot's cost within a handful of trips
+  const per = forageDropsPerTrip(1);
+  assert(per.forage_wood >= 0.4 && per.forage_stone >= 0.25, `wood ${per.forage_wood} / stone ${per.forage_stone} per forest trip`);
+});
+
+// ── V7 §3: ของตกแต่งลาน ─────────────────────────────────────────────────────
+test('decor catalogue: 6 items, built from materials + a few coins, no stat fields', () => {
+  assertEq(DECOR.map(d => d.id), ['bed', 'bowl', 'ball', 'horse', 'leaves', 'sign']);
+  assertEq(DECOR.map(d => d.emoji), ['🛏️', '🥣', '⚽', '🐴', '🍂', '🪧']);
+  assertEq(DECOR.map(d => d.nameTh), ['ที่นอนนุ่ม', 'ชามอาหาร', 'ลูกบอล', 'ม้าโยก', 'กองใบไม้', 'ป้ายชื่อฟาร์ม']);
+  for (const d of DECOR) {
+    assert(d.coins >= 20 && d.coins <= 200, d.id + ' costs a few coins: ' + d.coins);
+    assert(Object.keys(d.items).length >= 2, d.id + ' needs materials');
+    for (const id of Object.keys(d.items)) { const it = getItem(id); assert(it && it.type === 'forage' && it.buy == null, `${d.id}: ${id} is a gathered material`); }
+    assert(!('bonus' in d) && !('stat' in d) && !('power' in d) && !('income' in d), d.id + ' is cosmetic only');
+    assertEq(getDecor(d.id), d);
+  }
+  assertEq(getDecor('nope'), null);
+});
+
+test('decor spots per tier: S 2, M 4, L 6, XL 8', () => {
+  const s = createNewState();
+  for (const [cap, n] of [[3, 2], [5, 2], [6, 4], [9, 4], [10, 6], [14, 6], [15, 8], [20, 8]]) {
+    s.barnCapacity = cap;
+    assertEq(decorSpotCount(s), n, 'capacity ' + cap);
+    assertEq(decorSpotList(s).length, n);
+  }
+  assertEq(DECOR_SPOTS, { S: 2, M: 4, L: 6, XL: 8 });
+});
+
+test('buildDecor: spends materials + coins into inventoryDecor; says what is missing', () => {
+  const s = createNewState();
+  s.player.coins = 500;
+  const d = getDecor('bed');
+  let r = buildDecor(s, 'bed');
+  assert(!r.ok && r.reason.includes('วัสดุ') && r.reason.includes('ขนนก'), 'no materials: ' + r.reason);
+  for (const [id, n] of Object.entries(d.items)) addItem(s, id, n);
+  s.player.coins = d.coins - 1;
+  r = buildDecor(s, 'bed');
+  assert(!r.ok && r.reason.includes('เหรียญ'), 'no coins: ' + r.reason);
+  assert(!decorBuildStatus(s, 'bed').ok && decorBuildStatus(s, 'bed').coinsShort === 1, 'status');
+  s.player.coins = d.coins + 7;
+  r = buildDecor(s, 'bed');
+  assert(r.ok, r.reason);
+  assertEq(s.player.coins, 7);
+  assertEq(s.inventoryDecor, { bed: 1 });
+  for (const id of Object.keys(d.items)) assertEq(countItem(s, id), 0, id + ' consumed');
+  assert(!buildDecor(s, 'nope').ok, 'unknown decor');
+  assertEq(s.decor, [], 'building does not place');
+});
+
+test('placeDecor / removeDecor: spots follow the yard tier, one decor per spot, remove returns it to the bag', () => {
+  const s = createNewState();
+  s.player.coins = 1e5;
+  for (const id of ['forage_wood', 'forage_herb', 'forage_feather', 'forage_stone', 'forage_shell', 'forage_berry']) addItem(s, id, 100);
+  for (const d of DECOR) assert(buildDecor(s, d.id).ok, 'build ' + d.id);
+  assertEq(Object.keys(s.inventoryDecor).length, 6);
+  assert(!placeDecor(s, 'bed', 2).ok && placeDecor(s, 'bed', 2).reason.includes('2 จุด'), 'tier S has 2 spots');
+  assert(!placeDecor(s, 'bed', -1).ok && !placeDecor(s, 'bed', 0.5).ok && !placeDecor(s, 'bed', 'x').ok, 'bad spot');
+  assert(!placeDecor(s, 'nope', 0).ok, 'unknown decor');
+  let r = placeDecor(s, 'bed', 0);
+  assert(r.ok, r.reason);
+  assertEq(s.decor.length, 1);
+  assertEq([s.decor[0].decorId, s.decor[0].spot], ['bed', 0]);
+  assert(typeof s.decor[0].id === 'string' && s.decor[0].id.length > 2, 'placed id');
+  assertEq(s.inventoryDecor.bed, undefined, 'the only bed left the bag');
+  assert(!placeDecor(s, 'bowl', 0).ok && placeDecor(s, 'bowl', 0).reason.includes('มีของตกแต่งอยู่'), 'spot taken');
+  assert(!placeDecor(s, 'bed', 1).ok && placeDecor(s, 'bed', 1).reason.includes('สร้างก่อน'), 'none left in the bag');
+  assert(placeDecor(s, 'bowl', 1).ok);
+  s.barnCapacity = 6;   // tier M -> 4 spots
+  assert(placeDecor(s, 'ball', 3).ok, 'M has spot 3');
+  assert(!placeDecor(s, 'horse', 4).ok, 'but not spot 4');
+  const coins = s.player.coins;
+  const bedId = s.decor.find(x => x.decorId === 'bed').id;
+  r = removeDecor(s, bedId);
+  assert(r.ok, r.reason);
+  assertEq(s.inventoryDecor.bed, 1, 'back in the bag');
+  assertEq(s.player.coins, coins, 'no refund');
+  assertEq(s.decor.length, 2);
+  assert(!removeDecor(s, bedId).ok, 'already removed');
+  assert(placeDecor(s, 'bed', 0).ok, 'can place it again');
+  // decor can be duplicated
+  assert(buildDecor(s, 'bed').ok && buildDecor(s, 'bed').ok);
+  assertEq(s.inventoryDecor.bed, 2);
+  assert(placeDecor(s, 'bed', 2).ok && s.inventoryDecor.bed === 1);
+  assertEq(decorSpotList(s).map(x => x.placed && x.placed.decorId), ['bed', 'bowl', 'bed', 'ball']);
+});
+
+test('decor logic defaults state.decor / inventoryDecor when an older state lacks them', () => {
+  const s = createNewState();
+  delete s.decor; delete s.inventoryDecor;
+  s.player.coins = 100;
+  for (const [id, n] of Object.entries(getDecor('ball').items)) addItem(s, id, n);
+  assert(buildDecor(s, 'ball').ok && placeDecor(s, 'ball', 0).ok, 'works without the v5 fields');
+  assertEq(s.decor.length, 1);
+});
+
+// ── V7 §6: ตัวเลือกน้องเรียงตามพลัง ─────────────────────────────────────────
+test('sortPetsForSlot: best power first, ties broken by bond hearts, then original order', () => {
+  const mk = (id, bond = 0) => ({ id, bond });
+  const power = { a: 1.0, b: 2.5, c: 2.5, d: 0.4, e: 2.5 };
+  const pets = [mk('a'), mk('b', 0), mk('c', 120), mk('d'), mk('e', 120)];   // c and e: 3 hearts; b: 0 hearts
+  const out = sortPetsForSlot(pets, p => power[p.id]);
+  assertEq(out.map(p => p.id), ['c', 'e', 'b', 'a', 'd'], 'power desc, hearts desc, then stable');
+  assertEq(pets.map(p => p.id), ['a', 'b', 'c', 'd', 'e'], 'input is not mutated');
+  assertEq(sortPetsForSlot([], () => 1), []);
+  assertEq(sortPetsForSlot([mk('x'), mk('y')], () => NaN).map(p => p.id), ['x', 'y'], 'NaN power -> stable');
+});
+
+test('sortPetsForSlot orders real pets by their power on the slot', () => withFakeNow(T0, () => {
+  const s = fresh();
+  plant(s, 'carrot');
+  const weak = mkPet(s, { speciesId: 'hamster', stage: 1 });
+  const strong = mkPet(s, { speciesId: 'hamster', stage: 3 });
+  const mid = mkPet(s, { speciesId: 'hamster', stage: 2 });
+  const sorted = sortPetsForSlot(s.pets, p => pw(p, 'carrot'));
+  assertEq(sorted.map(p => p.id), [strong.id, mid.id, weak.id]);
+}));

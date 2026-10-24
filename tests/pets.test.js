@@ -13,6 +13,8 @@ import {
   getTrait, traitEffect, bondHearts, bondPowerMult, addBond, claimGift, bondProgress,
   patPet, patsLeftToday, PAT_DAILY_MAX,
   yardOutput, tickYard, collectYard, yardPreview, yardItemTable, stationStatus, YARD_BASE_COINS,
+  getPet, ensureYard, petGift, collectPetGift, NURSERY_SLOTS, adoptFromNursery, swapWithNursery, rehomePet, rehomeDust,
+  POSTCARD_TEMPLATES, POSTCARD_MAX, arrivedPostcards, unreadPostcardCount, markPostcardRead, compareCandidates,
 } from '../js/pets.js';
 const C = YARD_BASE_COINS.common, L = YARD_BASE_COINS.legendary; // yard coins/h of a hamster / racehorse
 import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor,
@@ -258,7 +260,10 @@ test('incubator holds several slots; hatch creates a pet, collection entry, stat
   assertEq(s.collection[r.pet.speciesId].owned, 1, 'collection');
   assertEq(s.stats.hatched, 1, 'stats.hatched');
   s.barnCapacity = 1;
-  assertEq(hatchReady(s, 0).ok, false, 'barn full');
+  s.nursery = [];
+  const nr = hatchReady(s, 0);
+  assert(nr.ok && nr.nursery, 'yard full: the baby goes to the nursery (CONTRACT_V7 §5)');
+  assertEq(s.nursery.length, 1, 'nursery has it');
 });
 
 // ── release & stardust ──────────────────────────────────────────────────────
@@ -975,11 +980,16 @@ test('hatch ceremony lock: only an unfinished ceremony blocks the next hatch', (
   assertEq(canStartCeremony({ phase: 'burst' }), true, 'after the burst another egg may hatch (newborn still walking)');
 });
 
-// ── ลานให้ของ (CONTRACT_V6 §3) ──────────────────────────────────────────────
+// ── ลานให้ของ (CONTRACT_V6 §3, per pet since CONTRACT_V7 §4) ─────────────────
 const yardSetup = (speciesId = 'hamster', over = {}) => {
   const r = setup(speciesId, over);
-  r.s.yard = { pending: 0, items: {}, lastAt: 0 };
+  r.s.yard = { byPet: {}, lastAt: 0 };
   return r;
+};
+const addPet = (s, id, speciesId = 'hamster', over = {}) => {
+  const pet = { ...s.pets[0], id, speciesId, nickname: id, stats: { hunger: 100, happy: 100, energy: 100, clean: 100 }, ...over };
+  s.pets.push(pet);
+  return pet;
 };
 
 test('yard rates: base x (1 + 0.1/heart) x mood x sleep, sick and working pets earn nothing', () => {
@@ -1000,56 +1010,106 @@ test('yard rates: base x (1 + 0.1/heart) x mood x sleep, sick and working pets e
   assertEq(rate(mk('hamster', { sick: true })), 0, 'sick');
   assertEq(rate(mk('hamster', { status: 'working' })), 0, 'working');
   assertEq(rate(mk('hamster', { status: 'expedition' })), 0, 'expedition');
+  assertEq(rate(mk('hamster', { status: 'nursery' })), 0, 'nursery babies are frozen');
   near(yardOutput(mk('hamster')).items, 0.03, 'item chance common 3%');
   near(yardOutput(mk('llama')).items, 0.05, 'rare 5%');
   near(yardOutput(mk('turkey')).items, 0.08, 'epic 8%');
   near(yardOutput(mk('racehorse')).items, 0.12, 'legendary 12%');
 });
 
-test('tickYard: exact expected-value accumulation, 6 h cap, collect resets the cap', () => {
-  const { s } = yardSetup('hamster');
-  tickYard(s, HOUR);
-  near(s.yard.pending, C, '1 h of one common pet');
-  tickYard(s, 10 * HOUR);
-  near(s.yard.pending, C * 6, 'capped at 6 h of production');
-  near(s.yard.accMs, 6 * HOUR, 'cap bookkeeping');
-  tickYard(s, 5 * HOUR);
-  near(s.yard.pending, C * 6, 'stops filling beyond the cap');
-  near(yardPreview(s).fill, 1, 'bar full');
-  const r = collectYard(s);
-  assert(r.ok && r.coins === C * 6, `collected ${C * 6} coins`);
-  assertEq(s.stats.yardCollected, 1, 'stats.yardCollected');
-  assertEq(yardPreview(s).fill, 0, 'bar empty again');
-  tickYard(s, HOUR);
-  near(s.yard.pending, C, 'fills again after a collect');
-});
-
-test('tickYard: the rate follows the current pets; a bigger yard pays more, working pets pay nothing', () => {
+test('tickYard: each pet fills its own gift, 6 h cap per pet, collecting one pet resets only that pet', () => {
   const { s, pet } = yardSetup('hamster');
-  s.pets.push({ ...pet, id: 'p2', speciesId: 'racehorse' });
   tickYard(s, HOUR);
-  near(s.yard.pending, C + L, 'two pets');
-  s.pets[1].status = 'working';
+  near(s.yard.byPet[pet.id].c, C, '1 h of one common pet');
+  assertEq(petGift(s, pet.id).has, true, 'a gift (>= 1 coin) is ready');
+  tickYard(s, 10 * HOUR);
+  near(s.yard.byPet[pet.id].c, C * 6, 'capped at 6 h of production');
+  near(s.yard.byPet[pet.id].ms, 6 * HOUR, 'cap bookkeeping');
+  tickYard(s, 5 * HOUR);
+  near(s.yard.byPet[pet.id].c, C * 6, 'stops filling beyond the cap');
+  assertEq(petGift(s, pet.id).full, true, 'full -> the 3D pet shows 🎁✨');
+  near(yardPreview(s).fill, 1, 'bar full');
+  const coins = s.player.coins;
+  const r = collectPetGift(s, pet.id);
+  assert(r.ok && r.coins === C * 6, `collected ${C * 6} coins`);
+  assertEq(s.player.coins, coins + C * 6, 'coins landed in the wallet');
+  assertEq(s.stats.yardCollected, 1, 'stats.yardCollected');
+  assertEq(petGift(s, pet.id).has, false, 'nothing left');
+  assertEq(petGift(s, pet.id).fill, 0, 'bar empty again');
   tickYard(s, HOUR);
-  near(s.yard.pending, C + L + C, 'the working one adds nothing');
+  near(s.yard.byPet[pet.id].c, C, 'fills again after a collect');
 });
 
-test('yard items: deterministic (no RNG), rotate through the habitat table, fractions carry over collects', () => {
+test('tickYard: pets are independent (own cap, own start), working pets and the sick pay nothing', () => {
+  const { s, pet } = yardSetup('hamster');
+  tickYard(s, 6 * HOUR);                         // hamster is full
+  const horse = addPet(s, 'p2', 'racehorse');    // joins later
+  tickYard(s, 2 * HOUR);
+  near(s.yard.byPet[pet.id].c, C * 6, 'the full pet stays at its own cap');
+  near(s.yard.byPet.p2.c, L * 2, 'the newcomer earns its own 2 h');
+  near(petGift(s, 'p2').fill, 2 / 6, 'fill follows the pet\'s own hours');
+  horse.status = 'working';
+  tickYard(s, HOUR);
+  near(s.yard.byPet.p2.c, L * 2, 'a working pet adds nothing');
+  near(s.yard.byPet.p2.ms, 2 * HOUR, 'and does not burn its cap while away');
+  horse.status = 'idle'; horse.sick = true;
+  tickYard(s, HOUR);
+  near(s.yard.byPet.p2.c, L * 2, 'sick pets pay nothing either');
+  assertEq(Object.keys(s.yard.byPet).sort(), [pet.id, 'p2'].sort(), 'one record per pet');
+});
+
+test('collectYard collects every pet at once; collectPetGift only the tapped one', () => {
+  const { s, pet } = yardSetup('hamster');
+  addPet(s, 'p2', 'racehorse');
+  addPet(s, 'p3', 'dragon', { status: 'working' });   // away: nothing to collect
+  tickYard(s, 2 * HOUR);
+  const one = collectPetGift(s, 'p2');
+  assert(one.ok && one.coins === L * 2, 'racehorse gift only');
+  near(s.yard.byPet[pet.id].c, C * 2, 'hamster untouched');
+  assertEq(collectPetGift(s, 'p2').ok, false, 'second tap: empty, politely refused');
+  assertEq(collectPetGift(s, 'nope').ok, false, 'unknown pet');
+  const coins = s.player.coins;
+  const all = collectYard(s);
+  assert(all.ok && all.coins === C * 2 && all.pets === 1, 'the rest in one go: ' + JSON.stringify([all.coins, all.pets]));
+  assertEq(s.player.coins, coins + C * 2, 'wallet');
+  assertEq(collectYard(s).ok, false, 'nothing left');
+  // the aggregate preview adds the pets up
+  tickYard(s, HOUR);
+  const pv = yardPreview(s);
+  assertEq([pv.coins, pv.pets], [C + L, 2], 'preview = sum of the pets with a gift');
+  near(pv.perHour, C + L, 'aggregate rate');
+});
+
+test('yard items: deterministic (no RNG), rotate through the habitat table per pet, fractions carry over collects', () => {
   const realRandom = Math.random;
   Math.random = () => { throw new Error('yard must not use randomness'); };
   try {
-    const { s } = yardSetup('dragon'); // legendary, mystic: 12%/h
-    let items = 0;
-    const seen = new Set();
-    for (let i = 0; i < 100; i++) { // 600 h in 6 h sessions
-      tickYard(s, 6 * HOUR);
-      const r = collectYard(s);
-      if (r.ok) for (const [id, c] of Object.entries(r.items)) { items += c; seen.add(id); }
-    }
-    assertEq(items, Math.floor(0.12 * 600 + 1e-6), 'expected value only: 72 items in 600 h');
-    assertEq([...seen].sort(), ['forage_gem', 'forage_star'], 'mystic table');
-    assert((countItem(s, 'forage_star') + countItem(s, 'forage_gem')) === items, 'items landed in the inventory');
+    const run = () => {
+      const { s, pet } = yardSetup('dragon'); // legendary, mystic: 12%/h
+      let items = 0;
+      const seen = new Set(), order = [];
+      for (let i = 0; i < 100; i++) { // 600 h in 6 h sessions
+        tickYard(s, 6 * HOUR);
+        const r = collectPetGift(s, pet.id);
+        if (r.ok) for (const [id, c] of Object.entries(r.items)) { items += c; seen.add(id); order.push(id + c); }
+      }
+      assertEq(items, Math.floor(0.12 * 600 + 1e-6), 'expected value only: 72 items in 600 h');
+      assertEq([...seen].sort(), ['forage_gem', 'forage_star'], 'mystic table');
+      assert((countItem(s, 'forage_star') + countItem(s, 'forage_gem')) === items, 'items landed in the inventory');
+      return order.join(',');
+    };
+    assertEq(run(), run(), 'same pet, same sequence every time');
   } finally { Math.random = realRandom; }
+  // held items wait on the pet until it is tapped
+  const { s, pet } = yardSetup('dragon');
+  tickYard(s, 6 * HOUR);
+  const g = petGift(s, pet.id);
+  assertEq(g.itemCount, 0, '0.72 items so far: nothing whole yet');
+  tickYard(s, HOUR);   // cap reached, nothing more is credited
+  assertEq(petGift(s, pet.id).itemCount, 0, 'capped: still none');
+  const g2 = yardSetup('dragon'); g2.s.yard.byPet[g2.pet.id] = { c: 0, ms: 0, prog: 0.9, items: {} };
+  tickYard(g2.s, HOUR);
+  assertEq(petGift(g2.s, g2.pet.id).itemCount, 1, '0.9 + 0.12 -> one held item');
   // each habitat only gifts its own things; farm gifts only seeds of unlocked crops (+ milk)
   const farm = yardSetup('hamster');
   farm.s.player.level = 1;
@@ -1058,17 +1118,18 @@ test('yard items: deterministic (no RNG), rotate through the habitat table, frac
   for (const hab of Object.keys(HABITATS)) for (const id of yardItemTable(farm.s, hab)) assert(getItem(id), hab + ': ' + id + ' exists');
 });
 
-test('collectYard: nothing to collect fails politely; bond daily cap is untouched', () => {
+test('collecting a gift: nothing to collect fails politely; bond daily cap is untouched', () => {
   const { s, pet } = yardSetup('hamster');
+  assertEq(collectPetGift(s, pet.id).ok, false, 'empty gift');
   assertEq(collectYard(s).ok, false, 'empty yard');
   tickYard(s, HOUR);
   addBond(s, pet.id, 30); // the daily bond cap is used up
   const bondBefore = pet.bond;
-  assert(collectYard(s).ok, 'still collectable');
+  assert(collectPetGift(s, pet.id).ok, 'still collectable');
   assertEq(pet.bond, bondBefore, 'collecting gives no bond');
 });
 
-test('yard via tickPets / offline catch-up: 72 h away yields at most 6 h of production', async () => {
+test('yard via tickPets / offline catch-up: 72 h away yields at most 6 h of production per pet', async () => {
   const { advance } = await import('../js/tick.js');
   await withFakeNow(Date.UTC(2026, 5, 1, 0, 0, 0), async clock => {
     const { s, pet } = yardSetup('hamster', { stats: { hunger: 100, happy: 100, energy: 100, clean: 100 } });
@@ -1076,10 +1137,267 @@ test('yard via tickPets / offline catch-up: 72 h away yields at most 6 h of prod
     const perHourAtStart = yardOutput(pet).coins;
     clock.advance(72 * HOUR);
     advance(s, clock.get());
-    assert(s.yard.accMs <= 6 * HOUR + 1, 'credited time capped: ' + s.yard.accMs);
-    assert(s.yard.pending <= perHourAtStart * 6 + 1e-6, 'pending <= 6 h of production: ' + s.yard.pending);
-    assert(s.yard.pending > 0, 'and something was produced');
+    const g = s.yard.byPet[pet.id];
+    assert(g.ms <= 6 * HOUR + 1, 'credited time capped: ' + g.ms);
+    assert(g.c <= perHourAtStart * 6 + 1e-6, 'gift <= 6 h of production: ' + g.c);
+    assert(g.c > 0, 'and something was produced');
   });
+});
+
+test('old global gift store (v4 shape) is split across the pets at home, nothing lost', () => {
+  const { s, pet } = setup('hamster');
+  addPet(s, 'p2', 'rabbit');
+  addPet(s, 'p3', 'cat', { status: 'working' });
+  s.yard = { pending: 100.5, items: { food_milk: 3 }, prog: { farm: 0.5 }, accMs: 2 * HOUR, n: 1, lastAt: 7 };
+  const y = ensureYard(s);
+  assertEq(['pending', 'items', 'prog', 'accMs', 'n'].filter(k => k in y), [], 'legacy fields removed');
+  near(y.byPet[pet.id].c + y.byPet.p2.c, 100.5, 'every coin is somewhere');
+  assertEq(y.byPet.p3, undefined, 'the working pet got no share');
+  assertEq(countItems_(y), 3, 'items kept');
+  near(y.byPet[pet.id].ms, 2 * HOUR, 'cap progress carried');
+  assertEq(ensureYard(s).byPet[pet.id].c, y.byPet[pet.id].c, 'idempotent');
+});
+const countItems_ = y => Object.values(y.byPet).reduce((n, g) => n + Object.values(g.items).reduce((a, b) => a + b, 0), 0);
+
+test('tickYard heals a corrupt yard: negative ms, NaN progress, string coins, gifts of vanished pets', () => {
+  const { s, pet } = yardSetup('hamster');
+  s.yard = { byPet: {
+    [pet.id]: { c: '12', ms: -5 * HOUR, prog: NaN, items: { food_milk: -3, forage_gem: 2, junk: NaN }, n: -4 },
+    ghost: { c: 500, ms: HOUR, prog: 0, items: {} },
+    bad: 'x',
+  }, lastAt: 0 };
+  tickYard(s, HOUR);
+  const g = s.yard.byPet[pet.id];
+  near(g.ms, HOUR, 'negative ms did not buy extra credit');
+  near(g.c, C, 'string coins reset, then 1 h of one hamster');
+  assert(Number.isFinite(g.prog) && g.prog >= 0, 'NaN progress repaired');
+  assertEq(g.items, { forage_gem: 2 }, 'bad item counts dropped');
+  assertEq(g.n, 0, 'rotation counter repaired');
+  assertEq(Object.keys(s.yard.byPet), [pet.id], 'gifts of pets that are gone are dropped');
+  s.yard.byPet[pet.id].ms = 99 * HOUR;
+  tickYard(s, HOUR);
+  assert(s.yard.byPet[pet.id].ms <= 6 * HOUR, 'oversized ms clamped');
+  for (let i = 0; i < 40; i++) tickYard(s, 6 * HOUR), collectPetGift(s, pet.id);
+  assert(Number.isFinite(s.yard.byPet[pet.id].prog) && s.yard.byPet[pet.id].prog >= 0, 'progress is a normal number');
+});
+
+// ── เปลอนุบาล (CONTRACT_V7 §5) ───────────────────────────────────────────────
+/** A state with a full yard (capacity 2, both pets home) and `eggs` ready eggs. */
+function fullYard(eggs = 1) {
+  const { s } = setup('hamster');
+  s.barnCapacity = 2;
+  addPet(s, 'p2', 'rabbit');
+  s.incubatorCapacity = 4;
+  for (let i = 0; i < eggs; i++) s.incubator.push({ eggId: 'egg_farm', startAt: 0, readyAt: 0 });
+  return s;
+}
+
+test('nursery: a full yard hatches into the nursery; both full blocks it', () => {
+  const s = fullYard(5);
+  s.nursery = [];
+  const r = hatchReady(s, 0);
+  assert(r.ok && r.nursery === true, 'hatched into the nursery');
+  assertEq(s.pets.length, 2, 'the yard is untouched');
+  assertEq(s.nursery.length, 1, 'baby in the nursery');
+  assertEq(s.nursery[0].pet.id, r.pet.id, 'same pet object');
+  assertEq(r.pet.status, 'nursery', 'status nursery');
+  assertEq(s.collection[r.pet.speciesId].owned, 1, 'the collection still counts it');
+  assertEq(s.stats.hatched, 1, 'stats.hatched');
+  assert(hatchReady(s, 0).ok && hatchReady(s, 0).ok, 'three slots');
+  assertEq(s.nursery.length, NURSERY_SLOTS, 'nursery full');
+  const blocked = hatchReady(s, 0);
+  assertEq(blocked.ok, false, 'yard and nursery both full');
+  assert(/เปลเต็ม/.test(blocked.reason), 'says the nursery is full: ' + blocked.reason);
+  assertEq(s.incubator.length, 2, 'the egg stays in the incubator');
+  // with room in the yard the baby goes to the yard as before
+  const t = fullYard(1);
+  t.barnCapacity = 3;
+  const r2 = hatchReady(t, 0);
+  assert(r2.ok && !r2.nursery && t.pets.some(p => p.id === r2.pet.id) && r2.pet.status === 'idle', 'normal hatch');
+});
+
+test('nursery babies are frozen: no decay, no work, no yard gifts, no sickness', () => {
+  const s = fullYard(1);
+  const baby = hatchReady(s, 0).pet;
+  const before = JSON.stringify(baby);
+  for (let i = 0; i < 50; i++) tickPets(s, 10 * HOUR, { offline: true });
+  assertEq(JSON.stringify(baby), before, 'the baby did not change at all');
+  assertEq(s.yard.byPet[baby.id], undefined, 'no gift record');
+  assertEq(getPet(s, baby.id), null, 'not a yard pet (farm and explore never see it)');
+  assertEq(yardOutput(baby).coins, 0, 'no production');
+  assertEq(canWork(baby).ok, false, 'cannot work');
+});
+
+test('adoptFromNursery needs a free yard slot', () => {
+  const s = fullYard(1);
+  const baby = hatchReady(s, 0).pet;
+  const no = adoptFromNursery(s, baby.id);
+  assertEq(no.ok, false, 'yard full');
+  assertEq(s.nursery.length, 1, 'still in the crib');
+  s.barnCapacity = 3;
+  const yes = adoptFromNursery(s, baby.id);
+  assert(yes.ok, 'adopted');
+  assertEq(s.nursery.length, 0, 'crib empty');
+  assertEq(getPet(s, baby.id).status, 'idle', 'awake again');
+  assertEq(adoptFromNursery(s, baby.id).ok, false, 'no longer in the nursery');
+});
+
+test('swapWithNursery: baby enters the yard, the chosen pet takes the crib (gift collected, station dropped)', () => {
+  const s = fullYard(1);
+  const baby = hatchReady(s, 0).pet;
+  const out = s.pets[1];
+  s.plots[0].stations = [out.id, null, null];
+  out.station = { plotIndex: 0, slot: 0 };
+  tickYard(s, 2 * HOUR);
+  const coins = s.player.coins;
+  const r = swapWithNursery(s, baby.id, out.id);
+  assert(r.ok, 'swapped');
+  assert(s.player.coins > coins, 'the gift it held was collected first');
+  assertEq(s.pets.map(p => p.id).sort(), ['p1', baby.id].sort(), 'baby in, rabbit out');
+  assertEq(s.nursery.length, 1, 'still one crib in use');
+  assertEq(s.nursery[0].pet.id, out.id, 'the rabbit sleeps in the crib');
+  assertEq(out.status, 'nursery', 'frozen');
+  assertEq(out.station, null, 'pin dropped');
+  assertEq(s.plots[0].stations[0], null, 'plot station cleared too');
+  assertEq(s.yard.byPet[out.id], undefined, 'its gift record is gone');
+  assertEq(getPet(s, baby.id).status, 'idle', 'baby awake');
+  // busy pets cannot swap out
+  const s2 = fullYard(1);
+  const b2 = hatchReady(s2, 0).pet;
+  s2.pets[1].status = 'working';
+  assertEq(swapWithNursery(s2, b2.id, s2.pets[1].id).ok, false, 'working pet stays');
+  assertEq(s2.nursery.length, 1, 'nothing moved');
+  assertEq(swapWithNursery(s2, 'nope', s2.pets[0].id).ok, false, 'unknown baby');
+  assertEq(swapWithNursery(s2, b2.id, 'nope').ok, false, 'unknown yard pet');
+});
+
+test('rehomePet (ส่งไปบ้านใหม่): same reward as release, collects held gifts first, works for nursery babies', () => {
+  const { s, pet } = yardSetup('racehorse');
+  tickYard(s, 3 * HOUR);
+  const coins = s.player.coins;
+  const r = rehomePet(s, pet.id);
+  assert(r.ok, 'rehomed');
+  assertEq(s.player.coins, coins + 10 + L * 3, '10 coins + the gift it still held');
+  assertEq(s.stardust, 25, 'stardust by rarity');
+  assertEq(s.pets.length, 0, 'gone from the yard');
+  assertEq(s.yard.byPet[pet.id], undefined, 'gift record gone');
+  assert(/บ้านใหม่/.test(r.msg) && !/ปล่อย/.test(r.msg), 'new wording: ' + r.msg);
+  assertEq(s.stats.released, 1, 'stats.released');
+  // a nursery baby can go too
+  const t = fullYard(1);
+  const baby = hatchReady(t, 0).pet;
+  const dust = rehomeDust(baby);
+  assert(rehomePet(t, baby.id).ok, 'baby rehomed');
+  assertEq(t.nursery.length, 0, 'crib empty');
+  assertEq(t.stardust, dust, 'baby stardust');
+  assertEq(rehomePet(t, baby.id).ok, false, 'only once');
+  // a stationed pet frees its plot slot
+  const u = setup('hamster');
+  u.s.plots[1].stations = [u.pet.id, null, null];
+  u.pet.station = { plotIndex: 1, slot: 0 };
+  assert(rehomePet(u.s, u.pet.id).ok, 'stationed pet rehomed');
+  assertEq(u.s.plots[1].stations[0], null, 'station cleared');
+  // busy pets cannot be rehomed
+  const busy = setup('hamster', { status: 'expedition' });
+  assertEq(rehomePet(busy.s, busy.pet.id).ok, false, 'expedition pet stays');
+  const old = setup('hamster');
+  assert(releasePet(old.s, old.pet.id).ok, 'the old name still works');
+});
+
+test('postcards: 12-36 h after rehoming, deterministic text from >= 20 templates, badge counts unread', async () => {
+  assert(POSTCARD_TEMPLATES.length >= 20, 'templates: ' + POSTCARD_TEMPLATES.length);
+  assertEq(new Set(POSTCARD_TEMPLATES).size, POSTCARD_TEMPLATES.length, 'all different');
+  for (const t of POSTCARD_TEMPLATES) assert(/\{name\}|\{species\}/.test(t) && t.length < 120, 'uses the pet: ' + t);
+  await withFakeNow(Date.UTC(2026, 5, 1, 12, 0, 0), async clock => {
+    const delays = new Set();
+    for (let i = 0; i < 30; i++) {
+      const { s, pet } = setup('hamster', { id: 'rh' + i, nickname: 'น้อง' + i });
+      rehomePet(s, pet.id);
+      const c = s.postcards[0];
+      const delay = c.at - clock.get();
+      assert(delay >= 12 * HOUR && delay <= 36 * HOUR, 'delay 12-36 h: ' + delay / HOUR);
+      delays.add(Math.floor(delay / HOUR));
+      assert(c.text.includes('น้อง' + i) || c.text.includes('แฮมสเตอร์'), 'text names the pet or its species: ' + c.text);
+      assert(!/[{}]/.test(c.text), 'no placeholder left');
+      assertEq([c.petName, c.speciesId, c.read], ['น้อง' + i, 'hamster', false], 'fields');
+    }
+    assert(delays.size >= 8, 'delays are spread out: ' + delays.size);
+    // same pet id -> same card and delay (deterministic)
+    const mk = () => { const { s, pet } = setup('hamster', { id: 'same', nickname: 'โมจิ' }); rehomePet(s, pet.id); return s.postcards[0]; };
+    const a = mk(), b = mk();
+    assertEq([a.text, a.at], [b.text, b.at], 'deterministic');
+    // the card arrives only after its time
+    const { s, pet } = setup('hamster', { id: 'late', nickname: 'ข้าวปั้น' });
+    rehomePet(s, pet.id);
+    const at = s.postcards[0].at;
+    assertEq(arrivedPostcards(s).length, 0, 'not yet');
+    assertEq(unreadPostcardCount(s), 0, 'no badge yet');
+    clock.set(at - 1);
+    assertEq(arrivedPostcards(s).length, 0, 'one ms early');
+    clock.set(at);
+    assertEq(unreadPostcardCount(s), 1, 'badge');
+    tickPets(s, 1000, { offline: false });
+    assertEq(s.postcards[0].notified, true, 'toast sent once');
+    assert(markPostcardRead(s, s.postcards[0].id), 'mark read');
+    assertEq(unreadPostcardCount(s), 0, 'badge gone');
+    assertEq(arrivedPostcards(s).length, 1, 'still in the mailbox');
+    // max 30, oldest dropped
+    for (let i = 0; i < 40; i++) { const x = setup('hamster', { id: 'q' + i }); x.s.postcards = s.postcards; rehomePet(x.s, x.pet.id); s.postcards = x.s.postcards; clock.advance(HOUR); }
+    assertEq(s.postcards.length, POSTCARD_MAX, 'capped at 30');
+    assert(s.postcards.every((c, i, arr) => i === 0 || arr[i - 1].at <= c.at), 'kept in time order');
+  });
+});
+
+test('compare helper: duplicates first, then lowest power / hearts, not shiny, not stationed; "ซ้ำ ×N" counts the baby', () => {
+  const { s } = setup('hamster', { id: 'h1', nickname: 'แฮม1', stage: 0 });
+  s.barnCapacity = 8;
+  addPet(s, 'h2', 'hamster', { stage: 2, bond: 120 });                    // duplicate, strong, 3 hearts
+  addPet(s, 'h3', 'hamster', { stage: 0, shiny: true });                 // duplicate, weak but shiny
+  addPet(s, 'c1', 'cat', { stage: 0 });                                  // unique, weak
+  addPet(s, 'd1', 'dragon', { stage: 3, bond: 360 });                    // unique legendary
+  addPet(s, 'w1', 'hamster', { stage: 0, status: 'working' });           // busy
+  s.incubator.push({ eggId: 'egg_farm', startAt: 0, readyAt: 0 });
+  s.barnCapacity = s.pets.length;
+  const baby = hatchReady(s, 0).pet;                                      // lands in the nursery
+  s.nursery[0].pet.speciesId = 'cat';                                     // make the baby a cat so "cat" is duplicated
+  const rows = compareCandidates(s, { scope: 'yard' });
+  const ids = rows.map(r => r.id);
+  assertEq(ids.includes(baby.id), false, 'scope yard: the baby is not a candidate');
+  const by = id => rows.find(r => r.id === id);
+  assertEq(by('h1').dup, 4, 'four hamsters in the yard');
+  assertEq(by('c1').dup, 2, 'cat + the cat baby in the nursery');
+  assertEq(by('d1').dup, 1, 'dragon unique');
+  // order: eligible duplicates by power first ...
+  const dupIdx = ids.filter(i => by(i).eligible && by(i).dup > 1);
+  assertEq(ids.slice(0, dupIdx.length), dupIdx, 'duplicates come first');
+  assertEq(dupIdx[0] === 'h1' || dupIdx[0] === 'c1', true, 'weakest duplicate leads');
+  assert(ids.indexOf('h1') < ids.indexOf('h2'), 'weak hamster before the strong one');
+  assert(ids.indexOf('h1') < ids.indexOf('h3') || by('h1').power <= by('h3').power, 'non-shiny first on equal power');
+  assert(ids.indexOf('c1') < ids.indexOf('d1'), 'unique weak before the legendary');
+  assertEq(ids[ids.length - 1], 'w1', 'busy pets sink to the end');
+  assertEq(by('w1').eligible, false, 'not eligible');
+  assert(by('w1').reason.length > 0, 'with a reason');
+  assertEq(by('h1').suggest, true, 'duplicate non-shiny is suggested');
+  assertEq(by('h3').suggest, false, 'shiny duplicate is not suggested');
+  assertEq(by('d1').suggest, false, 'unique is not suggested');
+  assertEq(by('d1').hearts, 5, 'hearts');
+  assert(by('d1').power > by('h2').power, 'power grows with stage / rarity-free aptitude');
+  // scope all adds the nursery
+  const all = compareCandidates(s, { scope: 'all' });
+  assert(all.some(r => r.id === baby.id && r.where === 'nursery'), 'baby listed under scope all');
+  assertEq(compareCandidates(s, { scope: 'all', excludeId: baby.id }).some(r => r.id === baby.id), false, 'excludeId');
+  // never auto-selects: the helper only returns rows
+  assert(rows.every(r => !('selected' in r)), 'no preselection');
+});
+
+test('compare helper marks stationed pets and breaks ties by hearts, then shiny, then station', () => {
+  const { s } = setup('hamster', { id: 'a', bond: 0 });
+  s.barnCapacity = 5;
+  addPet(s, 'b', 'hamster', { bond: 60 });
+  addPet(s, 'c', 'hamster', { bond: 0, station: { plotIndex: 2, slot: 1 } });
+  const rows = compareCandidates(s, { scope: 'yard' });
+  assertEq(rows.map(r => r.id), ['a', 'c', 'b'], 'same power: fewer hearts first, then not-stationed first');
+  assertEq(rows.find(r => r.id === 'c').station, 'ประจำแปลง #3', 'station label');
 });
 
 test('stationStatus: "ประจำแปลง #N" and what the resting pet is doing', () => {
@@ -1151,22 +1469,149 @@ test('part animator also drives a whale fluke (rotation.x) and ignores models wi
   applyPartPose({}, partBases({}), { fluke: 0.5 });
 });
 
-test('tickYard heals a corrupt yard: negative accMs, NaN prog, string pending', () => {
-  const { s } = yardSetup('hamster');
-  s.yard = { pending: '12', items: { food_milk: -3, forage_gem: 2, junk: NaN }, accMs: -5 * HOUR, prog: { farm: NaN, forest: -1, water: 0.4 }, n: -4, lastAt: 0 };
-  tickYard(s, HOUR);
-  assert(s.yard.accMs >= 0 && s.yard.accMs <= 6 * HOUR, 'accMs clamped to 0..cap: ' + s.yard.accMs);
-  near(s.yard.accMs, HOUR, 'negative accMs did not buy extra credit');
-  near(s.yard.pending, C, 'string pending reset, then 1 h of one hamster');
-  assert(!('farm' in s.yard.prog) || Number.isFinite(s.yard.prog.farm), 'NaN prog never survives');
-  assertEq(s.yard.prog.forest === undefined || s.yard.prog.forest >= 0, true, 'negative prog dropped');
-  near(s.yard.prog.water, 0.4, 'valid prog kept');
-  assertEq(s.yard.items, { forage_gem: 2 }, 'bad item counts dropped');
-  assertEq(s.yard.n, 0, 'rotation counter repaired');
-  // a farm habitat keeps producing items after its NaN entry was dropped
-  for (let i = 0; i < 40; i++) tickYard(s, 6 * HOUR), collectYard(s);
-  assert(Number.isFinite(s.yard.prog.farm) && s.yard.prog.farm >= 0, 'farm progress is a normal number again');
-  s.yard.accMs = 99 * HOUR;
-  tickYard(s, HOUR);
-  assert(s.yard.accMs <= 6 * HOUR, 'oversized accMs clamped');
+// ── nursery cribs, decor behaviour (CONTRACT_V7 §2 / §5) ─────────────────────
+import { cribSpot, decorOptions, decorStand, DECOR_USE, DECOR_USE_TYPES } from '../js/petBehaviour.js';
+import { DECOR } from '../js/data/decor.js';
+import { compareRowHtml } from '../js/ui/petsView.js';
+
+test('cribSpot: three distinct cribs left of the nests, behind the wander limit, inside the fence, clear of the nests', () => {
+  const saved = JSON.stringify(YARD);
+  try {
+    for (const t of ['S', 'M', 'L', 'XL']) {
+      configureYard(t);
+      const lay = YARD_TIER_LAYOUT[t];
+      for (const n of [1, 2, 3]) {
+        const spots = [0, 1, 2].map(i => cribSpot(i, n));
+        for (const [i, c] of spots.entries()) {
+          assert(c.z < YARD.backLimit, `${t}/${n}/${i}: behind the wander limit`);
+          assert(Math.hypot(c.x, c.z) < lay.walk + 0.7, `${t}/${n}/${i}: inside the fence`);
+          for (let k = 0; k < n; k++) { const ns = nestSpot(k, n); assert(Math.hypot(c.x - ns.x, c.z - ns.z) > 1.1, `${t}/${n}/${i}: clear of nest ${k}`); }
+          for (const [j, d] of spots.entries()) if (j > i) assert(Math.hypot(c.x - d.x, c.z - d.z) > 0.9, `${t}/${n}: cribs ${i} and ${j} do not overlap`);
+        }
+      }
+    }
+  } finally { Object.assign(YARD, JSON.parse(saved)); }
+});
+
+test('decor uses: every usable decor of data/decor.js has a behaviour, the sign none', () => {
+  for (const d of DECOR) {
+    if (d.id === 'sign') { assertEq(DECOR_USE[d.id], undefined, 'sign has no pet behaviour'); continue; }
+    assert(DECOR_USE_TYPES.has(DECOR_USE[d.id]), d.id + ' maps to a behaviour');
+    assertEq(DECOR_USE[d.id], d.use, d.id + ' same key as the data file');
+  }
+});
+
+test('pets with placed decor: nap on the bed, eat at the bowl, kick the ball, rock on the horse, jump in the leaves', () => {
+  configureYard('XL');
+  const at = (decorId, x, z, busy = null) => ({ id: 'd_' + decorId, decorId, x, z, busy });
+  const all = [at('bed', 2, 3), at('bowl', -2, 3), at('ball', 0, 4), at('horse', 3, 1), at('leaves', -3, 1)];
+  const pet = over => ({ id: 'q', speciesId: 'hamster', personality: 'cheerful', status: 'idle', sick: false, stats: { hunger: 80, happy: 90, energy: 90, clean: 90 }, ...over });
+  const seen = new Set();
+  for (let seed = 1; seed <= 400; seed++) {
+    const a = nextAction(pet(), { x: 0, z: 1, others: [], last: 'idle', decor: all, size: 0.5 }, makeRng(seed), 0);
+    if (a.type === 'decor') {
+      seen.add(a.use);
+      assert(Number.isFinite(a.target.x) && Math.hypot(a.target.x, a.target.z) <= YARD.walkRadius + 1e-6, 'stand point inside the yard');
+      assertEq(a.decorId, all.find(d => d.id === a.instId).decorId, 'instance matches');
+      assertEq(a.nap, a.use === 'nap', 'only the bed counts as a nap');
+      assert(a.duration > 2 && a.duration < 20, 'visit length ' + a.duration);
+    }
+  }
+  assertEq([...seen].sort(), ['eat', 'jump', 'kick', 'nap', 'rock'], 'all five uses happen');
+  // busy decor is skipped, hungry (<25) pets go to the real food bowl, big pets skip the horse, nobody uses the sign
+  assertEq(decorOptions(pet(), { decor: [at('bed', 2, 3, 'someone')] }).length, 0, 'busy bed');
+  assertEq(decorOptions(pet(), { decor: [{ id: 's', decorId: 'sign', x: 1, z: 1 }] }).length, 0, 'sign has no use');
+  assertEq(decorOptions(pet(), { decor: [at('horse', 1, 1)], size: 1.3 }).length, 0, 'too big for the horse');
+  assertEq(decorOptions(pet({ stats: { happy: 10 } }), { decor: [at('ball', 1, 1), at('leaves', 2, 1)] }).length, 0, 'sad pets do not play');
+  assertEq(decorOptions(pet(), { decor: [at('bed', 1, 1)], napRatio: NAP_CAP }).length, 0, 'the nap cap also covers the bed');
+  for (let seed = 1; seed <= 100; seed++) {
+    const a = nextAction(pet({ stats: { hunger: 10, happy: 90, energy: 90, clean: 90 } }), { x: 0, z: 1, others: [], last: 'idle', decor: all }, makeRng(seed), 0);
+    assert(a.type !== 'decor', 'a starving pet goes to the food bowl, not to play');
+  }
+  // sleeping / sick pets ignore decor
+  assertEq(nextAction(pet({ status: 'sleeping' }), { decor: all }, makeRng(3), 0).type, 'sleep', 'sleeping stays');
+  assertEq(nextAction(pet({ sick: true }), { decor: all }, makeRng(3), 0).type === 'decor', false, 'sick stays');
+  // a lazy pet prefers the bed, a glutton the bowl
+  const count = (p, id) => { let n = 0; for (let s = 1; s <= 300; s++) { const a = nextAction(p, { x: 0, z: 1, others: [], last: 'idle', decor: all }, makeRng(s), 0); if (a.type === 'decor' && a.decorId === id) n++; } return n; };
+  assert(count(pet({ personality: 'lazy', stats: { hunger: 80, happy: 90, energy: 40, clean: 90 } }), 'bed') > count(pet({ personality: 'cheerful' }), 'bed'), 'lazy naps on the bed more');
+  assert(count(pet({ personality: 'glutton' }), 'bowl') > count(pet({ personality: 'cheerful' }), 'bowl'), 'glutton eats at the bowl more');
+  assertEq(decorStand('eat', 0, 0).z > 0, true, 'eats from the front');
+  assertEq(decorStand('nap', 1, 2), { x: 1, z: 2 }, 'sleeps on the bed');
+});
+
+test('advanceActor: a decor visit walks first, then uses the decor for its duration from arrival', () => {
+  const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'decor', use: 'nap', target: { x: 2, z: 0 }, speed: 1, duration: 3 }) };
+  let decided = 0, arrivedAt = null, t = 0;
+  const decide = () => { decided++; };
+  while (t < 20 && !decided) {
+    const r = advanceActor(A, 0.1, decide);
+    t += 0.1;
+    if (A.act.arrived && arrivedAt === null) arrivedAt = t;
+    if (!A.act.arrived && !decided) assertEq(r.moving, true, 'walking');
+  }
+  assert(arrivedAt !== null && arrivedAt > 1.2 && arrivedAt < 3, 'arrived after walking 2 units: ' + arrivedAt);
+  assertEq(decided, 1, 'decided once');
+  assert(t - arrivedAt >= 2.8 && t - arrivedAt < 3.4, 'stayed ~3 s after arriving: ' + (t - arrivedAt));
+  assertEq(Math.round(A.x * 10) / 10, 2, 'ended at the stand point');
+});
+
+test('compare row html: emoji, name, stage, power, hearts, shiny, station, rarity, "ซ้ำ ×N" and the soft hint', () => {
+  const { s } = setup('hamster', { id: 'h1', nickname: 'มะลิ', shiny: true, station: { plotIndex: 0, slot: 0 }, bond: 120 });
+  addPet(s, 'h2', 'hamster', { shiny: false, station: null, bond: 0 });
+  const rows = compareCandidates(s, { scope: 'yard' });
+  const html = compareRowHtml(rows.find(r => r.id === 'h1'));
+  for (const bit of ['🐹', 'มะลิ', '💪', '❤️ 3', '✨', '📌 ประจำแปลง #1', 'ซ้ำ ×2']) assert(html.includes(bit), 'row shows ' + bit);
+  assert(!html.includes('ตัวซ้ำ แนะนำ'), 'a shiny duplicate gets no suggestion');
+  assert(compareRowHtml(rows.find(r => r.id === 'h2')).includes('ตัวซ้ำ แนะนำ'), 'the plain duplicate does');
+  const busy = compareRowHtml({ ...rows[0], eligible: false, reason: 'กำลังทำงานอยู่', suggest: false });
+  assert(/disabled/.test(busy) && busy.includes('กำลังทำงานอยู่'), 'busy rows are disabled with the reason');
+  assert(!/selected|checked/.test(html), 'never pre-selected');
+});
+
+test('yard: migrated progress >= 1 becomes held items even when the pet is capped', () => {
+  const { s, pet } = yardSetup('hamster');
+  s.yard.byPet[pet.id] = { c: 5, ms: 6 * HOUR, prog: 2.4, items: {} };
+  tickYard(s, 0);
+  assertEq(petGift(s, pet.id).itemCount, 2, 'floor(prog) items');
+  near(s.yard.byPet[pet.id].prog, 0.4, 'fraction stays');
+});
+
+test('yard: a record frozen at the cap (v4 pending 1.2 + accMs 6 h split to every heir) starts earning again', async () => {
+  const { migrate } = await import('../js/state.js');
+  const res = await fetch(new URL('./fixtures/save_v4_midgame.json', import.meta.url));
+  const raw = await res.json();
+  raw.yard = { pending: 1.2, items: {}, prog: {}, accMs: 6 * HOUR, n: 0, lastAt: 0 };
+  const s = migrate(raw);
+  const home = () => s.pets.filter(p => p.status !== 'working' && p.status !== 'expedition' && !p.sick);
+  assert(home().length > 0, 'the fixture has pets at home');
+  for (let i = 0; i < 180; i++) tickPets(s, 60 * 1000, { offline: true });   // 3 h
+  for (const p of home()) assertEq(petGift(s, p.id).has, true, `${p.id} has a gift again (${JSON.stringify(s.yard.byPet[p.id])})`);
+  // the same for a record that was NaN-reset at the cap
+  const { s: t, pet } = yardSetup('hamster');
+  t.yard.byPet[pet.id] = { c: NaN, ms: 6 * HOUR, prog: 0, items: {} };
+  tickYard(t, 2 * HOUR);
+  assertEq(petGift(t, pet.id).has, true, 'NaN coins at the cap recover');
+});
+
+test('yard: a stale v4 tab writing pending/items into a v5 save is kept on the first home pet', () => {
+  const { s, pet } = yardSetup('hamster');
+  addPet(s, 'p2', 'rabbit');
+  s.yard.byPet[pet.id] = { c: 2, ms: HOUR, prog: 0, items: {} };
+  s.yard.pending = 20; s.yard.items = { food_milk: 2 };
+  ensureYard(s);
+  assertEq(['pending', 'items'].filter(k => k in s.yard), [], 'legacy fields cleared');
+  near(s.yard.byPet[pet.id].c, 22, 'coins added, not dropped');
+  assertEq(s.yard.byPet[pet.id].items, { food_milk: 2 }, 'items kept');
+});
+
+test('3D gift label needs 1 h of production or an item; any gift of 1+ coin is still collectable', () => {
+  const { s, pet } = yardSetup('hamster');
+  tickYard(s, 0.5 * HOUR);
+  const small = petGift(s, pet.id);
+  assertEq([small.has, small.big], [true, false], 'half an hour: collectable, no label');
+  tickYard(s, 0.5 * HOUR);
+  assertEq(petGift(s, pet.id).big, true, 'an hour: label');
+  assert(collectPetGift(s, pet.id).ok, 'tap collects');
+  s.yard.byPet[pet.id] = { c: 1, ms: 1000, prog: 0, items: { food_milk: 1 } };
+  assertEq(petGift(s, pet.id).big, true, 'a held item earns the label too');
 });

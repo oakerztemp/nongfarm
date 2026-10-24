@@ -2,12 +2,13 @@
 // DOM-free. Mutates the state passed in; actions return { ok, msg } or { ok:false, reason }.
 
 import { now, clamp, uid, randInt, pickWeighted, notify, addLog, todayKey } from './util.js';
-import { addItem, removeItem, countItem, addCoins, addPlayerXp, bumpStat } from './state.js';
+import { addItem, removeItem, countItem, addCoins, addPlayerXp, bumpStat, NURSERY_SLOTS, POSTCARDS_MAX } from './state.js';
 import { getItem, ITEMS } from './data/items.js';
 import { EGGS, getEgg } from './data/eggs.js';
 import { SPECIES, HABITATS, RARITIES, getSpecies } from './data/species.js';
 import { getTraitDef, TRAIT_SCALE } from './data/traits.js';
 import { CROPS } from './data/crops.js';
+import { hashId } from './petBehaviour.js';
 
 const HOUR = 3600 * 1000;
 
@@ -27,7 +28,7 @@ const POOP_EVERY_MS = 2 * HOUR;   // after eating
 const MAX_POOP = 3;
 const SICK_AFTER_MS = 2 * HOUR;   // hunger or clean stuck at 0
 const SHINY_CHANCE = 0.03;
-const RELEASE_COINS = 10;
+export const RELEASE_COINS = 10;
 const SHINY_COST = 100;           // stardust
 const HABITAT_EGG_COST = 40;      // stardust
 export const STARDUST_BY_RARITY = { common: 1, uncommon: 2, rare: 5, epic: 10, legendary: 25 };
@@ -111,6 +112,7 @@ export function canWork(pet) {
   if (pet.status === 'sleeping') return { ok: false, reason: 'น้องกำลังนอนหลับอยู่' };
   if (pet.status === 'working') return { ok: false, reason: 'น้องกำลังทำงานอยู่แล้ว' };
   if (pet.status === 'expedition') return { ok: false, reason: 'น้องออกสำรวจอยู่' };
+  if (pet.status === 'nursery') return { ok: false, reason: 'น้องยังนอนอยู่ในเปลอนุบาล' };
   if (pet.sick) return { ok: false, reason: 'น้องไม่สบาย ต้องรักษาก่อน' };
   if (pet.stats.energy < 20) return { ok: false, reason: 'น้องเหนื่อยเกินไป (พลังงานต่ำ)' };
   if (pet.stats.hunger < 15) return { ok: false, reason: 'น้องหิวเกินไป ให้อาหารก่อนนะ' };
@@ -251,9 +253,10 @@ export function claimGift(state, petId) {
   return { ok: true, msg, items: got };
 }
 
-// ── ลานให้ของ (CONTRACT_V6 §3) ──────────────────────────────────────────────
-// Pets at home slowly produce coins and habitat items into state.yard; one tap collects them.
-// Deterministic expected-value accumulation (no RNG, so reloading cannot farm luck), capped at 6 h of production.
+// ── ลานให้ของ (CONTRACT_V6 §3, per-pet since CONTRACT_V7 §4) ────────────────
+// Every pet at home slowly produces coins and habitat items into its OWN gift (state.yard.byPet[petId]); tapping the
+// pet collects it. Deterministic expected-value accumulation (no RNG, so reloading cannot farm luck), capped at 6 h
+// of that pet's own production.
 // coins / hour. Raised after V6 launch: common x2.7 .. legendary x1.3 (a yard of 20 maxed legendaries must stay < 20% of day-14 income).
 export const YARD_BASE_COINS = { common: 8, uncommon: 10, rare: 12, epic: 15, legendary: 18 };
 export const YARD_ITEM_CHANCE = { rare: 0.05, epic: 0.08, legendary: 0.12 };                 // items / hour (others 0.03)
@@ -271,19 +274,72 @@ const YARD_ITEMS = {
   mystic: ['forage_star', 'forage_gem'],
 };
 
-/** state.yard with defaults in code (migration only has to provide { pending, items, lastAt }). */
+const goodNum = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+const isPlain = v => !!v && typeof v === 'object' && !Array.isArray(v);
+const isHome = pet => pet.status !== 'working' && pet.status !== 'expedition';
+
+/** One pet's gift record, repaired in place: { c: coins (float), ms: credited ms <= cap, prog: item progress, items: {id:n}, n: rotation counter }. */
+function fixGift(g) {
+  if (!goodNum(g.c)) g.c = 0;
+  g.ms = goodNum(g.ms) ? Math.min(g.ms, YARD_CAP_MS) : 0;
+  if (!goodNum(g.prog)) g.prog = 0;
+  if (!isPlain(g.items)) g.items = {};
+  for (const k of Object.keys(g.items)) if (!goodNum(g.items[k]) || g.items[k] <= 0) delete g.items[k];
+  g.n = goodNum(g.n) ? Math.floor(g.n) : 0;
+  // A record sitting at the 6 h cap with nothing to collect would never be credited again (migration split / NaN reset):
+  // a real capped record always holds at least a coin, so this one is stuck. Start its clock again.
+  if (g.ms >= YARD_CAP_MS - 1 && g.c < 1 && !Object.keys(g.items).length) g.ms = 0;
+  return g;
+}
+
+/** v4 -> v5 safety net (the real migration lives in state.js): splits an old global gift store across the pets at home. */
+function absorbLegacyYard(state, y) {
+  const legacy = ['pending', 'items', 'prog', 'accMs', 'n'].some(k => k in y);
+  if (!legacy) return;
+  const pets = state.pets.filter(isHome);
+  const list = pets.length ? pets : state.pets;
+  if (list.length && Object.keys(y.byPet).length) {
+    // a stale v4 tab wrote into a v5 save: keep what it carried on the first pet at home
+    const pending = goodNum(y.pending) ? y.pending : 0;
+    const progSum = isPlain(y.prog) ? Object.values(y.prog).filter(goodNum).reduce((a, b) => a + b, 0) : 0;
+    const g = y.byPet[list[0].id] || (y.byPet[list[0].id] = fixGift({}));
+    fixGift(g);
+    g.c += pending; g.prog += progSum;
+    if (isPlain(y.items)) for (const [id, c] of Object.entries(y.items)) if (goodNum(c) && c > 0) g.items[id] = (g.items[id] || 0) + Math.floor(c);
+  } else if (list.length) {
+    const pending = goodNum(y.pending) ? y.pending : 0;
+    const progSum = isPlain(y.prog) ? Object.values(y.prog).filter(goodNum).reduce((a, b) => a + b, 0) : 0;
+    const share = pending / list.length, progShare = progSum / list.length;
+    list.forEach((pet, i) => {
+      y.byPet[pet.id] = fixGift({ c: i === 0 ? pending - share * (list.length - 1) : share, ms: goodNum(y.accMs) ? y.accMs : 0, prog: progShare, items: {} });
+    });
+    if (isPlain(y.items)) {
+      let i = 0;
+      for (const [id, c] of Object.entries(y.items)) {
+        for (let k = Math.floor(goodNum(c) ? c : 0); k > 0; k--) {
+          const g = y.byPet[list[i++ % list.length].id];
+          g.items[id] = (g.items[id] || 0) + 1;
+        }
+      }
+    }
+  }
+  for (const k of ['pending', 'items', 'prog', 'accMs', 'n']) delete y[k];
+}
+
+/** state.yard with defaults in code (migration only has to provide { byPet, lastAt }); drops gifts of pets that are gone. */
 export function ensureYard(state) {
-  const y = state.yard && typeof state.yard === 'object' ? state.yard : (state.yard = { pending: 0, items: {}, lastAt: 0 });
-  const good = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
-  if (!good(y.pending)) y.pending = 0;
-  if (!y.items || typeof y.items !== 'object' || Array.isArray(y.items)) y.items = {};
-  for (const k of Object.keys(y.items)) if (!good(y.items[k])) delete y.items[k];
-  if (!y.prog || typeof y.prog !== 'object' || Array.isArray(y.prog)) y.prog = {};   // habitat -> fractional expected items
-  for (const k of Object.keys(y.prog)) if (!good(y.prog[k])) delete y.prog[k];       // NaN / negative would freeze that habitat
-  y.accMs = good(y.accMs) ? Math.min(y.accMs, YARD_CAP_MS) : 0; // production time credited since the last collect (0..cap)
-  y.n = good(y.n) ? Math.floor(y.n) : 0;                        // rotation counter through a habitat's item table
+  const y = isPlain(state.yard) ? state.yard : (state.yard = { byPet: {}, lastAt: 0 });
+  if (!isPlain(y.byPet)) y.byPet = {};
+  if (!goodNum(y.lastAt)) y.lastAt = 0;
+  absorbLegacyYard(state, y);
+  const ids = new Set(state.pets.map(p => p.id));
+  for (const k of Object.keys(y.byPet)) {
+    if (!ids.has(k) || !isPlain(y.byPet[k])) delete y.byPet[k]; else fixGift(y.byPet[k]);
+  }
   return y;
 }
+
+const giftEntry = (y, petId) => y.byPet[petId] || (y.byPet[petId] = fixGift({}));
 
 /** Items a habitat can gift right now (farm also gifts seeds of the crops the player has unlocked). */
 export function yardItemTable(state, habitat) {
@@ -297,7 +353,7 @@ export function yardItemTable(state, habitat) {
 /** Does this pet produce gifts right now? Returns coins/h and items/h (0 when it does not). */
 export function yardOutput(pet) {
   const none = { coins: 0, items: 0, habitat: null };
-  if (!pet || pet.sick || pet.status === 'working' || pet.status === 'expedition') return none;
+  if (!pet || pet.sick || pet.status === 'working' || pet.status === 'expedition' || pet.status === 'nursery') return none;
   const sp = getSpecies(pet.speciesId);
   if (!sp) return none;
   const happy = (pet.stats && pet.stats.happy) || 0;
@@ -320,57 +376,128 @@ export function yardRates(state) {
   return out;
 }
 
-/** Called from tickPets (also during offline catch-up). Credits at most 6 h of production between collects. */
+/** Whole item progress becomes held items right away, rotating through the habitat's table from a per-pet start. */
+function materialiseItems(state, pet, g) {
+  const sp = getSpecies(pet.speciesId);
+  const table = sp ? yardItemTable(state, sp.habitat) : [];
+  if (!table.length) { g.prog = 0; return; }
+  const start = hashId(pet.id) % table.length;
+  while (g.prog >= 1 - 1e-9) {
+    const id = table[(start + g.n++) % table.length];
+    g.items[id] = (g.items[id] || 0) + 1;
+    g.prog -= 1;
+  }
+  if (g.prog < 0) g.prog = 0;
+}
+
+/** Called from tickPets (also during offline catch-up). Each pet credits at most 6 h of its own production between collects. */
 export function tickYard(state, dtMs) {
   const y = ensureYard(state);
   const dt = Math.max(0, Number(dtMs) || 0);
-  const credit = Math.min(dt, Math.max(0, YARD_CAP_MS - y.accMs));
   y.lastAt = now();
-  if (credit <= 0) return;
-  const h = credit / HOUR;
-  const r = yardRates(state);
-  y.pending += r.coins * h;
-  for (const [hab, perHour] of Object.entries(r.items)) y.prog[hab] = (y.prog[hab] || 0) + perHour * h;
-  y.accMs += credit;
-}
-
-/** What a collect would give right now (pure): { coins, items:{id:n}, fill:0..1, perHour }. */
-export function yardPreview(state) {
-  const y = ensureYard(state);
-  const items = {};
-  let n = y.n;
-  for (const [hab, v] of Object.entries(y.prog)) {
-    const table = yardItemTable(state, hab);
-    for (let k = Math.floor(v + 1e-9); k > 0 && table.length; k--) { const id = table[n++ % table.length]; items[id] = (items[id] || 0) + 1; }
+  for (const pet of state.pets) {   // (a migrated save can arrive with progress >= 1: turn it into held items first)
+    const held = y.byPet[pet.id];
+    if (held && held.prog >= 1 - 1e-9) materialiseItems(state, pet, held);
   }
-  return { coins: Math.floor(y.pending + 1e-9), items, fill: clamp(y.accMs / YARD_CAP_MS, 0, 1), perHour: yardRates(state).coins };
+  if (dt <= 0) return;
+  for (const pet of state.pets) {
+    const o = yardOutput(pet);
+    if (o.coins <= 0) continue;
+    const g = giftEntry(y, pet.id);
+    const credit = Math.min(dt, Math.max(0, YARD_CAP_MS - g.ms));
+    if (credit <= 0) continue;
+    const h = credit / HOUR;
+    g.c += o.coins * h;
+    g.prog += o.items * h;
+    g.ms += credit;
+    materialiseItems(state, pet, g);
+  }
 }
 
-/** Collects everything the yard has stored. Not limited by the bond daily cap. */
+const countItems = items => Object.values(items).reduce((a, b) => a + b, 0);
+
+/** What tapping this pet would give right now (pure read): { coins, items, itemCount, fill:0..1, full, has }. */
+export function petGift(state, petId) {
+  const g = state.yard && state.yard.byPet && state.yard.byPet[petId];
+  if (!isPlain(g)) return { coins: 0, items: {}, itemCount: 0, fill: 0, full: false, has: false };
+  const coins = goodNum(g.c) ? Math.floor(g.c + 1e-9) : 0;
+  const items = {};
+  if (isPlain(g.items)) for (const [id, c] of Object.entries(g.items)) if (goodNum(c) && c > 0) items[id] = c;
+  const itemCount = countItems(items);
+  const ms = goodNum(g.ms) ? Math.min(g.ms, YARD_CAP_MS) : 0;
+  return {
+    coins, items, itemCount, fill: clamp(ms / YARD_CAP_MS, 0, 1), full: ms >= YARD_CAP_MS - 1, has: coins >= 1 || itemCount > 0,
+    big: itemCount > 0 || (coins >= 1 && ms >= HOUR),   // worth a 🎁 over the pet in 3D: an item, or 1 h+ of its own production
+  };
+}
+
+/** Aggregate of every pet's gift (pure): { coins, items:{id:n}, fill (fullest pet), perHour, pets (with a gift), fullPets }. */
+export function yardPreview(state) {
+  const items = {};
+  let coins = 0, fill = 0, pets = 0, fullPets = 0;
+  for (const pet of state.pets) {
+    const g = petGift(state, pet.id);
+    if (!g.has) continue;
+    pets++;
+    if (g.full) fullPets++;
+    coins += g.coins;
+    fill = Math.max(fill, g.fill);
+    for (const [id, c] of Object.entries(g.items)) items[id] = (items[id] || 0) + c;
+  }
+  return { coins, items, fill, perHour: yardRates(state).coins, pets, fullPets };
+}
+
+/** Moves one pet's stored gift into the player's wallet / bag. Returns { coins, items } (nothing when empty). */
+function takeGift(state, y, petId) {
+  const g = giftEntry(y, petId);
+  const coins = Math.floor(g.c + 1e-9);
+  const items = { ...g.items };
+  if (coins <= 0 && !countItems(items)) return { coins: 0, items: {} };
+  if (coins > 0) { addCoins(state, coins); g.c = Math.max(0, g.c - coins); }
+  for (const [id, c] of Object.entries(items)) addItem(state, id, c);
+  g.items = {};
+  g.ms = 0;
+  return { coins, items };
+}
+
+const giftParts = (coins, items) => {
+  const parts = [];
+  if (coins > 0) parts.push(`🪙 ${coins}`);
+  for (const [id, c] of Object.entries(items)) { const it = getItem(id); if (it) parts.push(`${it.emoji} ${it.nameTh}${c > 1 ? ` ×${c}` : ''}`); }
+  return parts.join(', ');
+};
+
+/** Collects ONE pet's gift (tap on the pet). Not limited by the bond daily cap. */
+export function collectPetGift(state, petId) {
+  const pet = getPet(state, petId);
+  if (!pet) return fail('ไม่พบน้องตัวนี้');
+  const y = ensureYard(state);
+  const { coins, items } = takeGift(state, y, petId);
+  if (coins <= 0 && !countItems(items)) return fail(`${nong(pet)}ยังไม่มีของขวัญ รอสักครู่นะ`);
+  bumpStat(state, 'yardCollected');
+  return { ok: true, msg: `🎁 ${nong(pet)} ให้ของขวัญ: ${giftParts(coins, items)}`, petId, coins, items };
+}
+
+/** Collects every pet's gift at once (the "🎁 N" chip). */
 export function collectYard(state) {
   const y = ensureYard(state);
-  const pv = yardPreview(state);
-  const itemCount = Object.values(pv.items).reduce((a, b) => a + b, 0);
-  if (pv.coins <= 0 && itemCount <= 0) return fail('ยังไม่มีของขวัญจากลาน รอสักครู่นะ');
-  // materialise the items (same rotation as the preview) and keep the fractional remainders
   const got = {};
-  for (const [hab, v] of Object.entries(y.prog)) {
-    const table = yardItemTable(state, hab);
-    const whole = Math.floor(v + 1e-9);
-    if (!table.length) continue;
-    for (let k = 0; k < whole; k++) { const id = table[y.n++ % table.length]; got[id] = (got[id] || 0) + 1; }
-    y.prog[hab] = Math.max(0, v - whole);
+  let coins = 0, pets = 0;
+  const gifts = [];
+  for (const pet of state.pets) {
+    if (!petGift(state, pet.id).has) continue;
+    const r = takeGift(state, y, pet.id);
+    if (r.coins <= 0 && !countItems(r.items)) continue;
+    pets++;
+    coins += r.coins;
+    gifts.push({ petId: pet.id, coins: r.coins, items: r.items });
+    for (const [id, c] of Object.entries(r.items)) got[id] = (got[id] || 0) + c;
   }
-  if (pv.coins > 0) { addCoins(state, pv.coins); y.pending = Math.max(0, y.pending - pv.coins); }
-  for (const [id, c] of Object.entries(got)) addItem(state, id, c);
-  y.accMs = 0;
+  if (!pets) return fail('ยังไม่มีของขวัญจากน้องๆ รอสักครู่นะ');
   bumpStat(state, 'yardCollected');
-  const parts = [];
-  if (pv.coins > 0) parts.push(`🪙 ${pv.coins}`);
-  for (const [id, c] of Object.entries(got)) { const it = getItem(id); parts.push(`${it.emoji} ${it.nameTh}${c > 1 ? ` ×${c}` : ''}`); }
-  const msg = `🎁 ของขวัญจากลาน: ${parts.join(', ')}`;
+  const msg = `🎁 ของขวัญจากน้อง ${pets} ตัว: ${giftParts(coins, got)}`;
   addLog(state, msg);
-  return { ok: true, msg, coins: pv.coins, items: got };
+  return { ok: true, msg, coins, items: got, pets, gifts };
 }
 
 /** "ประจำแปลง #N" + what the stationed pet is doing right now (for the yard sheet). null when not stationed. */
@@ -397,6 +524,7 @@ export function tickPets(state, dtMs, { offline = false } = {}) {
   if (dt > 0) for (const pet of state.pets) tickOnePet(pet, dt, offline);
   if (dt > 0) tickYard(state, dt);
   tickIncubator(state, now());
+  tickPostcards(state, offline);
 }
 
 function tirelessFactor(pet) {
@@ -490,7 +618,9 @@ export function hatchReady(state, slotIndex) {
   const slot = state.incubator[slotIndex];
   if (!slot) return fail('ไม่พบไข่ในช่องนี้');
   if (now() < slot.readyAt) return fail('ไข่ยังไม่พร้อมฟัก');
-  if (state.pets.length >= state.barnCapacity) return fail('ลานเต็มแล้ว! ขยายลานหรือปล่อยน้องบางตัวก่อน');
+  // A full yard hatches into the nursery (CONTRACT_V7 §5); only "yard AND nursery full" blocks it.
+  const toNursery = state.pets.length >= state.barnCapacity;
+  if (toNursery && ensureNursery(state).length >= NURSERY_SLOTS) return fail('เปลเต็มแล้ว! ลานก็เต็มด้วย — ขยายลาน หรือส่งน้องบางตัวไปบ้านใหม่ก่อนนะ');
   const egg = getEgg(slot.eggId);
   const species = egg && pickSpeciesForHabitat(egg.habitat);
   if (!species) return fail('ไข่ใบนี้ฟักไม่ได้');
@@ -515,11 +645,12 @@ export function hatchReady(state, slotIndex) {
     bondDay: null,
     bondToday: 0,
     giftDay: null,
-    status: 'idle',
+    status: toNursery ? 'nursery' : 'idle',
     task: null,
+    station: null,
     bornAt: t,
   };
-  state.pets.push(pet);
+  if (toNursery) state.nursery.push({ pet, hatchedAt: t }); else state.pets.push(pet);
   state.incubator.splice(slotIndex, 1);
 
   const entry = state.collection[species.id] || { owned: 0, shiny: false };
@@ -531,9 +662,10 @@ export function hatchReady(state, slotIndex) {
   bumpStat(state, 'hatched');
   const rar = RARITIES[species.rarity];
   const msg = `${pet.shiny ? '✨' : '🐣'} ฟักออกมาเป็น ${species.emoji} ${species.nameTh}` +
-    `${pet.shiny ? ' ร่างไชนี่!' : ''} (${rar.nameTh}) ชื่อ "${pet.nickname}"`;
+    `${pet.shiny ? ' ร่างไชนี่!' : ''} (${rar.nameTh}) ชื่อ "${pet.nickname}"` +
+    `${toNursery ? ' — ลานเต็ม เลยพักในเปลอนุบาล 👶' : ''}`;
   addLog(state, msg);
-  return { ok: true, msg, pet };
+  return { ok: true, msg, pet, nursery: toNursery };
 }
 
 // ── Care actions ────────────────────────────────────────────────────────────
@@ -724,18 +856,250 @@ export function renamePet(state, petId, name) {
   return ok(`✏️ ตั้งชื่อใหม่เป็น "${clean}" แล้ว`);
 }
 
-export function releasePet(state, petId) {
+// ── เปลอนุบาล + ส่งไปบ้านใหม่ + โปสการ์ด + ตัวช่วยเปรียบเทียบ (CONTRACT_V7 §5) ──────────────────
+export { NURSERY_SLOTS };
+export const POSTCARD_MAX = POSTCARDS_MAX;
+export const POSTCARD_MIN_MS = 12 * HOUR;
+export const POSTCARD_SPAN_MS = 24 * HOUR;   // a postcard arrives 12 .. 36 h after the pet left
+
+/** state.nursery with defaults in code: [{ pet, hatchedAt }], broken entries dropped. */
+export function ensureNursery(state) {
+  if (!Array.isArray(state.nursery)) state.nursery = [];
+  const n = state.nursery;
+  for (let i = n.length - 1; i >= 0; i--) {
+    if (!isPlain(n[i]) || !isPlain(n[i].pet) || !n[i].pet.id) n.splice(i, 1);
+    else n[i].pet.status = 'nursery';
+  }
+  return n;
+}
+
+/** The babies in the nursery (read only, never mutates). */
+export function nurseryPets(state) {
+  return (Array.isArray(state.nursery) ? state.nursery : []).map(e => e && e.pet).filter(p => isPlain(p) && p.id);
+}
+
+export function getNurseryPet(state, petId) {
+  return nurseryPets(state).find(p => p.id === petId) || null;
+}
+
+/** A pet wherever it lives: { pet, where: 'yard' | 'nursery' } or null. */
+export function findPet(state, petId) {
   const pet = getPet(state, petId);
-  if (!pet) return fail('ไม่พบน้องตัวนี้');
-  if (pet.status === 'working' || pet.status === 'expedition') return fail('น้องกำลังทำงานอยู่ ปล่อยไม่ได้');
+  if (pet) return { pet, where: 'yard' };
+  const baby = getNurseryPet(state, petId);
+  return baby ? { pet: baby, where: 'nursery' } : null;
+}
+
+/** How many pets of a species the player owns (yard + nursery). */
+export function speciesCount(state, speciesId) {
+  return state.pets.filter(p => p.speciesId === speciesId).length + nurseryPets(state).filter(p => p.speciesId === speciesId).length;
+}
+
+/** Drops a pet's station pin (plot.stations <-> pet.station) when it leaves the yard. */
+function clearStationOf(state, pet) {
+  const st = pet.station;
+  if (st && Number.isFinite(st.plotIndex)) {
+    const plot = state.plots && state.plots[st.plotIndex];
+    const slot = Number(st.slot) || 0;
+    if (plot && Array.isArray(plot.stations) && plot.stations[slot] === pet.id) plot.stations[slot] = null;
+  }
+  pet.station = null;
+}
+
+const isBusy = pet => pet.status === 'working' || pet.status === 'expedition';
+
+/** "รับเข้าลาน": a nursery baby moves into the yard (needs a free yard slot). */
+export function adoptFromNursery(state, petId) {
+  const n = ensureNursery(state);
+  const i = n.findIndex(e => e.pet.id === petId);
+  if (i < 0) return fail('ไม่พบน้องในเปลอนุบาล');
+  if (state.pets.length >= state.barnCapacity) return fail('ลานเต็มแล้ว — สลับกับน้องในลาน หรือขยายลานก่อนนะ');
+  const pet = n[i].pet;
+  n.splice(i, 1);
+  pet.status = 'idle';
+  pet.task = null;
+  pet.station = null;
+  state.pets.push(pet);
+  return { ok: true, msg: `🏡 รับ${nong(pet)}เข้าลานแล้ว ยินดีต้อนรับ!`, pet };
+}
+
+/** "สลับกับน้องในลาน…": the baby goes into the yard, the chosen yard pet takes its crib (its gifts are collected first). */
+export function swapWithNursery(state, nurseryPetId, yardPetId) {
+  const n = ensureNursery(state);
+  const i = n.findIndex(e => e.pet.id === nurseryPetId);
+  if (i < 0) return fail('ไม่พบน้องในเปลอนุบาล');
+  const out = getPet(state, yardPetId);
+  if (!out) return fail('ไม่พบน้องในลาน');
+  if (isBusy(out)) return fail('น้องกำลังทำงานอยู่ สลับไม่ได้');
+  const baby = n[i].pet;
+  const y = ensureYard(state);
+  const gift = takeGift(state, y, out.id);
+  delete y.byPet[out.id];
+  clearStationOf(state, out);
+  state.pets.splice(state.pets.indexOf(out), 1);
+  out.status = 'nursery';
+  out.task = null;
+  n[i] = { pet: out, hatchedAt: now() };
+  baby.status = 'idle';
+  baby.task = null;
+  baby.station = null;
+  state.pets.push(baby);
+  const got = giftParts(gift.coins, gift.items);
+  return { ok: true, msg: `🔄 ${nong(baby)} เข้าลานแล้ว ส่วน${nong(out)} ไปนอนเปลแทน${got ? ` (เก็บของขวัญไว้ให้แล้ว ${got})` : ''}`, pet: baby, swapped: out };
+}
+
+/** Stardust a pet is worth when it moves to a new home. */
+export function rehomeDust(pet) {
   const sp = getSpecies(pet.speciesId);
-  const dust = ((sp && STARDUST_BY_RARITY[sp.rarity]) || 1) * (pet.shiny ? 2 : 1);
+  return ((sp && STARDUST_BY_RARITY[sp.rarity]) || 1) * (pet.shiny ? 2 : 1);
+}
+
+/**
+ * "ส่งไปบ้านใหม่ 🏡💌" (was: release). Yard pets and nursery babies; working / expedition pets cannot go.
+ * Gifts the pet still holds are collected first. Reward = RELEASE_COINS + stardust (shiny x2). A postcard follows 12-36 h later.
+ */
+export function rehomePet(state, petId) {
+  const found = findPet(state, petId);
+  if (!found) return fail('ไม่พบน้องตัวนี้');
+  const { pet, where } = found;
+  if (isBusy(pet)) return fail('น้องกำลังทำงานอยู่ ส่งไปบ้านใหม่ไม่ได้');
+  const dust = rehomeDust(pet);
   const label = nong(pet);
-  state.pets.splice(state.pets.indexOf(pet), 1);
+  let gift = { coins: 0, items: {} };
+  if (where === 'yard') {
+    const y = ensureYard(state);
+    gift = takeGift(state, y, pet.id);
+    delete y.byPet[pet.id];
+    clearStationOf(state, pet);
+    state.pets.splice(state.pets.indexOf(pet), 1);
+  } else {
+    const n = ensureNursery(state);
+    n.splice(n.findIndex(e => e.pet.id === pet.id), 1);
+  }
   addCoins(state, RELEASE_COINS);
   addStardust(state, dust);
   bumpStat(state, 'released');
-  return ok(`👋 ปล่อย${label}กลับสู่ธรรมชาติแล้ว (ได้รับ ${RELEASE_COINS} 🪙 และผงดาว ${dust} ✨)`);
+  schedulePostcard(state, pet);
+  const got = giftParts(gift.coins, gift.items);
+  return { ok: true, msg: `💌 ส่ง${label}ไปบ้านใหม่แล้ว 🏡 (ได้รับ ${RELEASE_COINS} 🪙 และผงดาว ${dust} ✨${got ? ` + ของขวัญที่ค้างอยู่ ${got}` : ''}) เดี๋ยวน้องอาจส่งโปสการ์ดมานะ`, dust, gift };
+}
+
+/** Old name, kept for callers that have not been renamed yet. */
+export function releasePet(state, petId) {
+  return rehomePet(state, petId);
+}
+
+// ── Postcards ───────────────────────────────────────────────────────────────
+// {name} = the pet's name, {species} = its species. No reward, only warmth.
+export const POSTCARD_TEMPLATES = [
+  'สวัสดีจ้า! {name} อยู่บ้านใหม่สบายดี มีทุ่งหญ้ากว้างๆ ให้วิ่งเล่นด้วย 🌿',
+  '{name} คิดถึงลานของคุณนิดนึง แต่ที่นี่มีขนมอร่อยเยอะมาก ขอบคุณที่ดูแลนะ 💕',
+  'วันนี้ {name} ได้เพื่อนใหม่เป็น{species}อีกตัว เล่นกันสนุกสุดๆ 🐾',
+  'บ้านใหม่ของ {name} มีแดดอุ่นๆ ทุกเช้า หลับสบายทุกคืนเลย 😴',
+  'ฝากบอกทุกคนที่ลานว่า {name} สบายดี อ้วนขึ้นนิดหน่อยด้วยล่ะ 😋',
+  '{name} เจอสระน้ำเล็กๆ ข้างบ้านใหม่ ดีใจมากกก 💦',
+  'ที่นี่มีคนใจดีเอาอาหารมาให้ {name} ทุกวัน อิ่มจนพุงกางเลย 🍽️',
+  '{name} นอนฝันถึงคุณด้วยนะ ตื่นมาก็ยังยิ้มอยู่เลย 🌙',
+  'ขอบคุณที่ให้ {name} ได้เริ่มต้นใหม่ในที่ที่ใช่ 🏡',
+  '{name} ฝึกท่าเด็ดมาใหม่ ถ้าได้เจอกันจะโชว์ให้ดูนะ ✨',
+  'วันนี้ฝนตก {name} นั่งดูหยดน้ำที่หน้าต่างอย่างมีความสุข 🌧️',
+  '{name} ({species}) ส่งกอดมาให้ยกใหญ่ 🤗',
+  'เพื่อนบ้านใหม่ของ {name} ใจดีมาก ชวนเล่นซ่อนแอบทุกเย็น 🙈',
+  '{name} ได้ที่นอนนุ่มนิ่มตัวใหม่ อยากให้คุณได้นอนด้วยจัง 🛏️',
+  'ตอนนี้ {name} เป็นดาวเด่นของหมู่บ้านไปแล้ว ใครๆ ก็เอ็นดู 🌟',
+  'มีผีเสื้อสีสวยมาเกาะบนหัว {name} ด้วยล่ะ 🦋',
+  '{name} เก็บดอกไม้ป่าไว้ให้คุณหนึ่งดอก (ฝากลมพัดไปให้แล้วนะ) 🌼',
+  '{species}อย่าง {name} มีความสุขมาก ไม่ต้องห่วงนะ 💖',
+  'วันนี้ {name} วิ่งเร็วกว่าเมื่อวานนิดนึง! ภูมิใจสุดๆ 🏃',
+  '{name} คิดถึงเสียงทักทายตอนเช้า ขอส่งยิ้มกลับไปให้ 😊',
+  'ที่บ้านใหม่มีต้นไม้ใหญ่ให้นอนเล่น {name} ชอบที่สุดเลย 🌳',
+  'ฟ้าใสมากเลย {name} เลยอยากเขียนมาบอกว่าสบายดี ☁️',
+  '{name} เก็บขนมไว้ให้คุณด้วย ถ้ามาเที่ยวบ้านนี้ก็แวะมานะ 🍪',
+  'ขอบคุณสำหรับความทรงจำดีๆ ที่ลานนะ จาก {name} 💌',
+  'ที่นี่ดาวเต็มฟ้าเลย {name} นับได้ถึงสิบดวงแล้ว ⭐',
+];
+
+/** Queues the postcard of a pet that moved to a new home. `at` is in the future: it only counts once now() >= at. */
+function schedulePostcard(state, pet) {
+  const sp = getSpecies(pet.speciesId);
+  const name = petName(pet);
+  const tpl = POSTCARD_TEMPLATES[hashId(`${pet.id}:card`) % POSTCARD_TEMPLATES.length];
+  const delay = POSTCARD_MIN_MS + (hashId(`${pet.id}:delay`) % (POSTCARD_SPAN_MS + 1));
+  if (!Array.isArray(state.postcards)) state.postcards = [];
+  state.postcards.push({
+    id: uid(), petName: name, speciesId: pet.speciesId,
+    text: tpl.split('{name}').join(name).split('{species}').join(sp ? sp.nameTh : 'น้อง'),
+    at: now() + delay, read: false, notified: false,
+  });
+  state.postcards.sort((a, b) => a.at - b.at);
+  while (state.postcards.length > POSTCARD_MAX) state.postcards.shift();
+}
+
+/** Postcards that have arrived, newest first. */
+export function arrivedPostcards(state, t = now()) {
+  return (Array.isArray(state.postcards) ? state.postcards : []).filter(c => isPlain(c) && c.at <= t).sort((a, b) => b.at - a.at);
+}
+
+export function unreadPostcardCount(state, t = now()) {
+  return arrivedPostcards(state, t).filter(c => !c.read).length;
+}
+
+export function markPostcardRead(state, id) {
+  const c = (state.postcards || []).find(x => x && x.id === id);
+  if (c) c.read = true;
+  return !!c;
+}
+
+/** A toast the first time a postcard has arrived (silent during offline catch-up; the 💌 badge still shows). */
+function tickPostcards(state, offline) {
+  const list = state.postcards;
+  if (!Array.isArray(list) || !list.length) return;
+  const t = now();
+  for (const c of list) {
+    if (!isPlain(c) || c.notified || c.at > t) continue;
+    c.notified = true;
+    if (!offline) notify(`💌 ได้รับโปสการ์ดจาก${c.petName}!`, 'success');
+  }
+}
+
+// ── Compare helper (swap + rehome pickers) ──────────────────────────────────
+/** One number for "how useful is this pet": best-job work power x10 (stage, mood, personality, shiny; no trait). */
+export function petPower(pet) {
+  const sp = getSpecies(pet.speciesId);
+  return Math.round(getWorkPower(pet, sp ? Object.keys(sp.jobs) : []) * 10);
+}
+
+const RARITY_RANK = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 };
+
+/**
+ * Candidates for "who should move on / swap": every pet (or only the yard's when scope = 'yard'), each with what a
+ * player weighs: emoji, name, stage, power, hearts, shiny, station, rarity and `dup` = how many of its species are owned
+ * (yard + nursery, the baby included). Sorted so the likely choices come first: duplicates, lowest power, fewest hearts,
+ * not shiny, not stationed. Pets that cannot go (working / expedition) sink to the end with a reason. Never auto-selects.
+ */
+export function compareCandidates(state, { scope = 'all', excludeId = null } = {}) {
+  const pool = [...state.pets.map(pet => ({ pet, where: 'yard' }))];
+  if (scope !== 'yard') pool.push(...nurseryPets(state).map(pet => ({ pet, where: 'nursery' })));
+  const rows = pool.filter(r => r.pet.id !== excludeId).map(({ pet, where }) => {
+    const sp = getSpecies(pet.speciesId);
+    const dup = speciesCount(state, pet.speciesId);
+    const busy = isBusy(pet);
+    const st = pet.station && Number.isFinite(pet.station.plotIndex) ? `ประจำแปลง #${pet.station.plotIndex + 1}` : null;
+    return {
+      id: pet.id, pet, where, emoji: petEmoji(pet), name: petName(pet), stage: pet.stage,
+      stageName: (STAGES[pet.stage] || STAGES[0]).nameTh, power: petPower(pet), hearts: bondHearts(pet),
+      shiny: !!pet.shiny, station: st, rarity: sp ? sp.rarity : 'common', rarityName: sp ? RARITIES[sp.rarity].nameTh : '',
+      dup, suggest: dup > 1 && !pet.shiny && !busy, eligible: !busy,
+      reason: busy ? (pet.status === 'expedition' ? 'ออกสำรวจอยู่' : 'กำลังทำงานอยู่') : '',
+    };
+  });
+  const key = r => [r.eligible ? 0 : 1, r.dup > 1 ? 0 : 1, r.power, r.hearts, r.shiny ? 1 : 0, r.station ? 1 : 0, RARITY_RANK[r.rarity] || 0];
+  rows.sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return rows;
 }
 
 // ── Stardust ────────────────────────────────────────────────────────────────

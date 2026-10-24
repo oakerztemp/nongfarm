@@ -10,10 +10,11 @@
 //   plot.stations    - petId pinned (pin) per slot index 0..2, kept across crops (V6); pet.station = { plotIndex, slot }
 import { now, randInt, pickWeighted, uid, addLog, notify, formatDuration, todayKey } from './util.js';
 import { addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, bumpStat, repairStations as repairStationLinks } from './state.js';
-import { canWork, getWorkPower, traitEffect, addBond, addPetXp, getPet, petEmoji, petName } from './pets.js';
+import { canWork, getWorkPower, bondHearts, traitEffect, addBond, addPetXp, getPet, petEmoji, petName } from './pets.js';
 import { CROPS, getCrop } from './data/crops.js';
 import { EGGS } from './data/eggs.js';
 import { getItem } from './data/items.js';
+import { DECOR, getDecor } from './data/decor.js';
 
 const MIN = 60 * 1000;
 export const MAX_PLOTS = 16;
@@ -38,10 +39,11 @@ export const ZONES = [
     id: 'forest', emoji: '🌲', nameTh: 'ป่าใหญ่', job: 'forage', durationMs: 5 * MIN, unlockLevel: 1,
     baseRolls: 1, xp: 2, petXp: 3, eggChance: 0.03, eggs: ['egg_forest'], desc: 'เก็บเห็ด เบอร์รี และสมุนไพรในป่า',
     loot: [
-      { itemId: 'forage_mushroom', weight: 300, min: 1, max: 2 },
-      { itemId: 'forage_berry',    weight: 280, min: 1, max: 3 },
-      { itemId: 'forage_herb',     weight: 200, min: 1, max: 2 },
+      { itemId: 'forage_mushroom', weight: 270, min: 1, max: 2 },
+      { itemId: 'forage_berry',    weight: 260, min: 1, max: 3 },
+      { itemId: 'forage_herb',     weight: 180, min: 1, max: 2 },
       { itemId: 'forage_wood',     weight: 160, min: 1, max: 2 },
+      { itemId: 'forage_stone',    weight: 100, min: 1, max: 2 },   // V7: early yard upgrades need stone before the mountain (Lv.5)
       { itemId: 'forage_bone',     weight: 50,  min: 1, max: 1 },
       { itemId: 'forage_honey',    weight: 50,  min: 1, max: 1 },
       { itemId: 'forage_feather',  weight: 30,  min: 1, max: 1 },
@@ -419,6 +421,13 @@ export function plotEtaMs(state, plot) {
   if (!crop || isReady(plot)) return 0;
   const left = 1 - (Number(plot.progress) || 0);
   return Math.max(0, left * crop.growMs / plotSpeed(state, plot));
+}
+
+/** Pet picker order (V7 §6): best power for the slot first; equal power -> more bond hearts first; then the original order. */
+export function sortPetsForSlot(pets, powerOf) {
+  return (pets || []).map((pet, i) => ({ pet, i, p: Number(powerOf(pet)) || 0, h: bondHearts(pet) }))
+    .sort((a, b) => (b.p - a.p) || (b.h - a.h) || (a.i - b.i))
+    .map(x => x.pet);
 }
 
 export function formatRewards(rewards) {
@@ -1085,12 +1094,144 @@ export function yardUpgradePreview(state) {
   return `เพิ่มช่องเลี้ยงอีก 1${after ? ` · อีก ${left} ช่องลานจะเป็น "${after.nameTh}": ${after.adds}` : ''}`;
 }
 
+// ---- ขยายลานด้วยวัสดุ (V7 §3): coins + materials gathered on expeditions. Materials cannot be bought.
+// Every slot needs wood + stone (more per tier); the slot that enters a new tier also needs a themed item.
+export const SLOT_MATERIALS = {
+  S:  { forage_wood: 1, forage_stone: 1 },
+  M:  { forage_wood: 4, forage_stone: 3 },
+  L:  { forage_wood: 6, forage_stone: 5 },
+  XL: { forage_wood: 8, forage_stone: 7 },
+};
+export const TIER_ENTRY_ITEMS = {
+  M:  { forage_shell: 1 },    // 🏞️ pond
+  L:  { forage_berry: 4 },    // 🌷 flowers (or 1 honey, see below)
+  XL: { forage_gem: 1 },      // ⛰️ hill
+};
+const L_ENTRY_HONEY = { forage_honey: 1 };
+
+/**
+ * What the next yard slot costs: { coins, items, enters, alt? } or null at MAX_BARN.
+ * `enters` = id of the tier this slot opens (null mid-tier). Entering L takes 4 berries OR 1 honey: `items` holds the
+ * one the player can pay (honey only when berries are short and a honey is in the bag), `alt` the other option.
+ */
+export function barnUpgradeCost(state) {
+  const coins = barnUpgradePrice(state);
+  if (coins == null) return null;
+  const cap = Number(state.barnCapacity) || START_BARN;
+  const cur = yardTierOf(cap);
+  const next = yardTierOf(cap + 1);
+  const items = { ...SLOT_MATERIALS[cur.id] };
+  const cost = { coins, items, enters: next.id !== cur.id ? next.id : null };
+  if (cost.enters) {
+    const entry = { ...TIER_ENTRY_ITEMS[cost.enters] };
+    if (cost.enters === 'L') {
+      const [[bid, bn]] = Object.entries(entry);
+      const useHoney = countItem(state, bid) < bn && countItem(state, 'forage_honey') >= 1;
+      Object.assign(items, useHoney ? L_ENTRY_HONEY : entry);
+      cost.alt = useHoney ? entry : L_ENTRY_HONEY;
+    } else {
+      Object.assign(items, entry);
+    }
+  }
+  return cost;
+}
+
+/** For the shop card: one row per needed material ({ itemId, emoji, nameTh, need, have, ok }) + whether everything is there. */
+export function barnUpgradeStatus(state) {
+  const cost = barnUpgradeCost(state);
+  if (!cost) return null;
+  const rows = Object.entries(cost.items).map(([itemId, need]) => {
+    const it = getItem(itemId);
+    const have = countItem(state, itemId);
+    return { itemId, emoji: it ? it.emoji : '❔', nameTh: it ? it.nameTh : itemId, need, have, ok: have >= need };
+  });
+  const coinsOk = (Number(state.player && state.player.coins) || 0) >= cost.coins;
+  const itemsOk = rows.every(r => r.ok);
+  return { cost, rows, coinsOk, itemsOk, ok: coinsOk && itemsOk };
+}
+
+const itemsText = items => Object.entries(items).map(([id, n]) => { const it = getItem(id); return `${it ? it.emoji : ''} ${it ? it.nameTh : id} x${n}`; }).join(', ');
+
 export function upgradeBarn(state) {
-  const price = barnUpgradePrice(state);
-  if (price == null) return fail(`ลานใหญ่สุดแล้ว (${MAX_BARN} ช่อง)`);
-  if (!spendCoins(state, price)) return fail(`เหรียญไม่พอ (ต้องใช้ ${price} 🪙)`);
+  const cost = barnUpgradeCost(state);
+  if (!cost) return fail(`ลานใหญ่สุดแล้ว (${MAX_BARN} ช่อง)`);
+  const missing = {};
+  for (const [id, n] of Object.entries(cost.items)) if (countItem(state, id) < n) missing[id] = n - countItem(state, id);
+  if (Object.keys(missing).length) return fail(`ยังขาดวัสดุ: ${itemsText(missing)} (หาได้จากการสำรวจ)`);
+  if (!spendCoins(state, cost.coins)) return fail(`เหรียญไม่พอ (ต้องใช้ ${cost.coins} 🪙)`);
+  for (const [id, n] of Object.entries(cost.items)) removeItem(state, id, n);
   state.barnCapacity = (Number(state.barnCapacity) || START_BARN) + 1;
-  return done(`ขยายลานแล้ว! จุได้ ${state.barnCapacity} ตัว (-${price} 🪙)`);
+  return done(`ขยายลานแล้ว! จุได้ ${state.barnCapacity} ตัว (-${cost.coins} 🪙, ${itemsText(cost.items)})`);
+}
+
+// ---------------------------------------------------------------- ตกแต่งลาน (V7 §3)
+
+export const DECOR_SPOTS = { S: 2, M: 4, L: 6, XL: 8 };   // placeable spots per yard tier (world.decorSpots has the same count)
+export { DECOR, getDecor };
+
+export function decorSpotCount(state) {
+  return DECOR_SPOTS[yardTierOf(Number(state.barnCapacity) || START_BARN).id];
+}
+
+// state.decor / state.inventoryDecor come from state v5; default them defensively so older in-memory states still work.
+function decorLists(state) {
+  if (!Array.isArray(state.decor)) state.decor = [];
+  if (!state.inventoryDecor || typeof state.inventoryDecor !== 'object') state.inventoryDecor = {};
+  return state;
+}
+
+/** Can the player build this decor right now? { ok, missing: { itemId: n }, coinsShort } */
+export function decorBuildStatus(state, decorId) {
+  const d = getDecor(decorId);
+  if (!d) return { ok: false, missing: {}, coinsShort: 0 };
+  const missing = {};
+  for (const [id, n] of Object.entries(d.items)) if (countItem(state, id) < n) missing[id] = n - countItem(state, id);
+  const coinsShort = Math.max(0, d.coins - (Number(state.player && state.player.coins) || 0));
+  return { ok: !Object.keys(missing).length && !coinsShort, missing, coinsShort };
+}
+
+export function buildDecor(state, decorId) {
+  const d = getDecor(decorId);
+  if (!d) return fail('ไม่รู้จักของตกแต่งนี้');
+  const st = decorBuildStatus(state, decorId);
+  if (Object.keys(st.missing).length) return fail(`ยังขาดวัสดุ: ${itemsText(st.missing)} (หาได้จากการสำรวจ)`);
+  if (st.coinsShort) return fail(`เหรียญไม่พอ (ต้องใช้ ${d.coins} 🪙)`);
+  spendCoins(state, d.coins);
+  for (const [id, n] of Object.entries(d.items)) removeItem(state, id, n);
+  decorLists(state);
+  state.inventoryDecor[d.id] = (state.inventoryDecor[d.id] || 0) + 1;
+  return done(`สร้าง ${d.emoji} ${d.nameTh} แล้ว! (-${d.coins} 🪙) ไปวางที่ลานได้เลย`);
+}
+
+/** Put a built decor on spot `spot` (0..spots-1 of the current tier). */
+export function placeDecor(state, decorId, spot) {
+  const d = getDecor(decorId);
+  if (!d) return fail('ไม่รู้จักของตกแต่งนี้');
+  decorLists(state);
+  const spots = decorSpotCount(state);
+  if (!Number.isInteger(spot) || spot < 0 || spot >= spots) return fail(`ลานนี้วางของตกแต่งได้ ${spots} จุด`);
+  if (state.decor.some(x => x.spot === spot)) return fail('จุดนี้มีของตกแต่งอยู่แล้ว');
+  if (!(state.inventoryDecor[d.id] > 0)) return fail(`ยังไม่มี ${d.emoji} ${d.nameTh} ในกระเป๋า — สร้างก่อนนะ`);
+  if (--state.inventoryDecor[d.id] <= 0) delete state.inventoryDecor[d.id];
+  state.decor.push({ id: uid(), decorId: d.id, spot });
+  return done(`วาง ${d.emoji} ${d.nameTh} แล้ว`);
+}
+
+/** Take a placed decor (by its placed id) back into the bag. Nothing is refunded and it cannot be sold. */
+export function removeDecor(state, id) {
+  decorLists(state);
+  const i = state.decor.findIndex(x => x.id === id);
+  if (i < 0) return fail('ไม่พบของตกแต่งชิ้นนี้');
+  const [gone] = state.decor.splice(i, 1);
+  const d = getDecor(gone.decorId);
+  state.inventoryDecor[gone.decorId] = (state.inventoryDecor[gone.decorId] || 0) + 1;
+  return done(`เก็บ ${d ? d.emoji + ' ' + d.nameTh : 'ของตกแต่ง'} กลับเข้ากระเป๋าแล้ว`);
+}
+
+/** Spots 0..n-1 of the current tier with what stands on them: [{ spot, placed: {id, decorId} | null }]. */
+export function decorSpotList(state) {
+  decorLists(state);
+  return Array.from({ length: decorSpotCount(state) }, (_, spot) => ({ spot, placed: state.decor.find(x => x.spot === spot) || null }));
 }
 
 // Incubator slots: 1 -> 3. Price is null when maxed.

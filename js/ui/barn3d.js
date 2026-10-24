@@ -5,7 +5,9 @@
 //   mountBarn3d(host, ctx) -> { setActive(bool), dispose() }
 //
 // ctx (from petsView.js): { run, esc, petSheetHtml(pet, state, mode), foodTrayHtml(state, pet, selectedId),
-//                           openDetails(petId), openEggPicker(), onFatal(err) }
+//                           openDetails(petId), openEggPicker(), onFatal(err),
+//                           nurserySheetHtml(pet, state, opts), nurseryAdopt(id), nurserySwap(id), nurseryRehome(id),
+//                           onHatchBlocked(), revealHatch(pet, toNursery), decor: { available(), openPicker(spot), ... } }
 
 import { getState, subscribe, update } from '../state.js';
 import { morph, now, notify, formatDuration } from '../util.js';
@@ -14,19 +16,19 @@ import { getEgg } from '../data/eggs.js';
 import { getItem } from '../data/items.js';
 import {
   getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop,
-  hatchReady, foodEffect, yardOutput,
+  hatchReady, foodEffect, petGift, yardPreview, collectPetGift, collectYard, nurseryPets, NURSERY_SLOTS,
 } from '../pets.js';
-import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, beginAction, advanceActor, angDiff,
+import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, beginAction, advanceActor, angDiff,
   signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony,
-  configureYard, yardProps, yardTierOf } from '../petBehaviour.js';
-import { createWorld } from '../world3d/engine.js';
+  configureYard, yardProps, yardTierOf, DECOR_USE } from '../petBehaviour.js';
+import { createWorld, mergeStaticParts } from '../world3d/engine.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
 
 const MAX_NESTS = 6;
 const HOLD_AFTER_TAP = 8;    // seconds a patted pet stays put even without the sheet
 const SELECT_HOLD = 1e9;     // while the bottom sheet is open
-const INITIAL_ZOOM = 0.56;
+const INITIAL_ZOOM = 0.85;
 const TAU = Math.PI * 2;
 
 // legendary aura colour per habitat (CONTRACT_V5)
@@ -53,7 +55,10 @@ const isBusyStatus = s => s === 'working' || s === 'expedition';
 export function mountBarn3d(host, ctx) {
   host.innerHTML =
     '<div class="b3-stage"></div>' +
-    '<div class="b3-top"><span class="b3-sign" hidden></span><button type="button" class="b3-egg-btn btn btn-sm" data-b3="put-egg" hidden>🥚 ใส่ไข่</button></div>' +
+    '<div class="b3-top"><span class="b3-sign" hidden></span><div class="b3-top-r">' +
+      '<button type="button" class="b3-chip b3-top-chip" data-b3="collect-all" hidden></button>' +
+      '<button type="button" class="b3-decor-btn btn btn-sm" data-b3="decor-mode" aria-pressed="false" hidden>🎀 ตกแต่ง</button>' +
+      '<button type="button" class="b3-egg-btn btn btn-sm" data-b3="put-egg" hidden>🥚 ใส่ไข่</button></div></div>' +
     '<div class="b3-labels" aria-hidden="true"></div>' +
     '<div class="b3-hint" hidden></div>' +
     '<div class="b3-tray" role="group" aria-label="ถาดอาหาร"></div>' +
@@ -61,6 +66,8 @@ export function mountBarn3d(host, ctx) {
   const stage = host.querySelector('.b3-stage');
   const signEl = host.querySelector('.b3-sign');
   const eggBtn = host.querySelector('.b3-egg-btn');
+  const chipEl = host.querySelector('.b3-chip');
+  const decorBtn = host.querySelector('.b3-decor-btn');
   const labelsEl = host.querySelector('.b3-labels');
   const hintEl = host.querySelector('.b3-hint');
   const trayEl = host.querySelector('.b3-tray');
@@ -133,6 +140,14 @@ export function mountBarn3d(host, ctx) {
   const timers = new Set();
   const labelEls = new Map();     // nest id -> label element
   const htmlCache = new WeakMap();
+  const giftEls = new Map();      // petId -> 🎁 label element (DOM: no draw calls)
+  const cribs = new Map();        // nursery baby id -> crib record
+  let selectedCrib = null;        // nursery baby whose sheet is open
+  let decorMode = false;          // "🎀 ตกแต่ง": glowing spots are tappable
+  const decorInst = new Map();    // placed decor id -> instance
+  const spotActors = new Set();   // ids of the tappable spots
+  const builtProps = new Set();   // yard prop ids already shown (only new ones pop in on an upgrade)
+  const popQueue = [];            // props growing in after an upgrade
 
   const later = (ms, fn) => {
     const id = setTimeout(() => { timers.delete(id); if (!disposed) fn(); }, ms);
@@ -145,7 +160,7 @@ export function mountBarn3d(host, ctx) {
   const hourIsNight = () => { const h = new Date().getHours(); return h >= 18 || h < 6; };
 
   /** Builds the static scenery of the current tier as a few merged / instanced props (<= +15 draw calls at XL). */
-  function buildYardProps(tier) {
+  function buildYardProps(tier, animate = false) {
     try { world.clearProps('yard-'); } catch { /* none yet */ }
     if (lanternMat) { lanternMat.dispose(); lanternMat = null; }
     const geos = [];
@@ -154,7 +169,15 @@ export function mountBarn3d(host, ctx) {
     const sph = (r, ws = 10, hs = 8) => g(new THREE.SphereGeometry(r, ws, hs));
     const box = (w, h, d) => g(new THREE.BoxGeometry(w, h, d));
     const cone = (r, h, seg = 10) => g(new THREE.ConeGeometry(r, h, seg));
-    const merged = (id, parts, pos, obstacle) => world.addMergedProp(`yard-${id}`, parts, { position: pos, obstacle });
+    const merged = (id, parts, pos, obstacle) => {
+      const m = world.addMergedProp(`yard-${id}`, parts, { position: pos, obstacle });
+      if (animate && m && !builtProps.has(id)) { // a prop the new tier adds: it pops up out of the grass
+        m.scale.setScalar(0.001);
+        popQueue.push({ mesh: m, t: -(0.5 + popQueue.length * 0.14), x: pos[0], z: pos[2], sparked: false });
+      }
+      builtProps.add(id);
+      return m;
+    };
     for (const pr of yardProps(tier)) {
       const pos = [pr.x, 0, pr.z];
       const obstacle = { x: pr.x, z: pr.z, r: pr.r };
@@ -233,13 +256,17 @@ export function mountBarn3d(host, ctx) {
     yardTier = tier;
     configureYard(tier);
     world.setYardTier(tier, { animate });
-    buildYardProps(tier);
+    buildYardProps(tier, animate);
     if (nestCount) buildNests(nestCount); // the nest row follows the barn
+    spotSig = '';                         // decor spots of the new tier
     if (!animate) return;
-    world.boost(2500);
+    world.boost(3200);
     const A0 = { x: 0, y: 1.2, z: 0 };
     fx.confetti(world, A0, 60);
     fx.sparkleAt(world, A0);
+    // the fence moves outward into the wild: confetti along the new fence, the wild props sink away (engine)
+    const fr = world.fenceRadius || 6;
+    for (let k = 0; k < 6; k++) later(120 + k * 140, () => fx.confetti(world, { x: Math.cos(k / 6 * TAU + 0.5) * fr, y: 0.7, z: Math.sin(k / 6 * TAU + 0.5) * fr }, 14));
     showBanner(`🎉 ลานกว้างขึ้น! (${old} → ${tier})`);
   }
 
@@ -303,7 +330,8 @@ export function mountBarn3d(host, ctx) {
       stage: pet.stage, poop: pet.poop || 0, bubble: null, bubbleEmoji: '', blinkAt: 1 + Math.random() * 4, blink: 0,
       spawn: null, pose: null, headBase: model.head ? model.head.rotation.clone() : null,
       pinned: false,
-      deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, coinAt: 6 + Math.random() * 20, sparkleAt: 4 + Math.random() * 8,
+      deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, waveAt: 5 + Math.random() * 6, sparkleAt: 4 + Math.random() * 8,
+      gift: null, decorId: null,
     };
     A.partBase = partBases(model.parts);
     if (opts.spawn) A.spawn = { t: 0, dur: opts.spawn.dur || 0.7, arc: opts.spawn.arc ?? 0.5, drop: opts.spawn.drop || 0, from: opts.spawn.from || null };
@@ -364,6 +392,9 @@ export function mountBarn3d(host, ctx) {
   }
 
   function removeActorRec(A) {
+    releaseDecor(A);
+    const ge = giftEls.get(A.id);
+    if (ge) { ge.remove(); giftEls.delete(A.id); }
     undecorate(A);
     dropTag(A.selTag); A.selTag = null;
     fx.clearBubble(world, A.id);
@@ -387,8 +418,10 @@ export function mountBarn3d(host, ctx) {
   const faceCam = A => Math.atan2(camPos.x - A.x, camPos.z - A.z);
 
   function begin(A, act) {
+    releaseDecor(A);
     A.act = beginAction(act);
-    A.last = act.type === 'walkTo' ? 'wander' : act.type;
+    A.last = act.type === 'walkTo' ? 'wander' : act.type === 'decor' ? (act.nap ? 'sleep' : 'decor') : act.type;
+    if (act.type === 'decor') claimDecor(A, act);
   }
 
   function decide(A) {
@@ -397,13 +430,13 @@ export function mountBarn3d(host, ctx) {
     let awake = 0, napping = 0;
     for (const o of actors.values()) {
       if (o.hidden) continue;
-      if (o.pet.status !== 'sleeping') { awake++; if (o !== A && o.act.type === 'sleep' && o.act.nap) napping++; }
+      if (o.pet.status !== 'sleeping') { awake++; if (o !== A && o.act.nap) napping++; }
       if (o === A) continue;
       const tg = (o.act.type === 'wander' || o.act.type === 'approach' || o.act.type === 'walkTo') ? o.act.target : null;
       others.push({ id: o.id, x: o.x, z: o.z, tx: tg ? tg.x : undefined, tz: tg ? tg.z : undefined });
     }
     const napRatio = awake > 0 ? napping / awake : 0;
-    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio }, Math.random, now());
+    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio, decor: decorList(), size: A.model.radius }, Math.random, now());
     if (act.type === 'approach') {
       const o = actors.get(act.otherId);
       if (o) act.target = clampToYard(o.x + (A.x - o.x) * 0.3, o.z + (A.z - o.z) * 0.3);
@@ -441,11 +474,11 @@ export function mountBarn3d(host, ctx) {
     const act = A.act;
     const sleeping = pet.status === 'sleeping';
     const held = A.hold > 0 && act.type !== 'eat' && act.type !== 'no' && act.type !== 'hop' && act.type !== 'play' && act.type !== 'bathe';
-    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type))) begin(A, { type: 'idle', dur: 1 });
+    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type) || act.type === 'decor')) begin(A, { type: 'idle', dur: 1 });
     if (!TRAIL_TYPES.has(A.act.type) && A.trail) stopTrail(A);
     A.scripted = FLY_TYPES.has(A.act.type) || RUN_TYPES.has(A.act.type);
 
-    let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) ? 1 : 0;
+    let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) || (A.act.type === 'decor' && A.act.use === 'nap' && A.act.arrived) ? 1 : 0;
     if (!sleeping && pet.sick) curlTarget = 0;
     // timers, walking and "action finished -> decide()" live in petBehaviour.advanceActor (unit-tested)
     const moving = advanceActor(A, dt, decide).moving;
@@ -474,6 +507,13 @@ export function mountBarn3d(host, ctx) {
         P.sy += b; P.sx -= b * 0.4;
         break;
       }
+      case 'wave': { // a pet whose gift is full waves at you
+        A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 6);
+        const u = A.act.t;
+        P.roll = Math.sin(u * 12) * 0.2; P.hop = Math.max(0, Math.sin(u * 6)) * 0.2; P.wing = Math.sin(u * 16) * 0.5; P.tail = Math.sin(u * 20) * 0.6;
+        break;
+      }
+      case 'decor': decorPose(A, P, t, dt); break;
       case 'sick': {
         P.shake = Math.sin(t * 52) * 0.016;
         P.pitch = 0.1; P.sy = 0.95;
@@ -751,8 +791,8 @@ export function mountBarn3d(host, ctx) {
         if (d >= min) continue;
         const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
         const push = d < hard ? (hard - d) : (soft - d) * Math.min(1, dt * 1.6);
-        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0;
-        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0;
+        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || (a.act.type === 'decor' && a.act.arrived);
+        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || (b.act.type === 'decor' && b.act.arrived);
         if (aFixed && bFixed) continue;
         const wa = aFixed ? 0 : bFixed ? 1 : 0.5, wb = bFixed ? 0 : aFixed ? 1 : 0.5;
         a.x -= nx * push * wa; a.z -= nz * push * wa;
@@ -764,6 +804,10 @@ export function mountBarn3d(host, ctx) {
       }
       for (const n of nests) {
         const d = dist2(a.x, a.z, n.x, n.z), min = 0.55 + ra * 0.5;
+        if (d < min) { const k = d > 1e-4 ? (min - d) / d : 0; a.x += (a.x - n.x) * k; a.z += (a.z - n.z) * k; }
+      }
+      for (const n of cribs.values()) {
+        const d = dist2(a.x, a.z, n.x, n.z), min = 0.7 + ra * 0.5;
         if (d < min) { const k = d > 1e-4 ? (min - d) / d : 0; a.x += (a.x - n.x) * k; a.z += (a.z - n.z) * k; }
       }
       const bd = dist2(a.x, a.z, YARD.bowl.x, YARD.bowl.z);
@@ -850,6 +894,13 @@ export function mountBarn3d(host, ctx) {
       const el = labelEls.get(n.id);
       if (!el || el.hidden) continue;
       const p = world.worldToScreen({ x: n.x, y: 1.05, z: n.z });
+      el.style.transform = `translate(${p.x.toFixed(0)}px, ${p.y.toFixed(0)}px) translate(-50%, -100%)`;
+      el.style.visibility = p.visible ? 'visible' : 'hidden';
+    }
+    for (const [id, el] of giftEls) {
+      const A = actors.get(id);
+      if (!A) continue;
+      const p = world.worldToScreen({ x: A.x, y: A.y + A.model.height + (A.bubble ? 1.0 : 0.6), z: A.z });
       el.style.transform = `translate(${p.x.toFixed(0)}px, ${p.y.toFixed(0)}px) translate(-50%, -100%)`;
       el.style.visibility = p.visible ? 'visible' : 'hidden';
     }
@@ -969,7 +1020,7 @@ export function mountBarn3d(host, ctx) {
       if (!pet.sick && A.act.type === 'sick') decide(A);
       // thought bubbles
       const b = bubbleFor(pet);
-      const napping = A.act.type === 'sleep' && A.act.nap;
+      const napping = !!A.act.nap && (A.act.type === 'sleep' || !!A.act.arrived);
       setBubble(A, b ? b.emoji : napping ? '💤' : '');
     }
     for (const A of [...actors.values()]) {
@@ -984,6 +1035,9 @@ export function mountBarn3d(host, ctx) {
     if (lanternMat) lanternMat.color.set(hourIsNight() ? 0xffd966 : 0xfff1c9);
     syncPoops(state);
     syncNests(state);
+    syncCribs(state);
+    syncGifts(state);
+    syncDecor(state);
     updateNestLabels();
 
     // HUD
@@ -1010,11 +1064,14 @@ export function mountBarn3d(host, ctx) {
     if (armedFood && !(state.inventory[armedFood] > 0)) armedFood = null;
     if (selected && !getPet(state, selected)) selected = null;
     // sheet
-    const pet = selected ? getPet(state, selected) : null;
-    if (pet) {
+    let pet = selected ? getPet(state, selected) : null;
+    const baby = !pet && selectedCrib ? nurseryPets(state).find(p => p.id === selectedCrib) : null;
+    if (selectedCrib && !baby) selectedCrib = null;
+    if (pet || baby) {
+      pet = pet || baby;
       const opening = sheetEl.hidden;
       sheetEl.hidden = false;
-      setHtml(sheetEl, ctx.petSheetHtml(pet, state, sheetMode, { reveal: revealId === pet.id }), true);
+      setHtml(sheetEl, baby ? ctx.nurserySheetHtml(baby, state, { reveal: revealId === baby.id }) : ctx.petSheetHtml(pet, state, sheetMode, { reveal: revealId === pet.id }), true);
       if (opening) {
         prevFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
         sheetEl.tabIndex = -1;
@@ -1040,6 +1097,7 @@ export function mountBarn3d(host, ctx) {
     const eggsOwned = state.incubator.length > 0;
     let hint = '';
     if (armedFood) { const it = getItem(armedFood); hint = `${it ? it.emoji : '🍖'} แตะน้องที่อยากให้กิน`; }
+    else if (decorMode) hint = '🎀 แตะจุดที่เรืองแสงเพื่อวางของตกแต่ง หรือแตะของที่วางไว้เพื่อเปลี่ยน/เก็บ';
     else if (!state.pets.length && !eggsOwned) hint = 'ยังไม่มีน้อง — ใส่ไข่ในรังเพื่อเริ่มฟักได้เลย 🥚';
     else if (!state.pets.length) hint = 'รอไข่ฟักก่อนนะ แล้วจะมีเพื่อนตัวแรกเดินมาหา 🐣';
     hintEl.hidden = !hint;
@@ -1049,7 +1107,7 @@ export function mountBarn3d(host, ctx) {
 
   // ── interactions ───────────────────────────────────────────────────────
   function onTapGround() {
-    if (selected) closeSheet();
+    if (selected || selectedCrib) closeSheet();
   }
 
   function onTap(id) {
@@ -1057,6 +1115,9 @@ export function mountBarn3d(host, ctx) {
     if (id === 'bowl') { notify('🍽️ ถาดอาหาร — เลือกอาหารจากถาดด้านล่าง แล้วแตะน้องที่อยากให้กิน', 'info'); return; }
     if (id.startsWith('nest-')) { onNestTap(Number(id.slice(5))); return; }
     if (id.startsWith('poop-')) { onPoopTap(id); return; }
+    if (id.startsWith('crib-')) { onCribTap(id.slice(5)); return; }
+    if (id.startsWith('spot-')) { openDecorSpot(Number(id.slice(5))); return; }
+    if (id.startsWith('decor-')) { onDecorTap(id.slice(6)); return; }
     if (actors.has(id)) onPetTap(id);
   }
 
@@ -1089,6 +1150,11 @@ export function mountBarn3d(host, ctx) {
     if (!pet || !A) return;
     if (armedFood) { feedWith(petId, armedFood); return; }
     if (hatching && hatching.petId === petId && hatching.phase === 'burst') { revealId = petId; hatching.revealShown = true; endHatch(); }
+    // a pet holding a gift: the tap collects it (hop + coins fly to the counter); the sheet opens on the next tap
+    if (!A.hidden && petGift(state, petId).has) {
+      const g = ctx.run(s => collectPetGift(s, petId));
+      if (g && g.ok) { giftCollected(petId, g.coins, g.items, 0); syncGifts(getState()); return; }
+    }
     const r = ctx.run(s => patPet(s, petId));
     if (r && r.ok) {
       fx.heart(world, headPos(A));
@@ -1100,6 +1166,7 @@ export function mountBarn3d(host, ctx) {
   }
 
   function selectPet(petId) {
+    selectedCrib = null;
     if (selected && selected !== petId) { const o = actors.get(selected); if (o) { o.hold = HOLD_AFTER_TAP; dropTag(o.selTag); o.selTag = null; } }
     if (selected !== petId) revealId = revealId === petId ? petId : null;
     selected = petId;
@@ -1119,6 +1186,7 @@ export function mountBarn3d(host, ctx) {
       if (A) { A.hold = 1.2; dropTag(A.selTag); A.selTag = null; }
     }
     selected = null;
+    selectedCrib = null;
     revealId = null;
     sheetMode = 'main';
     refreshUi();
@@ -1214,8 +1282,12 @@ export function mountBarn3d(host, ctx) {
     const state = getState();
     const n = nests[i];
     if (!n || !n.egg) return;
-    if (state.pets.length >= state.barnCapacity) { ctx.run(s => hatchReady(s, i)); return; } // shows "barn is full"
-    if (selected) closeSheet();
+    if (state.pets.length >= state.barnCapacity && nurseryPets(state).length >= NURSERY_SLOTS) { // yard AND nursery full
+      ctx.run(s => hatchReady(s, i));   // shows "เปลเต็มแล้ว"
+      if (ctx.onHatchBlocked) ctx.onHatchBlocked();
+      return;
+    }
+    if (selected || selectedCrib) closeSheet();
     // The real hatchReady() result decides everything (legendary or not). The newborn is created hidden by sync().
     hatching = { nest: i, t: 0, phase: 'pending', spawning: true, petId: null, legendary: false, msg: '', pet: null, announced: false, revealShown: false };
     let started = false;
@@ -1273,6 +1345,8 @@ export function mountBarn3d(host, ctx) {
     fx.sparkleAt(world, burst);
     if (legend) { later(250, () => fx.sparkleAt(world, burst)); later(550, () => fx.sparkleAt(world, base)); fxo('shake', world, 500, 0.35); }
     else if (h.pet.shiny) later(500, () => fx.sparkleAt(world, base));
+    const crib = h.nurseryPetId && cribs.get(h.nurseryPetId);
+    if (crib) { revealCrib(crib, legend); return; }  // the yard was full: the baby appears in its crib
     const A = h.petId && actors.get(h.petId);
     if (!A) { endHatch(); return; }
     A.hidden = false;
@@ -1367,6 +1441,19 @@ export function mountBarn3d(host, ctx) {
     }
   }
 
+  /** Props the new tier added grow in one after another (outBack), with a sparkle. */
+  function stepPops(dt) {
+    for (let i = popQueue.length - 1; i >= 0; i--) {
+      const q = popQueue[i];
+      q.t += dt;
+      if (q.t < 0) continue;
+      if (!q.sparked) { q.sparked = true; fxo('sparkleAt', world, { x: q.x, y: 0.7, z: q.z }); }
+      const u = Math.min(1, q.t / 0.6);
+      q.mesh.scale.setScalar(Math.max(0.001, ease.outBack(u)));
+      if (u >= 1) { q.mesh.scale.setScalar(1); popQueue.splice(i, 1); }
+    }
+  }
+
   function stepTemps(dt) {
     for (let i = temps.length - 1; i >= 0; i--) {
       const o = temps[i];
@@ -1380,21 +1467,28 @@ export function mountBarn3d(host, ctx) {
     }
   }
 
-  // ── ลานให้ของ visuals: 🪙 pops above earning pets, coins fly to the 🎁 button when collected ──────────────
+  // ── ของขวัญอยู่ที่ตัวน้อง (CONTRACT_V7 §4): 🎁 above a pet, tap = collect, chip = collect all ─────────────
   const flyCoins = new Set();
+  const calmMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  function collectFx(rect, result) {
-    if (disposed || !rect) return;
+  /** Screen centre of the header coin counter (where coins fly to). */
+  function coinTarget() {
     const hr = host.getBoundingClientRect();
-    const tx = rect.left + rect.width / 2, ty = rect.top + rect.height / 2;
-    const earning = [...actors.values()].filter(A => !A.hidden && yardOutput(A.pet).coins > 0).slice(0, 10);
-    const calm = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-    earning.forEach((A, i) => {
-      fxo('emojiPop', world, headPos(A), '🪙');
-      if (calm || typeof document.body.animate !== 'function') return;
-      const p = world.worldToScreen(headPos(A));
-      if (!p.visible) return;
-      const sx = hr.left + p.x, sy = hr.top + p.y;
+    const el = document.getElementById('hdr-coins');
+    const box = el && (el.parentElement || el).getBoundingClientRect();
+    if (box && box.width > 0) return { x: box.left + box.width / 2, y: Math.max(12, box.top + box.height / 2) };
+    return { x: hr.left + hr.width / 2, y: Math.max(12, hr.top) };
+  }
+
+  /** A few 🪙 fly from the pet to the coin counter. */
+  function flyCoinsFrom(A, coins, delay = 0) {
+    if (disposed || calmMotion() || typeof document.body.animate !== 'function') return;
+    const p = world.worldToScreen(headPos(A));
+    if (!p.visible) return;
+    const hr = host.getBoundingClientRect();
+    const sx = hr.left + p.x, sy = hr.top + p.y, to = coinTarget();
+    const n = Math.max(1, Math.min(5, Math.ceil(coins / 25)));
+    for (let k = 0; k < n; k++) {
       const el = document.createElement('span');
       el.className = 'b3-flycoin';
       el.textContent = '🪙';
@@ -1402,13 +1496,493 @@ export function mountBarn3d(host, ctx) {
       flyCoins.add(el);
       const anim = el.animate([
         { transform: `translate(${sx}px, ${sy}px) scale(1)`, opacity: 1 },
-        { transform: `translate(${(sx + tx) / 2}px, ${Math.min(sy, ty) - 40}px) scale(1.15)`, opacity: 1, offset: 0.45 },
-        { transform: `translate(${tx}px, ${ty}px) scale(0.5)`, opacity: 0.2 },
-      ], { duration: 700 + i * 40, delay: i * 55, easing: 'cubic-bezier(.3,.1,.4,1)', fill: 'both' });
+        { transform: `translate(${(sx + to.x) / 2 + (k - n / 2) * 14}px, ${Math.min(sy, to.y) - 46}px) scale(1.15)`, opacity: 1, offset: 0.45 },
+        { transform: `translate(${to.x}px, ${to.y}px) scale(0.5)`, opacity: 0.2 },
+      ], { duration: 720 + k * 60, delay: delay + k * 70, easing: 'cubic-bezier(.3,.1,.4,1)', fill: 'both' });
       anim.onfinish = () => { flyCoins.delete(el); el.remove(); };
+    }
+  }
+
+  /** The pet hops, coins fly to the counter, items pop up. Called after a successful collect. */
+  function giftCollected(petId, coins, items, order = 0) {
+    const A = actors.get(petId);
+    if (!A || A.hidden) return;
+    A.hold = Math.max(A.hold, 2.2);
+    react(A, 'hop', { dur: 0.9, hops: 2, height: 0.42 });
+    fxo('sparkle', world, A.id);
+    flyCoinsFrom(A, coins, order * 90);
+    const ids = Object.keys(items || {}).slice(0, 2);
+    ids.forEach((id, k) => { const it = getItem(id); if (it) later(220 + k * 200 + order * 90, () => alive(petId) && fxo('emojiPop', world, headPos(A), it.emoji)); });
+    const g = giftEls.get(petId);
+    if (g) { g.remove(); giftEls.delete(petId); }
+    A.gift = null;
+  }
+
+  function collectAll() {
+    const r = ctx.run(s => collectYard(s));
+    if (r && r.ok) (r.gifts || []).slice(0, 12).forEach((gf, i) => giftCollected(gf.petId, gf.coins, gf.items, i));
+    syncGifts(getState());
+  }
+
+  /** 🎁 / 🎁✨ labels above gifted pets (DOM, so a crowd costs no draw calls) + the corner chip. */
+  function syncGifts(state) {
+    for (const A of actors.values()) {
+      const g = A.hidden ? null : petGift(state, A.id);
+      A.gift = g && g.has ? g : null;               // anything >= 1 coin: a tap collects it
+      let el = giftEls.get(A.id);
+      if (A.gift && A.gift.big) {                    // only 1 h+ of production (or an item) earns the 🎁 label: no clutter
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'b3-gift';
+          el.innerHTML = '<span></span>';
+          labelsEl.appendChild(el);
+          giftEls.set(A.id, el);
+        }
+        const inner = el.firstChild, txt = A.gift.full ? '🎁✨' : '🎁';
+        if (inner.textContent !== txt) inner.textContent = txt;
+        el.classList.toggle('is-full', A.gift.full);
+      } else if (el) { el.remove(); giftEls.delete(A.id); }
+    }
+    for (const [id, el] of [...giftEls]) if (!actors.has(id)) { el.remove(); giftEls.delete(id); }
+    const pv = yardPreview(state);
+    chipEl.hidden = !pv.pets;
+    if (pv.pets) {
+      const txt = `🎁 ${pv.pets}`;
+      if (chipEl.textContent !== txt) chipEl.textContent = txt;
+      chipEl.classList.toggle('is-full', pv.fullPets > 0);
+      chipEl.title = `เก็บของขวัญจากน้องทุกตัว 🪙${pv.coins}`;
+      chipEl.setAttribute('aria-label', `เก็บของขวัญจากน้อง ${pv.pets} ตัว`);
+    }
+  }
+
+  // ── เปลอนุบาล: sleeping babies in cribs beside the nests (CONTRACT_V7 §5) ───────────────────────────
+  const cribMat = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: world.toonGradient }));
+  let cribGeo = null;
+  function cribGeometry() {
+    if (cribGeo) return cribGeo;
+    const tmp = [];
+    const box = (w, h, d) => { const g = new THREE.BoxGeometry(w, h, d); tmp.push(g); return g; };
+    const parts = [
+      { geometry: box(1.0, 0.08, 0.7), color: '#a9733c', position: [0, 0.2, 0] },
+      { geometry: box(0.9, 0.08, 0.6), color: '#fff2d6', position: [0, 0.28, 0] },
+      { geometry: box(0.5, 0.06, 0.62), color: '#ffb3c7', position: [0.22, 0.33, 0] },
+      { geometry: box(1.0, 0.3, 0.05), color: '#c58f52', position: [0, 0.42, 0.33] },
+      { geometry: box(0.05, 0.42, 0.7), color: '#b27c43', position: [-0.5, 0.41, 0] },
+      { geometry: box(0.05, 0.34, 0.7), color: '#b27c43', position: [0.5, 0.37, 0] },
+    ];
+    for (const [x, z] of [[-0.44, -0.3], [0.44, -0.3], [-0.44, 0.3], [0.44, 0.3]]) parts.push({ geometry: box(0.07, 0.2, 0.07), color: '#8d5a34', position: [x, 0.1, z] });
+    cribGeo = own(mergeStaticParts(THREE, parts));
+    for (const g of tmp) g.dispose();
+    return cribGeo;
+  }
+
+  function createCrib(pet, spot) {
+    const group = new THREE.Group();
+    const mesh = new THREE.Mesh(cribGeometry(), cribMat);
+    const holder = new THREE.Group();
+    holder.position.y = 0.3;
+    const model = buildModel(pet);
+    model.root.scale.multiplyScalar(0.78);
+    model.body.scale.set(1.05, 0.72, 1.05);
+    if (model.head) model.head.rotation.x += 0.5;
+    const eyes = model.parts && model.parts.eyes;
+    if (eyes) for (const e of eyes) e.scale.y = 0.12;
+    holder.add(model.root);
+    group.add(mesh, holder);
+    group.position.set(spot.x, 0, spot.z);
+    const c = { id: `crib-${pet.id}`, petId: pet.id, group, holder, model, x: spot.x, z: spot.z, hidden: false, spawn: null, seed: (hashId(pet.id) % 600) / 100 };
+    world.addActor(c.id, group, { radius: 0.75, height: 0.9, shadowScale: 0.95 });
+    cribs.set(pet.id, c);
+    return c;
+  }
+
+  function removeCrib(c) {
+    fx.clearBubble(world, c.id);
+    world.removeActor(c.id);
+    cribs.delete(c.petId);
+  }
+
+  function syncCribs(state) {
+    const babies = nurseryPets(state).slice(0, NURSERY_SLOTS);
+    const have = new Set(babies.map(p => p.id));
+    for (const c of [...cribs.values()]) if (!have.has(c.petId)) { if (selectedCrib === c.petId) selectedCrib = null; removeCrib(c); }
+    babies.forEach((pet, i) => {
+      const spot = cribSpot(i, nestCount || 1);
+      let c = cribs.get(pet.id);
+      if (!c) {
+        c = createCrib(pet, spot);
+        if (hatching && hatching.spawning && !hatching.petId && !hatching.nurseryPetId) { // the newborn of the running ceremony: hidden until the egg bursts
+          hatching.nurseryPetId = pet.id;
+          c.hidden = true;
+          c.holder.visible = false;
+        } else if (synced) { c.spawn = { t: 0, dur: 0.6 }; }
+        if (!c.hidden) fx.bubble(world, c.id, '💤');
+      }
+      c.x = spot.x; c.z = spot.z;
+      c.group.position.set(spot.x, 0, spot.z);
     });
-    if (result && result.items) {
-      Object.keys(result.items).slice(0, 3).forEach((id, k) => { const it = getItem(id); if (it) later(250 + k * 200, () => fxo('emojiPop', world, { x: (k - 1) * 0.8, y: 1.4, z: 1.2 }, it.emoji)); });
+  }
+
+  function animateCribs(t, dt) {
+    for (const c of cribs.values()) {
+      const b = c.model.body;
+      b.scale.y = 0.72 + Math.sin(t * 1.5 + c.seed) * 0.02;
+      if (c.spawn) {
+        c.spawn.t += dt;
+        const u = Math.min(1, c.spawn.t / c.spawn.dur);
+        c.holder.scale.setScalar(Math.max(0.02, ease.outBack(u)));
+        c.holder.position.y = 0.3 + Math.sin(u * Math.PI) * 0.35;
+        if (u >= 1) { c.spawn = null; c.holder.position.y = 0.3; c.holder.scale.setScalar(1); }
+      }
+    }
+  }
+
+  function revealCrib(c, legend) {
+    c.hidden = false;
+    c.holder.visible = true;
+    c.spawn = { t: 0, dur: 0.9 };
+    fx.bubble(world, c.id, '💤');
+    const p = { x: c.x, y: 0.7, z: c.z };
+    fx.confetti(world, p, legend ? 40 : 18);
+    fx.sparkleAt(world, p);
+    revealId = c.petId;
+    selectCrib(c.petId);
+    if (hatching) hatching.revealShown = true;
+    endHatch();
+  }
+
+  function onCribTap(petId) {
+    const c = cribs.get(petId);
+    if (!c || c.hidden) return;
+    fx.heart(world, { x: c.x, y: 0.9, z: c.z });
+    selectCrib(petId);
+  }
+
+  function selectCrib(petId) {
+    if (selected) { const o = actors.get(selected); if (o) { o.hold = HOLD_AFTER_TAP; dropTag(o.selTag); o.selTag = null; } selected = null; }
+    selectedCrib = petId;
+    sheetMode = 'main';
+    refreshUi();
+  }
+
+  // ── ของตกแต่ง (CONTRACT_V7 §3): glowing spots, placed decor, pets that use it ──────────────────────
+  const decorMat = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: world.toonGradient }));
+  const decorGeos = new Map();
+  const spotGeo = own(new THREE.RingGeometry(0.5, 0.7, 32));
+  spotGeo.rotateX(-Math.PI / 2);
+  const spotMat = own(new THREE.MeshBasicMaterial({ color: 0xffe27a, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
+  let spotSig = '';
+  let clockT = 0;
+
+  function decorGeometry(decorId) {
+    let g = decorGeos.get(decorId);
+    if (g) return g;
+    const tmp = [];
+    const keep = o => { tmp.push(o); return o; };
+    const cyl = (rt, rb, h, seg = 16) => keep(new THREE.CylinderGeometry(rt, rb, h, seg));
+    const sph = (r, ws = 12, hs = 8) => keep(new THREE.SphereGeometry(r, ws, hs));
+    const box = (w, h, d) => keep(new THREE.BoxGeometry(w, h, d));
+    const cone = (r, h, seg = 8) => keep(new THREE.ConeGeometry(r, h, seg));
+    const rocker = (x) => ({ geometry: keep(new THREE.TorusGeometry(0.62, 0.05, 6, 20, Math.PI * 0.9)), color: '#8d5a34', position: [x, 0.62, 0], rotation: [0, Math.PI / 2, -Math.PI / 2 - Math.PI * 0.45] });
+    let parts;
+    switch (decorId) {
+      case 'bed': parts = [
+        { geometry: cyl(0.62, 0.66, 0.14), color: '#e58aa8', position: [0, 0.07, 0] },
+        { geometry: cyl(0.5, 0.5, 0.16), color: '#fbd5e0', position: [0, 0.1, 0] },
+        { geometry: sph(0.18), color: '#ffffff', position: [-0.28, 0.24, -0.08], scale: [1.4, 0.7, 1] },
+      ]; break;
+      case 'bowl': parts = [
+        { geometry: cyl(0.36, 0.25, 0.2), color: '#4d96ff', position: [0, 0.1, 0] },
+        { geometry: cyl(0.3, 0.3, 0.03), color: '#e9c46a', position: [0, 0.2, 0] },
+        { geometry: sph(0.07), color: '#b86a3d', position: [0.1, 0.24, 0.05] },
+        { geometry: sph(0.06), color: '#b86a3d', position: [-0.12, 0.23, -0.06] },
+      ]; break;
+      case 'ball': parts = [
+        { geometry: sph(0.21, 14, 10), color: '#ffffff', position: [0, 0.21, 0] },
+        { geometry: keep(new THREE.TorusGeometry(0.212, 0.035, 6, 20)), color: '#ff5252', position: [0, 0.21, 0] },
+        { geometry: keep(new THREE.TorusGeometry(0.212, 0.035, 6, 20)), color: '#4d96ff', position: [0, 0.21, 0], rotation: [Math.PI / 2, 0, 0] },
+      ]; break;
+      case 'horse': parts = [
+        rocker(-0.2), rocker(0.2),
+        { geometry: sph(0.3), color: '#c08552', position: [0, 0.66, 0], scale: [0.75, 0.7, 1.3] },
+        { geometry: box(0.3, 0.07, 0.34), color: '#d8574a', position: [0, 0.94, -0.02] },
+        { geometry: cyl(0.06, 0.06, 0.5), color: '#c08552', position: [-0.14, 0.4, 0.2] },
+        { geometry: cyl(0.06, 0.06, 0.5), color: '#c08552', position: [0.14, 0.4, 0.2] },
+        { geometry: cyl(0.06, 0.06, 0.5), color: '#c08552', position: [-0.14, 0.4, -0.2] },
+        { geometry: cyl(0.06, 0.06, 0.5), color: '#c08552', position: [0.14, 0.4, -0.2] },
+        { geometry: sph(0.2), color: '#c08552', position: [0, 1.0, 0.42] },
+        { geometry: box(0.16, 0.14, 0.18), color: '#e0b48a', position: [0, 0.94, 0.6] },
+        { geometry: cone(0.06, 0.16), color: '#c08552', position: [-0.1, 1.2, 0.4] },
+        { geometry: cone(0.06, 0.16), color: '#c08552', position: [0.1, 1.2, 0.4] },
+        { geometry: box(0.06, 0.3, 0.14), color: '#5b3a29', position: [0, 1.06, 0.28] },
+      ]; break;
+      case 'leaves': parts = [
+        { geometry: sph(0.55), color: '#d9822b', position: [0, 0.05, 0], scale: [1, 0.45, 1] },
+        { geometry: sph(0.36), color: '#c0392b', position: [0.2, 0.14, 0.1], scale: [1, 0.55, 1] },
+        { geometry: sph(0.32), color: '#e8b930', position: [-0.24, 0.12, -0.14], scale: [1, 0.55, 1] },
+        { geometry: sph(0.22), color: '#8a5a2b', position: [0.0, 0.22, -0.2], scale: [1, 0.55, 1] },
+        { geometry: cyl(0.12, 0.12, 0.012, 7), color: '#c0392b', position: [0.65, 0.01, 0.2] },
+        { geometry: cyl(0.1, 0.1, 0.012, 7), color: '#e8b930', position: [-0.62, 0.01, -0.3] },
+        { geometry: cyl(0.1, 0.1, 0.012, 7), color: '#d9822b', position: [0.3, 0.01, -0.62] },
+      ]; break;
+      default: parts = [ // sign: a post and a board (the farm name is a separate plane)
+        { geometry: cyl(0.05, 0.06, 1.0, 8), color: '#8d5a34', position: [0, 0.5, 0] },
+        { geometry: box(1.0, 0.44, 0.07), color: '#d9a35f', position: [0, 0.95, 0] },
+        { geometry: box(1.06, 0.06, 0.09), color: '#8d5a34', position: [0, 1.19, 0] },
+        { geometry: box(1.06, 0.06, 0.09), color: '#8d5a34', position: [0, 0.71, 0] },
+      ];
+    }
+    g = own(mergeStaticParts(THREE, parts));
+    for (const o of tmp) o.dispose();
+    decorGeos.set(decorId, g);
+    return g;
+  }
+
+  function signTexture(name) {
+    const cv = document.createElement('canvas');
+    cv.width = 256; cv.height = 96;
+    const c2 = cv.getContext('2d');
+    c2.fillStyle = '#d9a35f'; c2.fillRect(0, 0, 256, 96);
+    c2.fillStyle = '#4a2e14'; c2.textAlign = 'center'; c2.textBaseline = 'middle';
+    let size = 44;
+    c2.font = `bold ${size}px sans-serif`;
+    while (c2.measureText(name).width > 236 && size > 16) { size -= 3; c2.font = `bold ${size}px sans-serif`; }
+    c2.fillText(name, 128, 50);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  function spotPos(spot) {
+    const list = Array.isArray(world.decorSpots) ? world.decorSpots : [];
+    return list.find(s => s.index === spot) || null;
+  }
+
+  function createDecorInst(rec, pos) {
+    const group = new THREE.Group();
+    const body = new THREE.Group();
+    body.add(new THREE.Mesh(decorGeometry(rec.decorId), decorMat));
+    group.add(body);
+    const inst = {
+      id: rec.id, decorId: rec.decorId, spot: rec.spot, group, body, x: pos.x, z: pos.z, busy: null, pop: 0, pulse: 0, rock: 0,
+      ball: rec.decorId === 'ball' ? { vx: 0, vz: 0, home: { x: pos.x, z: pos.z }, spin: 0, bounce: 0, lastMove: 0 } : null,
+      sign: null, signName: '',
+    };
+    if (rec.decorId === 'sign') {
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.34), mat);
+      plane.position.set(0, 0.95, 0.045);
+      plane.userData.noPick = true;
+      body.add(plane);
+      inst.sign = { plane, mat, geo: plane.geometry };
+    }
+    group.position.set(pos.x, 0, pos.z);
+    group.scale.setScalar(0.01);
+    world.addActor(`decor-${rec.id}`, group, { radius: 0.62, height: 0.7, shadowScale: rec.decorId === 'ball' ? 0.4 : 0.9 });
+    decorInst.set(rec.id, inst);
+    return inst;
+  }
+
+  function removeDecorInst(inst) {
+    for (const A of actors.values()) if (A.decorId === inst.id) { A.decorId = null; if (A.act.type === 'decor') begin(A, { type: 'idle', dur: 0.4 }); }
+    world.removeActor(`decor-${inst.id}`);
+    if (inst.sign) { if (inst.sign.mat.map) inst.sign.mat.map.dispose(); inst.sign.mat.dispose(); inst.sign.geo.dispose(); }
+    decorInst.delete(inst.id);
+  }
+
+  /** Placed decor follows state.decor; glowing spots show while decorating (or while there is something built to place). */
+  function syncDecor(state) {
+    const canDecor = !!(ctx.decor && ctx.decor.available()) && Array.isArray(world.decorSpots) && world.decorSpots.length > 0;
+    decorBtn.hidden = !canDecor;
+    if (!canDecor && decorMode) { decorMode = false; decorBtn.classList.remove('is-on'); decorBtn.setAttribute('aria-pressed', 'false'); }
+    const recs = canDecor || (state.decor || []).length ? (state.decor || []).filter(d => spotPos(d.spot)) : [];
+    const want = new Set(recs.map(d => d.id));
+    for (const inst of [...decorInst.values()]) if (!want.has(inst.id)) removeDecorInst(inst);
+    const farm = (state.player && state.player.farmName) || 'ฟาร์ม';
+    for (const rec of recs) {
+      let inst = decorInst.get(rec.id);
+      if (inst && (inst.decorId !== rec.decorId || inst.spot !== rec.spot)) { removeDecorInst(inst); inst = null; }
+      if (!inst) {
+        inst = createDecorInst(rec, spotPos(rec.spot));
+        if (!synced) { inst.pop = 1; inst.group.scale.setScalar(1); }
+        else fxo('sparkleAt', world, { x: inst.x, y: 0.5, z: inst.z });
+      }
+      if (inst.sign && inst.signName !== farm) {
+        if (inst.sign.mat.map) inst.sign.mat.map.dispose();
+        inst.sign.mat.map = signTexture(farm);
+        inst.sign.mat.needsUpdate = true;
+        inst.signName = farm;
+      }
+    }
+    // glowing spots
+    const hasBuilt = Object.values(state.inventoryDecor || {}).some(n => n > 0);
+    const occupied = new Set((state.decor || []).map(d => d.spot));
+    const show = canDecor && (decorMode || hasBuilt);
+    const open = show ? world.decorSpots.filter(s => decorMode || !occupied.has(s.index)) : [];
+    const sig = `${open.map(s => s.index).join(',')}|${decorMode ? 1 : 0}|${world.decorSpots ? world.decorSpots.length : 0}|${world.yardTier || ''}`;
+    if (sig === spotSig) return;
+    spotSig = sig;
+    try { world.removeProp('decor-rings'); } catch { /* none yet */ }
+    for (const id of [...spotActors]) { world.removeActor(id); spotActors.delete(id); }
+    if (!open.length) return;
+    world.addInstancedProp('decor-rings', spotGeo, open.map(s => ({ position: [s.x, 0.045, s.z] })), { material: spotMat });
+    for (const s of open) {
+      if (occupied.has(s.index)) continue; // a placed decor is tapped itself
+      const g = new THREE.Group();
+      g.position.set(s.x, 0, s.z);
+      const id = `spot-${s.index}`;
+      world.addActor(id, g, { radius: 0.8, height: 0.5, shadow: false });
+      spotActors.add(id);
+    }
+  }
+
+  function openDecorSpot(spot) {
+    if (ctx.decor && ctx.decor.available()) ctx.decor.openPicker(spot);
+  }
+
+  function onDecorTap(instId) {
+    const inst = decorInst.get(instId);
+    if (!inst) return;
+    if (decorMode) { openDecorSpot(inst.spot); return; }
+    inst.pulse = 1;
+    if (inst.ball) kickBall(null, inst, 0.9);
+    if (inst.decorId === 'sign') notify(`🪧 ${(getState().player || {}).farmName || 'ฟาร์มของฉัน'}`, 'info');
+  }
+
+  function decorList() {
+    const out = [];
+    for (const i of decorInst.values()) if (DECOR_USE[i.decorId] && i.pop >= 1) out.push({ id: i.id, decorId: i.decorId, x: i.x, z: i.z, busy: i.busy });
+    return out;
+  }
+  function claimDecor(A, act) {
+    const inst = decorInst.get(act.instId);
+    if (inst) inst.busy = A.id;
+    A.decorId = act.instId;
+  }
+  function releaseDecor(A) {
+    if (!A.decorId) return;
+    const inst = decorInst.get(A.decorId);
+    if (inst && inst.busy === A.id) inst.busy = null;
+    A.decorId = null;
+  }
+
+  /** The ball rolls away from the pet (or the tapped spot), bending back toward the middle near the fence. */
+  function kickBall(A, inst, strength = 1) {
+    const b = inst.ball;
+    if (!b) return;
+    let dx = A ? inst.x - A.x : Math.random() - 0.5, dz = A ? inst.z - A.z : Math.random() - 0.5;
+    const d = Math.hypot(dx, dz) || 1;
+    dx /= d; dz /= d;
+    const ed = Math.hypot(inst.x, inst.z) || 1;
+    const edge = Math.min(1, Math.max(0, (ed - (YARD.walkRadius - 2.4)) / 2.4));
+    let vx = dx * (1 - edge) - (inst.x / ed) * edge + (Math.random() - 0.5) * 0.6;
+    let vz = dz * (1 - edge) - (inst.z / ed) * edge + (Math.random() - 0.5) * 0.6;
+    const l = Math.hypot(vx, vz) || 1;
+    b.vx = (vx / l) * 3.6 * strength; b.vz = (vz / l) * 3.6 * strength;
+    b.lastMove = clockT;
+    if (A) popAt(A, '⚽', 0.3, -0.3);
+  }
+
+  /** Per-frame decor motion: pop-in, the rolling ball, the rocking horse, leaf-pile jiggle, pulsing glow. */
+  function stepDecor(dt, t) {
+    clockT = t;
+    for (const inst of decorInst.values()) {
+      if (inst.pop < 1) {
+        inst.pop = Math.min(1, inst.pop + dt / 0.55);
+        inst.group.scale.setScalar(Math.max(0.01, ease.outBack(inst.pop)));
+      }
+      if (inst.pulse > 0) inst.pulse = Math.max(0, inst.pulse - dt * 2.2);
+      inst.body.scale.y = 1 + Math.sin(inst.pulse * Math.PI) * 0.18;
+      const b = inst.ball;
+      if (b) {
+        const sp = Math.hypot(b.vx, b.vz);
+        if (sp > 0.06) {
+          inst.x += b.vx * dt; inst.z += b.vz * dt;
+          const k = Math.exp(-1.5 * dt);
+          b.vx *= k; b.vz *= k;
+          const c = clampToYard(inst.x, inst.z, YARD.walkRadius - 0.25);
+          if (c.x !== inst.x || c.z !== inst.z) { inst.x = c.x; inst.z = c.z; b.vx *= -0.4; b.vz *= -0.4; }
+          b.spin += sp * dt / 0.21; b.bounce += sp * dt * 2.4; b.lastMove = t;
+        } else {
+          b.vx = b.vz = 0;
+          const hx = b.home.x - inst.x, hz = b.home.z - inst.z, hd = Math.hypot(hx, hz);
+          if (!inst.busy && t - b.lastMove > 8 && hd > 0.04) { // nobody plays with it: roll back to its spot
+            const stp = Math.min(hd, 1.3 * dt);
+            inst.x += (hx / hd) * stp; inst.z += (hz / hd) * stp; b.spin += stp / 0.21;
+          }
+        }
+        inst.speed = sp;
+        inst.group.position.set(inst.x, Math.abs(Math.sin(b.bounce)) * Math.min(0.28, sp * 0.08), inst.z);
+        inst.body.rotation.x = b.spin;
+      }
+      if (inst.decorId === 'horse') {
+        if (!inst.busy) inst.rock *= Math.exp(-3 * dt);
+        inst.body.rotation.x = inst.rock;
+      }
+    }
+    spotMat.opacity = 0.55 + 0.3 * Math.sin(t * 3.2);
+  }
+
+  /** Pose of a pet that walked to a decor and is now using it. */
+  function decorPose(A, P, t, dt) {
+    const act = A.act;
+    const inst = decorInst.get(act.instId);
+    if (!inst) { act.dur = 0; return; }
+    if (!act.arrived) { return; }
+    const face = (x, z, k = 6) => { A.heading += angDiff(A.heading, Math.atan2(x - A.x, z - A.z)) * Math.min(1, dt * k); };
+    switch (act.use) {
+      case 'nap':
+        face(camPos.x, camPos.z, 3);
+        P.hop = 0.1;
+        break;
+      case 'eat': {
+        face(inst.x, inst.z);
+        const c = Math.abs(Math.sin(act.t * 11));
+        P.sy = 1 - 0.07 * c; P.hPitch = 0.55 + Math.sin(act.t * 11) * 0.14;
+        if (at(act, 'e1', 0.5)) popAt(A, '😋', 0.2, 0);
+        if (at(act, 'e2', 2.6)) fxo('emojiPop', world, headPos(A), '🥣');
+        break;
+      }
+      case 'kick': {
+        const b = inst.ball;
+        if (!b) break;
+        const dx = inst.x - A.x, dz = inst.z - A.z, d = Math.hypot(dx, dz);
+        face(inst.x, inst.z, 9);
+        if (d > 0.75 && inst.speed < 3) { // chase the rolling ball
+          const stp = Math.min(d - 0.6, 2.3 * dt);
+          A.x += (dx / d) * stp; A.z += (dz / d) * stp;
+          A.phase += dt * 11;
+          const w = Math.abs(Math.sin(A.phase));
+          P.hop = w * 0.12; P.sy = 0.94 + 0.12 * w; P.tail = Math.sin(A.phase * 2) * 0.5;
+        } else if (inst.speed < 0.3 && act.t >= (act.nextKick ?? 0.4)) {
+          act.nextKick = act.t + 1.5;
+          act.lunge = act.t;
+          kickBall(A, inst);
+        }
+        if (act.lunge != null) {
+          const u = Math.min(1, (act.t - act.lunge) / 0.4);
+          P.pitch = -0.3 * Math.sin(u * Math.PI); P.hop = Math.max(P.hop, Math.sin(u * Math.PI) * 0.22);
+        }
+        break;
+      }
+      case 'rock': {
+        const T = act.dur, on = smooth(act.t / 0.45), off = smooth((T - act.t) / 0.4), seat = Math.min(on, off);
+        A.heading += angDiff(A.heading, 0) * Math.min(1, dt * 8);
+        const swing = Math.sin(act.t * 3.4) * 0.2 * seat;
+        inst.rock = swing;
+        P.hop = 0.62 * seat + Math.sin(Math.min(1, act.t / 0.45) * Math.PI) * 0.25 * (act.t < 0.45 ? 1 : 0);
+        P.pitch = swing * 0.9; P.sy = 1 + 0.03 * Math.sin(act.t * 6.8);
+        if (at(act, 'r1', 0.8)) popAt(A, '🎵', 0.3, 0.1);
+        break;
+      }
+      default: { // jump in the leaves
+        face(camPos.x, camPos.z, 4);
+        const per = 0.66, u = (act.t % per) / per, h = Math.sin(u * Math.PI);
+        P.hop = h * 0.55; P.sy = 1 + 0.14 * h - (1 - h) ** 6 * 0.16; P.sx = 1 - 0.06 * h + (1 - h) ** 6 * 0.08;
+        const n = Math.floor(act.t / per);
+        if (n !== act.jumps && u < 0.2) { act.jumps = n; inst.pulse = 1; popAt(A, '🍂', (n % 2 ? 0.25 : -0.25), -0.15); }
+        break;
+      }
     }
   }
 
@@ -1435,6 +2009,18 @@ export function mountBarn3d(host, ctx) {
     sleep: btn => careAction('sleep', btn.dataset.petId),
     gift: btn => careAction('gift', btn.dataset.petId),
     details: btn => ctx.openDetails(btn.dataset.petId),
+    'collect-all': () => collectAll(),
+    'nursery-adopt': btn => ctx.nurseryAdopt(btn.dataset.petId),
+    'nursery-swap': btn => ctx.nurserySwap(btn.dataset.petId),
+    'nursery-rehome': btn => ctx.nurseryRehome(btn.dataset.petId),
+    'decor-mode': () => {
+      decorMode = !decorMode;
+      decorBtn.classList.toggle('is-on', decorMode);
+      decorBtn.setAttribute('aria-pressed', String(decorMode));
+      if (decorMode && (selected || selectedCrib)) closeSheet();
+      syncDecor(getState());
+      refreshUi();
+    },
   };
   const onClick = ev => {
     const btn = ev.target.closest('[data-b3]');
@@ -1463,12 +2049,20 @@ export function mountBarn3d(host, ctx) {
     }
   });
 
+  /** The selected pet or crib: { x, z, h (height), r (radius) } or null. */
+  function selTarget() {
+    const A = selected && actors.get(selected);
+    if (A) return { x: A.x, z: A.z, h: A.model.height, r: A.model.radius };
+    const c = selectedCrib && cribs.get(selectedCrib);
+    return c ? { x: c.x, z: c.z, h: 0.7, r: 0.7 } : null;
+  }
+
   function updateCameraPan(dt) {
-    const sel = selected && actors.get(selected);
+    const sel = selTarget();
     const H = stage.clientHeight, W = stage.clientWidth;
     if (sel && !sheetEl.hidden && H > 0) {
       const sheetH = sheetEl.offsetHeight;
-      const p = world.worldToScreen({ x: sel.x, y: sel.model.height * 0.55, z: sel.z });
+      const p = world.worldToScreen({ x: sel.x, y: sel.h * 0.55, z: sel.z });
       const unpanned = p.y + panPx;
       const wantY = Math.max(70, (H - sheetH) * 0.55);
       panTarget = Math.max(0, Math.min(H * 0.5, unpanned - wantY));
@@ -1494,11 +2088,10 @@ export function mountBarn3d(host, ctx) {
     }
     for (const A of actors.values()) {
       if (A.hidden) continue;
-      A.coinAt -= dt;
-      if (A.coinAt < 0) {
-        A.coinAt = 14 + Math.random() * 16;
-        const y = getState().yard;
-        if (y && y.pending >= 1 && yardOutput(A.pet).coins > 0 && !lowTier()) fxo('emojiPop', world, headPos(A), '🪙');
+      A.waveAt -= dt;
+      if (A.waveAt < 0) { // a pet whose gift is full waves at you now and then
+        A.waveAt = 7 + Math.random() * 6;
+        if (A.gift && A.gift.full && !A.spawn && A.hold <= 0 && !A.pet.sick && A.pet.status !== 'sleeping' && (A.act.type === 'idle' || A.act.type === 'lookAtCamera')) begin(A, { type: 'wave', dur: 1.7 });
       }
       A.puffAt -= dt;
       if (A.puffAt < 0) {
@@ -1514,14 +2107,17 @@ export function mountBarn3d(host, ctx) {
       }
     }
     animateNests(t, dt);
+    animateCribs(t, dt);
+    stepDecor(dt, t);
+    stepPops(dt);
     stepHatch(dt);
     stepTemps(dt);
     // selection ring
-    const sel = selected && actors.get(selected);
+    const sel = selTarget();
     if (sel) {
       ring.visible = true;
       ring.position.x = sel.x; ring.position.z = sel.z;
-      const s = Math.max(0.7, sel.model.radius * 1.6) * (1 + Math.sin(t * 4) * 0.04);
+      const s = Math.max(0.7, sel.r * 1.6) * (1 + Math.sin(t * 4) * 0.04);
       ring.scale.set(s, 1, s);
     } else ring.visible = false;
     updateCameraPan(dt);
@@ -1539,7 +2135,7 @@ export function mountBarn3d(host, ctx) {
 
   buildYardProps(yardTier);
   sync(getState());
-  if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, tap: id => onTap(id) };
+  if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); } };
 
   return {
     setActive(on) {
@@ -1554,7 +2150,7 @@ export function mountBarn3d(host, ctx) {
       if (disposed) return;
       if (hatching) { // toggled to the list / left mid-ceremony: never lose the news
         announceHatch();
-        if (hatching.pet && !hatching.revealShown && ctx.revealHatch) ctx.revealHatch(hatching.pet);
+        if (hatching.pet && !hatching.revealShown && ctx.revealHatch) ctx.revealHatch(hatching.pet, !!hatching.nurseryPetId);
         endHatch();
       }
       disposed = true;
@@ -1572,7 +2168,6 @@ export function mountBarn3d(host, ctx) {
       for (const el of flyCoins) el.remove();
       host.innerHTML = '';
     },
-    collectFx,
   };
   } catch (err) {
     try { world.dispose(); } catch { /* ignore */ }

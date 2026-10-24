@@ -1,7 +1,7 @@
 // Core/platform tests: state, migration (v1 fixtures), util, quests, storage merge (mock Firestore).
 import { test, assert, assertEq, withFakeNow, freshState } from './harness.js';
 import {
-  STATE_VERSION, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
+  STATE_VERSION, NURSERY_SLOTS, POSTCARDS_MAX, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
   addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, xpForLevel,
 } from '../js/state.js';
 import { QUESTS, currentQuest, claimQuest } from '../js/quests.js';
@@ -947,8 +947,7 @@ test('migrate v3 -> v4: working pets become stationed on their slot; yard accumu
   const raw = await loadFixture('save_v3_midgame');
   const T = 1790000300000;
   const s = await withFakeNow(T, () => migrate(raw));
-  assertEq(s.version, 4, 'version');
-  assertEq(STATE_VERSION, 4, 'STATE_VERSION');
+  assertEq(s.version, STATE_VERSION, 'version');
   assertEq(s.plots[0].stations, ['pet1', 'pet4', 'pet6'], '3-slot plot: all three workers stationed');
   assertEq(s.plots[1].stations, ['pet2', null, null], 'stations always have 3 entries');
   assertEq(s.plots[2].stations, [null, null, null]);
@@ -959,7 +958,7 @@ test('migrate v3 -> v4: working pets become stationed on their slot; yard accumu
   assertEq(by.pet6.station, { plotIndex: 0, slot: 2 });
   assertEq(by.pet2.station, { plotIndex: 1, slot: 0 });
   for (const id of ['pet3', 'pet5', 'pet7']) assertEq(by[id].station, null, `${id} (not working a plot) is not stationed`);
-  assertEq(s.yard, { pending: 0, items: {}, lastAt: T }, 'yard accumulator');
+  assertEq(s.yard, { lastAt: T, byPet: {} }, 'yard has no gifts yet (the empty v4 accumulator moved to byPet)');
   assertEq(s.pets.length, 7, 'no pet lost');
   assertEq([s.player.coins, s.barnCapacity, by.pet5.bond], [2300, 8, 25], 'nothing else changed');
   assertEq(s.stats.yardCollected, 0, 'new counter exists');
@@ -993,7 +992,7 @@ test('migrate: stations are repaired in both directions (missing pet/plot, doubl
   const by = Object.fromEntries(s.pets.map(p => [p.id, p]));
   assertEq(by.a.station, { plotIndex: 0, slot: 0 });
   assertEq([by.b.station, by.c.station, by.d.station], [null, null, null], 'dangling pet stations cleared');
-  assertEq(s.yard, { pending: 0, items: { food_milk: 2 }, lastAt: 7 }, 'yard sanitised, a v4 save keeps lastAt');
+  assertEq(s.yard, { lastAt: 7, byPet: { a: { c: 0, ms: 0, prog: 0, items: { food_milk: 2 } } } }, 'v4 yard (negative coins, junk items dropped) moved onto the home pet, lastAt kept');
   assertEq(migrate(s).plots[0].stations, ['a', null, null], 'repair is idempotent');
 });
 
@@ -1011,12 +1010,12 @@ test('migrate: old stations that point at a pet stationed elsewhere are cleared 
   assertEq(s.pets[0].station, { plotIndex: 1, slot: 0 });
 });
 
-test('migrate v1 + v2 fixtures all the way to v4: stations + yard present and consistent', async () => {
+test('migrate v1 + v2 fixtures all the way to v5: stations + yard present and consistent', async () => {
   for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame']) {
     const s = migrate(await loadFixture(name));
-    assertEq(s.version, 4, `${name}: version`);
+    assertEq(s.version, STATE_VERSION, `${name}: version`);
     assert(s.plots.every(p => Array.isArray(p.stations) && p.stations.length === 3), `${name}: plots have stations`);
-    assert(s.yard && s.yard.pending === 0 && Object.keys(s.yard.items).length === 0, `${name}: yard`);
+    assert(s.yard && Object.keys(s.yard.byPet).length === 0, `${name}: yard`);
     for (const p of s.pets) {
       assert(p.station === null || s.plots[p.station.plotIndex].stations[p.station.slot] === p.id, `${name}: station two-way`);
       if (p.task && p.task.type === 'plot') assert(p.station && p.station.plotIndex === p.task.plotIndex, `${name}: working pet is stationed`);
@@ -1028,9 +1027,104 @@ test('migrate v1 + v2 fixtures all the way to v4: stations + yard present and co
 test('createNewState has stations on every plot, no station on pets, an empty yard', () => {
   const s = createNewState();
   assert(s.plots.every(p => p.stations.length === 3 && p.stations.every(x => x === null)));
-  assertEq(s.yard.pending, 0);
-  assertEq(s.yard.items, {});
+  assertEq(s.yard.byPet, {});
   assertEq(s.stats.yardCollected, 0);
+});
+
+// ---- v4 -> v5 migration (per-pet gifts, nursery, decor, postcards) ----
+
+test('migrate v4 -> v5: yard gifts split onto the pets at home, nothing lost', async () => {
+  const raw = await loadFixture('save_v4_midgame');
+  const T = 1790100000000;
+  const s = await withFakeNow(T, () => migrate(raw));
+  assertEq(s.version, STATE_VERSION, 'version');
+  assertEq(STATE_VERSION, 5, 'STATE_VERSION');
+  // pet5 (cow, sleeping) and pet7 (pig, idle) are the only pets at home; pet5 is first -> gets the remainder + the coin fraction
+  assertEq(Object.keys(s.yard.byPet).sort(), ['pet5', 'pet7'], 'only pets at home receive gifts');
+  const a = s.yard.byPet.pet5, b = s.yard.byPet.pet7;
+  assertEq([a.c, b.c], [69.6, 68], 'coins: 137.6 split, remainder to the first pet');
+  assertEq([a.items, b.items], [{ food_milk: 2, seed_carrot: 1, forage_shell: 1 }, { food_milk: 1, forage_shell: 1 }], 'items split, totals kept');
+  assertEq([a.ms, b.ms], [4.5 * 3600e3, 4.5 * 3600e3], 'credited time carried over');
+  assertEq([a.prog, b.prog], [0.75, 0.75], 'farm item progress shared by the farm pets (forest progress had no owner)');
+  assertEq(s.yard.lastAt, 1790099000000, 'lastAt kept');
+  for (const k of ['pending', 'items', 'accMs', 'n']) assert(!(k in s.yard), `old yard.${k} removed`);
+  assertEq([s.nursery, s.decor, s.inventoryDecor, s.postcards], [[], [], {}, []], 'new v5 fields default empty');
+  assertEq(s.pets.length, 7, 'no pet lost');
+  assertEq([s.player.coins, s.barnCapacity], [2300, 8], 'nothing else changed');
+  assertEq(s.plots[0].stations, ['pet1', 'pet4', 'pet6'], 'stations untouched');
+  const coins = Object.values(s.yard.byPet).reduce((x, e) => x + e.c, 0);
+  assert(Math.abs(coins - 137.6) < 1e-9, 'total coins preserved');
+  assertEq(findBad(s), null, 'no NaN/undefined');
+});
+
+test('migrate v4 -> v5: with nobody at home everyone shares; with no pets coins and items go to the player', () => {
+  const pets = [
+    { id: 'w1', speciesId: 'hamster', status: 'working' },
+    { id: 'w2', speciesId: 'hamster', status: 'expedition' },
+  ];
+  const s = migrate({ version: 4, pets, yard: { pending: 11.4, items: { food_milk: 3 }, accMs: 99 * 3600e3, lastAt: 5 } });
+  assertEq(Object.keys(s.yard.byPet), ['w1', 'w2'], 'all pets share when nobody is home');
+  assertEq([s.yard.byPet.w1.c, s.yard.byPet.w2.c], [6.4, 5], 'coin fraction to the first pet');
+  assertEq(s.yard.byPet.w1.ms, 6 * 3600e3, 'credited time clamped to the 6 h cap');
+  assertEq(s.yard.byPet.w1.items.food_milk + s.yard.byPet.w2.items.food_milk, 3);
+
+  const none = migrate({ version: 4, player: { coins: 10 }, inventory: { food_milk: 1 }, yard: { pending: 7.9, items: { food_milk: 2, food_cake: 1 }, lastAt: 5 } });
+  assertEq(none.yard.byPet, {});
+  assertEq(none.player.coins, 17, 'floor(7.9) coins credited instead of lost');
+  assertEq([none.inventory.food_milk, none.inventory.food_cake], [3, 1], 'items credited to the inventory');
+});
+
+test('migrate v4 -> v5: junk yard fields never crash or leak NaN', () => {
+  for (const yard of [null, 'x', 5, [], { pending: NaN, items: 'a', prog: [], accMs: -3 }, { pending: Infinity, items: { a: NaN, b: -1, c: 2.9 }, prog: { farm: NaN } }]) {
+    const s = migrate({ version: 4, pets: [{ id: 'p', speciesId: 'hamster' }], yard });
+    assertEq(findBad(s), null, `yard ${JSON.stringify(yard)}`);
+    assert(Object.keys(s.yard.byPet).every(id => id === 'p'), 'only real pets');
+  }
+});
+
+test('v5 sanitising: dangling byPet keys, bad nursery / decor / postcards entries are dropped or capped', () => {
+  const baby = id => ({ id, speciesId: 'hamster', status: 'idle', station: { plotIndex: 0, slot: 0 }, task: { type: 'plot', plotIndex: 0 } });
+  const cards = Array.from({ length: POSTCARDS_MAX + 5 }, (_, i) => ({ id: `c${i}`, petName: 'x', speciesId: 'cat', text: 't', at: 1000 + i, read: false }));
+  const s = migrate({
+    version: 5,
+    pets: [{ id: 'a', speciesId: 'hamster' }],
+    yard: { lastAt: 1, byPet: { a: { c: 3, ms: -1, prog: 'x', items: { food_milk: 1, bad: 0 } }, ghost: { c: 9 }, b: 'junk' } },
+    nursery: [{ pet: baby('n1'), hatchedAt: 5 }, { pet: baby('a') }, { pet: { id: 'n2' } }, 'junk', { pet: baby('n3') }, { pet: baby('n4') }, { pet: baby('n5') }],
+    decor: [{ id: 'd1', decorId: 'bed', spot: 0 }, { id: 'd1', decorId: 'bed', spot: 1 }, { id: 'd2', decorId: 'ball', spot: 0 },
+      { id: 'd3', decorId: 'ball', spot: -1 }, { id: 'd4', decorId: 'ball', spot: 1.5 }, { id: 'd5', decorId: 'sign', spot: 3 }, 7],
+    inventoryDecor: { bed: 2, ball: 0, sign: -1, odd: 'x' },
+    postcards: [...cards, { id: 'nope' }, 'junk'],
+  });
+  assertEq(s.yard.byPet, { a: { c: 3, ms: 0, prog: 0, items: { food_milk: 1 } } }, 'only the existing pet keeps a clean entry');
+  assertEq(s.nursery.map(e => e.pet.id), ['n1', 'n3', 'n4'], `max ${NURSERY_SLOTS}, duplicates of owned pets / broken entries removed`);
+  assert(s.nursery.every(e => e.pet.status === 'nursery' && e.pet.station === null && e.pet.task === null), 'nursery pets are frozen');
+  assertEq(s.nursery[0].hatchedAt, 5);
+  assertEq(s.decor.map(d => d.id), ['d1', 'd5'], 'duplicate ids / spots and bad spots dropped');
+  assertEq(s.inventoryDecor, { bed: 2 });
+  assertEq(s.postcards.length, POSTCARDS_MAX, 'postcards capped');
+  assertEq(s.postcards[0].id, 'c5', 'the oldest were dropped, order kept');
+  assertEq(findBad(s), null);
+});
+
+test('migrate v1..v4 fixtures all the way to v5; every fixture loads and a second migrate changes nothing', async () => {
+  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame', 'save_v3_midgame', 'save_v4_midgame']) {
+    const raw = await loadFixture(name);
+    const once = await withFakeNow(1790100000000, () => migrate(raw));
+    assertEq(once.version, 5, `${name}: version`);
+    assert(Array.isArray(once.nursery) && Array.isArray(once.decor) && Array.isArray(once.postcards) && once.inventoryDecor && once.yard.byPet, `${name}: v5 fields`);
+    const ids = new Set(once.pets.map(p => p.id));
+    assert(Object.keys(once.yard.byPet).every(id => ids.has(id)), `${name}: byPet keys are real pets`);
+    assertEq(findBad(once), null, `${name}: no NaN/undefined`);
+    const twice = await withFakeNow(1790100000000, () => migrate(JSON.parse(JSON.stringify(once))));
+    assertEq(twice, once, `${name}: migrate twice = no change`);
+  }
+});
+
+test('createNewState has the v5 fields', () => {
+  const s = createNewState();
+  assertEq([s.nursery, s.decor, s.inventoryDecor, s.postcards], [[], [], {}, []]);
+  assert(isPristine(s));
+  assertEq([NURSERY_SLOTS, POSTCARDS_MAX], [3, 30]);
 });
 
 // ---- PWA: service worker guard, manifest, icons ----

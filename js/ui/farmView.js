@@ -4,17 +4,19 @@
 import { now, notify, escapeHtml, formatDuration, openModal } from '../util.js';
 import { update, getState, emit } from '../state.js';
 import { canWork, getWorkPower, getPet } from '../pets.js';
-import { openPetPicker, petChipHtml } from './petsView.js';
+import { petChipHtml } from './petsView.js';
 import { JOBS } from '../data/species.js';
 import { CROPS, getCrop } from '../data/crops.js';
-import { ITEMS, getItem } from '../data/items.js';
+import { ITEMS, getItem, YARD_MATERIALS } from '../data/items.js';
+import { DECOR } from '../data/decor.js';
 import { getEgg } from '../data/eggs.js';
 import {
   ZONES, getZone, MAX_PLOTS, MAX_BARN,
   plantSeed, waterPlot, fertilize, assignPet, unassignPet, harvestPlot, harvestAll, replantPlot, completeOrder,
   incubatorUpgradePrice, upgradeIncubator, MAX_INCUBATOR, nextMidnight,
   startExpedition, claimExpedition, buyItem, sellItem,
-  plotPrice, buyPlot, barnUpgradePrice, upgradeBarn,
+  plotPrice, buyPlot, upgradeBarn, barnUpgradeStatus, sortPetsForSlot,
+  buildDecor, placeDecor, decorBuildStatus, decorSpotList,
   plotSpeed, plotEtaMs, effectivePower, plotTeam, slotPowerPreview, slotJobs, TEAM_COMBO, plotBonusPreview,
   stationPet, unstationPet, stationInfo, stationLabel, MAX_STATIONS, yardUpgradePreview,
 } from '../farm.js';
@@ -94,6 +96,26 @@ function stationWaitHtml(state, plotIndex) {
     if (info) rows.push(restingRow(info, plotIndex, slot, '📌', `ประจำแปลง #${plotIndex + 1}`));
   }
   return rows.length ? `<div class="plot-slots plot-slots-wait">${rows.join('')}</div>` : '';
+}
+
+// Pet picker sorted by power for the job (best first, ties -> more hearts). `power(pet)` is the raw work power there.
+function openPowerPicker({ title, pets, power, describe, onPick }) {
+  const sorted = sortPetsForSlot(pets, power);
+  const list = sorted.map((pet, i) => `<button type="button" class="pet-picker-item${i === 0 && sorted.length > 1 ? ' is-best' : ''}" data-pet-id="${esc(pet.id)}">${petChipHtml(pet)}<span class="pet-picker-desc">${describe(pet)}</span></button>`).join('');
+  let close = () => {};
+  close = openModal({
+    title,
+    html: `<div class="pet-picker-list">${list}</div>`,
+    onMount(el) {
+      el.addEventListener('click', ev => {
+        const b = ev.target && ev.target.closest ? ev.target.closest('.pet-picker-item') : null;
+        if (!b) return;
+        close();
+        onPick(b.dataset.petId);
+      });
+    },
+  });
+  return close;
 }
 
 function powerNote(pet, jobs, label, ctx) {
@@ -381,11 +403,11 @@ function pickHelper(plotIndex, slot) {
   }
   const jobs = slotJobs(crop, slot);
   const multi = (crop.slots || 1) > 1;
-  const pets = st.pets.filter(petCanWork);
-  const list = pets.map(pet => {
+  const pets = sortPetsForSlot(st.pets.filter(petCanWork), pet => slotPowerPreview(st, plotIndex, slot, pet).raw);   // best power for this slot first
+  const list = pets.map((pet, i) => {
     const pv = slotPowerPreview(st, plotIndex, slot, pet);
     const where = stationLabel(pet);
-    return `<button type="button" class="pet-picker-item" data-pet-id="${esc(pet.id)}">${petChipHtml(pet)}<span class="pet-picker-desc"><span class="farm-power">${jobs.map(jobEmoji).join('')} พลัง ${pv.raw.toFixed(1)} · โต +${Math.round(PET_PCT * pv.eff * 100)}%</span>${where ? ` <span class="badge">📌 ${esc(where)}</span>` : ''}</span></button>`;
+    return `<button type="button" class="pet-picker-item${i === 0 && pets.length > 1 ? ' is-best' : ''}" data-pet-id="${esc(pet.id)}">${petChipHtml(pet)}<span class="pet-picker-desc"><span class="farm-power">${jobs.map(jobEmoji).join('')} พลัง ${pv.raw.toFixed(1)} · โต +${Math.round(PET_PCT * pv.eff * 100)}%</span>${where ? ` <span class="badge">📌 ${esc(where)}</span>` : ''}</span></button>`;
   }).join('');
   let close = () => {};
   close = openModal({
@@ -505,9 +527,11 @@ function pickExplorer(zoneId) {
     notify('ไม่มีน้องที่พร้อมออกสำรวจ (ต้องโตกว่าเบบี้ ตื่น ไม่ป่วย พลัง ≥ 20 อิ่ม ≥ 15)', 'warn');
     return;
   }
-  openPetPicker({
+  const ctx = { kind: 'expedition', jobs: [zone.job], zoneId: zone.id, hour: new Date(now()).getHours() };
+  openPowerPicker({
     title: `ส่งน้องไปสำรวจ ${zone.emoji} ${zone.nameTh}`,
-    filter: eligible,
+    pets: st.pets.filter(eligible),
+    power: pet => getWorkPower(pet, [zone.job], ctx),
     describe: pet => powerNote(pet, [zone.job], p => `เก็บของ ~${Math.round(zone.baseRolls + 0.75 * p)} ครั้ง`, { kind: 'expedition', jobs: [zone.job], zoneId: zone.id, hour: new Date(now()).getHours() })
       + (pet.station ? ` <span class="badge">📌 ${esc(stationLabel(pet))}</span>` : ''),
     onPick: petId => {
@@ -576,14 +600,69 @@ function shopItemCard(state, item) {
   </div>`;
 }
 
+// ✅/❌ chip for one requirement ("🪵 ไม้ 1/2").
+const matChip = (emoji, label, have, need) => {
+  const ok = have >= need;
+  return `<span class="mat-chip ${ok ? 'is-ok' : 'is-miss'}" title="${ok ? 'พอแล้ว' : 'ยังไม่พอ'}">${emoji} ${esc(label)} <b>${num(Math.min(have, 9999))}/${num(need)}</b> ${ok ? '✅' : '❌'}</span>`;
+};
+
+// "ขยายลาน": coins + the materials of the next slot (✅/❌ each) and what the next tier looks like.
+function yardCard(state) {
+  const st = barnUpgradeStatus(state);
+  const cap = Number(state.barnCapacity) || 3;
+  const head = `<span class="shop-emoji">🏡</span>`;
+  if (!st) {
+    return `<div class="shop-item">${head}<div class="shop-info"><div><b>ขยายลาน</b></div><div class="muted farm-small">ตอนนี้ ${cap}/${MAX_BARN} ช่อง · ${esc(yardUpgradePreview(state))}</div></div><div class="shop-buy"><span class="badge">เต็มแล้ว</span></div></div>`;
+  }
+  const { cost, rows } = st;
+  const chips = [matChip('🪙', 'เหรียญ', coinsOf(state), cost.coins), ...rows.map(r => matChip(r.emoji, r.nameTh, r.have, r.need))].join('');
+  const alt = cost.alt ? `<div class="muted farm-small">หรือใช้ ${Object.entries(cost.alt).map(([id, n]) => { const it = getItem(id); return `${it ? it.emoji + ' ' + esc(it.nameTh) : esc(id)} x${n}`; }).join(' + ')} แทน</div>` : '';
+  const how = st.itemsOk ? '' : '<div class="muted farm-small">🧭 วัสดุหาได้จากการสำรวจ (ซื้อไม่ได้)</div>';
+  return `<div class="shop-item yard-card${cost.enters ? ' is-tier-up' : ''}">
+    ${head}
+    <div class="shop-info">
+      <div><b>ขยายลาน</b> <span class="badge">${cap}/${MAX_BARN} ช่อง</span>${cost.enters ? ' <span class="badge">✨ ลานชั้นใหม่</span>' : ''}</div>
+      <div class="muted farm-small">${esc(yardUpgradePreview(state))}</div>
+      <div class="mat-chips">${chips}</div>${alt}${how}
+    </div>
+    <div class="shop-buy"><button class="btn btn-primary btn-sm" data-action="upgrade-barn" ${st.ok ? '' : 'disabled'}>ขยาย</button></div>
+  </div>`;
+}
+
+// "ตกแต่งลาน": build decor from materials + a few coins; "วาง" puts it on the first free spot (the 3D yard has the spots).
+function decorSection(state) {
+  const spots = decorSpotList(state);
+  const placedN = spots.filter(x => x.placed).length;
+  const free = spots.length - placedN;
+  const cards = DECOR.map(d => {
+    const bag = Number(state.inventoryDecor && state.inventoryDecor[d.id]) || 0;
+    const onYard = (Array.isArray(state.decor) ? state.decor : []).filter(x => x.decorId === d.id).length;
+    const bs = decorBuildStatus(state, d.id);
+    const chips = [matChip('🪙', 'เหรียญ', coinsOf(state), d.coins), ...Object.entries(d.items).map(([id, n]) => { const it = getItem(id); return matChip(it ? it.emoji : '❔', it ? it.nameTh : id, invOf(state, id), n); })].join('');
+    return `<div class="decor-card">
+      <span class="decor-emoji">${d.emoji}</span>
+      <div class="decor-info">
+        <div><b>${esc(d.nameTh)}</b> ${bag ? `<span class="badge">ในกระเป๋า ${bag}</span>` : ''}${onYard ? ` <span class="badge">วางแล้ว ${onYard}</span>` : ''}</div>
+        <div class="muted farm-small">${esc(d.useTh)}</div>
+        <div class="mat-chips">${chips}</div>
+      </div>
+      <div class="decor-btns">
+        <button class="btn btn-sm${bag ? '' : ' btn-primary'}" data-action="build-decor" data-decor="${d.id}" ${bs.ok ? '' : 'disabled'}>สร้าง</button>
+        ${bag ? `<button class="btn btn-primary btn-sm" data-action="place-decor" data-decor="${d.id}" ${free ? '' : 'disabled title="ลานไม่มีจุดว่าง"'}>วาง</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  return `<h3 class="farm-h">🎀 ตกแต่งลาน <span class="badge">วางแล้ว ${placedN}/${spots.length} จุด</span></h3>
+    <div class="muted farm-small">แค่ของสวยๆ น้องๆ ชอบมาเล่น ไม่มีโบนัสเงิน · จุดวางเพิ่มเมื่อลานโตขึ้น</div>
+    <div class="decor-list">${cards}</div>`;
+}
+
 function upgradeCards(state) {
   const coins = coinsOf(state);
   const pp = plotPrice(state);
-  const bp = barnUpgradePrice(state);
   const ip = incubatorUpgradePrice(state);
   const incCap = Number(state.incubatorCapacity) || 1;
   const plots = Array.isArray(state.plots) ? state.plots.length : 0;
-  const cap = Number(state.barnCapacity) || 3;
   const card = (emoji, title, sub, price, action) => `<div class="shop-item">
     <span class="shop-emoji">${emoji}</span>
     <div class="shop-info"><div><b>${title}</b></div><div class="muted farm-small">${sub}</div></div>
@@ -592,8 +671,9 @@ function upgradeCards(state) {
       : `<span class="shop-price">🪙 ${num(price)}</span><button class="btn btn-primary btn-sm" data-action="${action}" ${coins < price ? 'disabled' : ''}>ซื้อ</button>`}</div>
   </div>`;
   return card('🌾', 'ขยายแปลงไร่', `ตอนนี้ ${plots}/${MAX_PLOTS} แปลง · ปลูกได้พร้อมกันมากขึ้น`, pp, 'buy-plot')
-    + card('🏡', 'ขยายลาน', `ตอนนี้ ${cap}/${MAX_BARN} ช่อง · ${esc(yardUpgradePreview(state))}`, bp, 'upgrade-barn')
-    + card('🥚', 'ขยายตู้ฟัก', `ตอนนี้ ${incCap}/${MAX_INCUBATOR} ช่อง · ฟักไข่ได้พร้อมกันมากขึ้น`, ip, 'upgrade-incubator');
+    + yardCard(state)
+    + card('🥚', 'ขยายตู้ฟัก', `ตอนนี้ ${incCap}/${MAX_INCUBATOR} ช่อง · ฟักไข่ได้พร้อมกันมากขึ้น`, ip, 'upgrade-incubator')
+    + decorSection(state);
 }
 
 function shopRender(state) {
@@ -620,6 +700,11 @@ function shopBind(rootEl) {
     buy: d => run(s => buyItem(s, d.item, Number(d.qty) || 1)),
     'buy-plot': () => run(s => buyPlot(s)),
     'upgrade-barn': () => run(s => upgradeBarn(s)),
+    'build-decor': d => run(s => buildDecor(s, d.decor)),
+    'place-decor': d => run(s => {
+      const spot = decorSpotList(s).find(x => !x.placed);
+      return spot ? placeDecor(s, d.decor, spot.spot) : { ok: false, reason: 'ลานไม่มีจุดว่างสำหรับของตกแต่ง' };
+    }),
     'upgrade-incubator': () => run(s => upgradeIncubator(s)),
   });
 }
@@ -647,7 +732,8 @@ function bagRow(id, count) {
   } else {
     acts = '<span class="muted farm-small">ขายไม่ได้</span>';
   }
-  const sub = it.sell != null ? `ขาย ${num(it.sell)}🪙/ชิ้น` : (it.type === 'care' || it.type === 'food' ? 'ใช้ที่แท็บลาน' : '');
+  const sub = [it.sell != null ? `ขาย ${num(it.sell)}🪙/ชิ้น` : (it.type === 'care' || it.type === 'food' ? 'ใช้ที่แท็บลาน' : ''),
+    YARD_MATERIALS[id] ? `🏡 ${YARD_MATERIALS[id]}` : ''].filter(Boolean).join(' · ');
   return `<div class="bag-row">
     <span class="bag-emoji">${it.emoji}</span>
     <div class="bag-info"><div><b>${esc(it.nameTh)}</b> <span class="badge">x${num(count)}</span></div>

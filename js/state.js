@@ -2,8 +2,15 @@
 import { now, notify } from './util.js';
 import { fastForwardQuests } from './quests.js'; // circular on purpose: only called at migration time
 import { getCrop } from './data/crops.js';
+import { getSpecies } from './data/species.js';
 
-export const STATE_VERSION = 4;
+// v5 constants other modules rely on (CONTRACT_V7 §1):
+//   NURSERY_SLOTS  max babies waiting in state.nursery        POSTCARDS_MAX  postcards kept (oldest dropped)
+//   YARD_CAP_MS    pets.js owns the live 6 h gift cap; the migration only clamps credited ms to the same value
+export const STATE_VERSION = 5;
+export const NURSERY_SLOTS = 3;
+export const POSTCARDS_MAX = 30;
+const V4_YARD_CAP_MS = 6 * 3600 * 1000;
 export const DEFAULT_FARM_NAME = 'ฟาร์มของฉัน';
 const PLOT_COUNT = 4;
 
@@ -48,7 +55,12 @@ export function createNewState() {
     stardust: 0,
     claimedGoals: [],
     settings: { notify: false },
-    yard: { pending: 0, items: {}, lastAt: t },
+    // v5: gifts live on each pet: byPet[petId] = { c: coins (float), ms: credited ms <= cap, prog: fractional items, items: {id: n} }
+    yard: { lastAt: t, byPet: {} },
+    nursery: [],          // [{ pet, hatchedAt }] <= NURSERY_SLOTS, pet.status === 'nursery'
+    decor: [],            // [{ id, decorId, spot }] placed decorations
+    inventoryDecor: {},   // decorId -> count built but not placed
+    postcards: [],        // [{ id, petName, speciesId, text, at, read }] <= POSTCARDS_MAX
   };
 }
 
@@ -57,7 +69,7 @@ export function createNewState() {
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 // Keys whose contents are player data, not structure: never back-fill their entries.
-const DATA_MAPS = new Set(['inventory', 'collection']);
+const DATA_MAPS = new Set(['inventory', 'collection', 'byPet', 'inventoryDecor']);
 
 function fill(raw, def, key) {
   if (Array.isArray(def)) return Array.isArray(raw) ? raw : def;
@@ -193,6 +205,59 @@ export const MIGRATIONS = {
     s.version = 4;
     return s;
   },
+
+  // v4 -> v5: yard gifts move onto the pets (yard.byPet), plus nursery / decor / postcards fields.
+  // The old accumulator is split across the pets at home (everything if nobody is home); the integer part goes evenly
+  // with the remainder (and the coin fraction) to the first pet, so no whole coin or item is lost. With no pets at all
+  // the coins and items go straight to the player instead.
+  4(s) {
+    const old = isObj(s.yard) ? s.yard : {};
+    const pos = v => (Number.isFinite(v) && v > 0 ? v : 0);
+    const pets = (Array.isArray(s.pets) ? s.pets : []).filter(p => isObj(p) && typeof p.id === 'string' && p.id && p.speciesId);
+    const home = pets.filter(p => p.status !== 'working' && p.status !== 'expedition');
+    const heirs = [...new Set((home.length ? home : pets).map(p => p.id))];
+    const split = (whole, k) => Array.from({ length: k }, (_, i) => Math.floor(whole / k) + (i === 0 ? whole % k : 0));
+
+    const coins = pos(old.pending);
+    const items = isObj(old.items) ? Object.entries(old.items).map(([id, n]) => [id, Math.floor(pos(n))]).filter(([, n]) => n > 0) : [];
+    const byPet = {};
+    if (heirs.length) {
+      const ms = Math.min(pos(old.accMs), V4_YARD_CAP_MS);
+      for (const id of heirs) byPet[id] = { c: 0, ms, prog: 0, items: {} };
+      split(Math.floor(coins), heirs.length).forEach((c, i) => { byPet[heirs[i]].c = c; });
+      byPet[heirs[0]].c += coins - Math.floor(coins);
+      for (const [itemId, n] of items) split(n, heirs.length).forEach((k, i) => { if (k > 0) byPet[heirs[i]].items[itemId] = k; });
+      // Fractional item progress is per habitat; hand each habitat's share to its own pets (home first, then any).
+      for (const [hab, v] of Object.entries(isObj(old.prog) ? old.prog : {})) {
+        const sp = id => { const p = pets.find(q => q.id === id); const d = p && getSpecies(p.speciesId); return d && d.habitat; };
+        let owners = heirs.filter(id => sp(id) === hab);
+        if (!owners.length) owners = [...new Set(pets.map(p => p.id))].filter(id => sp(id) === hab);
+        for (const id of owners) {
+          if (!byPet[id]) byPet[id] = { c: 0, ms, prog: 0, items: {} };
+          byPet[id].prog += pos(v) / owners.length;
+        }
+      }
+    } else {
+      if (Math.floor(coins) > 0) {
+        if (!isObj(s.player)) s.player = { coins: 100 };
+        s.player.coins = (Number.isFinite(s.player.coins) ? s.player.coins : 100) + Math.floor(coins);
+      }
+      if (items.length) {
+        if (!isObj(s.inventory)) s.inventory = {};
+        for (const [id, n] of items) s.inventory[id] = (Number.isFinite(s.inventory[id]) ? s.inventory[id] : 0) + n;
+      }
+    }
+    for (const [id, e] of Object.entries(byPet)) { // nothing to give -> no entry
+      if (!(e.c > 0 || e.prog > 0 || Object.keys(e.items).length)) delete byPet[id];
+    }
+    s.yard = { lastAt: Number.isFinite(old.lastAt) ? old.lastAt : now(), byPet };
+    if (!Array.isArray(s.nursery)) s.nursery = [];
+    if (!Array.isArray(s.decor)) s.decor = [];
+    if (!isObj(s.inventoryDecor)) s.inventoryDecor = {};
+    if (!Array.isArray(s.postcards)) s.postcards = [];
+    s.version = 5;
+    return s;
+  },
 };
 
 /**
@@ -234,6 +299,45 @@ function slotCount(cropId) {
   if (!crop) return 1;
   if (Number.isInteger(crop.slots) && crop.slots >= 1) return crop.slots;
   return crop.growMs < 30 * 60 * 1000 ? 1 : crop.growMs < 2 * 3600 * 1000 ? 2 : 3;
+}
+
+const goodNum = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+
+/** v5 fields: yard.byPet only for pets that exist, nursery / decor / postcards / inventoryDecor cleaned and capped. Idempotent. */
+function sanitiseV5(s) {
+  const ids = new Set(s.pets.map(p => p.id));
+  const byPet = {};
+  for (const [id, e] of Object.entries(s.yard.byPet)) {
+    if (!ids.has(id) || !isObj(e)) continue; // dangling key (pet released / never existed)
+    const items = isObj(e.items) ? Object.fromEntries(Object.entries(e.items).filter(([, n]) => Number.isFinite(n) && n > 0)) : {};
+    byPet[id] = { ...e, c: goodNum(e.c) ? e.c : 0, ms: goodNum(e.ms) ? e.ms : 0, prog: goodNum(e.prog) ? e.prog : 0, items };
+  }
+  s.yard.byPet = byPet;
+
+  const t = s.lastTick;
+  const seen = new Set(ids);
+  s.nursery = s.nursery.filter(e => isObj(e) && isObj(e.pet) && typeof e.pet.id === 'string' && e.pet.id && e.pet.speciesId && !seen.has(e.pet.id) && seen.add(e.pet.id))
+    .slice(0, NURSERY_SLOTS)
+    .map(e => {
+      const pet = fill(e.pet, petDefaults(t), 'pet');
+      Object.assign(pet, { status: 'nursery', task: null, station: null });
+      return { ...e, pet, hatchedAt: Number.isFinite(e.hatchedAt) ? e.hatchedAt : t };
+    });
+
+  const usedId = new Set(), usedSpot = new Set();
+  s.decor = s.decor.filter(d => isObj(d) && typeof d.id === 'string' && d.id && typeof d.decorId === 'string' && d.decorId
+    && Number.isInteger(d.spot) && d.spot >= 0 && !usedId.has(d.id) && !usedSpot.has(d.spot) && usedId.add(d.id) && usedSpot.add(d.spot));
+  s.inventoryDecor = Object.fromEntries(Object.entries(s.inventoryDecor).filter(([, n]) => Number.isFinite(n) && n > 0));
+
+  const cards = s.postcards.filter(c => isObj(c) && typeof c.text === 'string' && c.text)
+    .map((c, i) => ({ ...c, id: typeof c.id === 'string' && c.id ? c.id : `pc${i}`, petName: typeof c.petName === 'string' ? c.petName : '',
+      speciesId: typeof c.speciesId === 'string' ? c.speciesId : '', at: Number.isFinite(c.at) ? c.at : 0, read: c.read === true }));
+  if (cards.length > POSTCARDS_MAX) { // keep the newest by time (array order kept), drop the oldest
+    const cut = [...cards].sort((a, b) => b.at - a.at).slice(0, POSTCARDS_MAX);
+    s.postcards = cards.filter(c => cut.includes(c));
+  } else {
+    s.postcards = cards;
+  }
 }
 
 let warnedNewer = false;
@@ -280,9 +384,8 @@ function migrateUnsafe(raw) {
   s.log = s.log.filter(isObj).slice(0, 50);
   s.plots = s.plots.filter(isObj).map((p, i) => fill(p, newPlot(i), 'plot'));
   if (!s.plots.length) s.plots = base.plots;
-  s.yard.pending = Math.max(0, s.yard.pending);
-  s.yard.items = Object.fromEntries(Object.entries(s.yard.items).filter(([, n]) => Number.isFinite(n) && n > 0));
   repairStations(s);
+  sanitiseV5(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

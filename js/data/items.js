@@ -76,8 +76,19 @@ const FORAGE = [
   ['forage_star',     '🌟', 'เศษดาว',     260, null],
   ['forage_herb',     '🌿', 'สมุนไพร',    5,   { hunger: 10, happy: 2,  tags: ['veg', 'leaf'] }],
 ];
+// V7: materials for ขยายลาน / ตกแต่งลาน. They can't be bought (buy: null), only gathered, and sell low, so there is no buy->sell loop.
+export const YARD_MATERIALS = {
+  forage_wood: 'ใช้ขยายลาน + ทำของตกแต่ง',
+  forage_stone: 'ใช้ขยายลาน + ทำของตกแต่ง',
+  forage_shell: 'ใช้ขยายลานเป็นลานบ่อน้ำ (ลานชั้น M)',
+  forage_berry: 'ใช้ขยายลานเป็นลานสวน (ลานชั้น L) · เลี้ยงน้องได้',
+  forage_honey: 'ใช้ขยายลานเป็นลานสวน (ลานชั้น L) แทนเบอร์รีได้ · เลี้ยงน้องได้',
+  forage_gem: 'ใช้ขยายลานเป็นลานเนินเขา (ลานชั้น XL)',
+  forage_feather: 'ใช้ทำที่นอนนุ่ม',
+  forage_herb: 'ใช้ทำของตกแต่ง · เลี้ยงน้องได้',
+};
 for (const [id, emoji, nameTh, sell, food] of FORAGE) {
-  const item = { id, emoji, nameTh, type: 'forage', buy: null, sell, unlockLevel: 1, desc: 'ของที่ได้จากการออกสำรวจ' };
+  const item = { id, emoji, nameTh, type: 'forage', buy: null, sell, unlockLevel: 1, desc: YARD_MATERIALS[id] || 'ของที่ได้จากการออกสำรวจ' };
   if (food) item.food = food;
   add(item);
 }

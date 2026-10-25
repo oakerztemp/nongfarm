@@ -56,6 +56,13 @@
 //   (or shift/ctrl + left) drag orbits, wheel zooms; touch: two fingers pinch-zoom and twist to rotate. A double tap on empty
 //   ground re-centres (never when the 2nd tap lands on an actor, so double-tapping a pet still reaches onTap twice).
 //   world.recenter() / world.setPan(x, z) / world.getPan(); world.getView() also returns { pan:{x,z} }.
+//   PET STROKES (CONTRACT_V8 §1): a press that STARTS on an actor and moves more than 8 px is a stroke, not a pan (when somebody
+//   listens: world.onPetStroke(fn) -> unsubscribe). fn({ id, phase:'start'|'move'|'end', point:Vector3, region:'head'|'chin'|'back',
+//   speed (screen px/s, smoothed), durationMs (since 'start'), x, y (client px) }). A tap (< 8 px) is still a tap; a drag that starts
+//   on empty ground still pans; a 2nd finger / pointercancel / the actor being removed ends the stroke. region comes from the hit
+//   point relative to the actor: addActor(id, obj, { height, radius, stroke: { headY, chinY, billboard } }) - headY / chinY are heights
+//   above the feet (defaults 0.68 / 0.42 of height); a 3D model's chin is its lower FRONT (local +z), the rest is the back; billboard:true
+//   uses a plain vertical split (no front/back). { stroke: false } opts an actor out (nests, cribs): a drag from it pans.
 //   The canvas sets touch-action:none, so the page does not scroll while a finger is on the 3D view.
 //   world.decorSpots -> [{ index, x, z }] : 2 / 4 / 6 / 8 spots (S / M / L / XL) on walkable ground away from the barn, nests,
 //   pond and other yard props. Spot i keeps its position in every tier (a placed decor never moves); the array is replaced on
@@ -250,6 +257,23 @@ export function panDelta(dxPx, dyPx, yaw, pitch, distance, fovDeg, viewportHeigh
     x: Math.cos(yaw) * right + Math.sin(yaw) * back,
     z: -Math.sin(yaw) * right + Math.cos(yaw) * back,
   };
+}
+
+/** Strokes: fast scrubbing above this (px/s) is "giggle" territory; B tunes its own thresholds, this is just a sane default. */
+export const STROKE_FAST_PX_S = 700;
+export const STROKE_MIN_SESSION_MS = 600;
+
+/**
+ * Region of a stroke point on a pet: 'head' | 'chin' | 'back'.
+ * dy: height of the point above the feet; dz: offset along the pet's facing direction (local +z); dims: { height, radius, headY, chinY, billboard }.
+ */
+export function strokeRegion(dy, dz, dims) {
+  const h = dims.height > 0 ? dims.height : 1;
+  const headY = dims.headY > 0 ? dims.headY : h * 0.68;
+  const chinY = dims.chinY > 0 ? dims.chinY : h * 0.42;
+  if (dy >= headY) return 'head';
+  if (dy >= chinY && (dims.billboard || dz >= (dims.radius || 0.5) * 0.15)) return 'chin';
+  return 'back';
 }
 
 /** Second tap of a double tap? prev/cur: { x, y, t } (px, ms). */
@@ -960,6 +984,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     function removeActor(id) {
       const actor = actors.get(id);
       if (!actor) return false;
+      for (const q of pointers.values()) if (q.stroke && q.stroke.id === id) { endStroke(q, q.x, q.y); q.ignore = true; } // the stroke ends with its pet
       scene.remove(actor.object);
       actors.delete(id);
       objectToActor.delete(actor.object);
@@ -971,7 +996,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (actors.has(id)) removeActor(id);
       const radius = opts.radius > 0 ? opts.radius : 0.5;
       const height = opts.height > 0 ? opts.height : radius * 2;
-      const actor = { id, object, radius, height, shadow: opts.shadow !== false, shadowScale: opts.shadowScale || 1 };
+      const actor = { id, object, radius, height, shadow: opts.shadow !== false, shadowScale: opts.shadowScale || 1, stroke: opts.stroke === false ? false : (opts.stroke || {}) };
       scene.add(object);
       actors.set(id, actor);
       objectToActor.set(object, actor);
@@ -1198,6 +1223,33 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     const onContextMenu = e => e.preventDefault();
     canvas.addEventListener('contextmenu', onContextMenu);
 
+    const strokeFns = new Set();
+    const strokeDir = new THREE.Vector3();
+
+    /** World point under the finger on an actor: the mesh hit, else the screen ray against a plane through the pet's middle. */
+    function strokePoint(actor, clientX, clientY) {
+      setRay(clientX, clientY);
+      for (const h of raycaster.intersectObject(actor.object, true)) if (!h.object.userData.noPick) return h.point.clone();
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(actor.object.position.y + actor.height * 0.5));
+      return raycaster.ray.intersectPlane(plane, new THREE.Vector3()) || actor.object.position.clone();
+    }
+
+    function emitStroke(p, phase, clientX, clientY, now_) {
+      const actor = actors.get(p.stroke.id);
+      if (actor) { p.stroke.point = strokePoint(actor, clientX, clientY); p.stroke.actor = actor; }
+      const a = p.stroke.actor;
+      const pos = a.object.position;
+      const yaw = a.object.rotation.y;
+      strokeDir.set(p.stroke.point.x - pos.x, p.stroke.point.y - pos.y, p.stroke.point.z - pos.z);
+      const dz = strokeDir.x * Math.sin(yaw) + strokeDir.z * Math.cos(yaw);
+      const dims = { height: a.height, radius: a.radius, ...(a.stroke || {}) };
+      const evt = {
+        id: p.stroke.id, phase, point: p.stroke.point, region: strokeRegion(strokeDir.y, dz, dims),
+        speed: p.stroke.speed, durationMs: Math.max(0, now_ - p.stroke.t0), x: clientX, y: clientY,
+      };
+      for (const fn of [...strokeFns]) { try { fn(evt); } catch (err) { console.error('onPetStroke handler failed', err); } }
+    }
+
     let lastGroundTap = null; // { x, y, t } of the previous tap that hit no actor (double tap = re-centre)
 
     function onPointerDown(e) {
@@ -1210,7 +1262,13 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         startT: performance.now(), moved: false, type: e.pointerType, orbit, button: e.button,
       });
       try { canvas.setPointerCapture(e.pointerId); } catch { /* capture not available */ }
+      if (pointers.size === 1 && !orbit && strokeFns.size) { // might become a stroke if it moves
+        const hit = pick(e.clientX, e.clientY);
+        const a = hit.id ? actors.get(hit.id) : null;
+        if (a && a.stroke !== false) pointers.get(e.pointerId).strokeId = hit.id;
+      }
       if (pointers.size === 2) {
+        for (const q of pointers.values()) if (q.stroke) endStroke(q, q.x, q.y); // a 2nd finger turns it into pinch / twist
         const [a, b] = [...pointers.values()];
         pinch = { dist: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), zoom: view.zoomT, ang: Math.atan2(b.y - a.y, b.x - a.x), yaw: view.yawT };
         gestureMulti = true;
@@ -1218,10 +1276,19 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       boostUntil = Math.max(boostUntil, performance.now() + 250);
     }
 
+    function endStroke(p, x, y) {
+      if (!p.stroke) return;
+      emitStroke(p, 'end', x, y, performance.now());
+      p.stroke = null;
+      p.strokeId = null;
+    }
+
     function onPointerMove(e) {
       const p = pointers.get(e.pointerId);
       if (!p) return;
+      const prevX = p.x, prevY = p.y;
       p.x = e.clientX; p.y = e.clientY;
+      if (p.ignore) return;
       if (pointers.size >= 2 && pinch) {
         const [a, b] = [...pointers.values()];
         const d = Math.max(10, Math.hypot(a.x - b.x, a.y - b.y));
@@ -1238,6 +1305,22 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       // from the moment the 8 px threshold is crossed the view follows the finger (including the first 8 px)
       const mx = p.x - p.lastX, my = p.y - p.lastY;
       p.lastX = p.x; p.lastY = p.y;
+      if (p.strokeId && !p.orbit) {
+        const t = performance.now();
+        if (!p.stroke) {
+          if (!actors.has(p.strokeId)) { p.strokeId = null; } else {
+            p.stroke = { id: p.strokeId, t0: t, tLast: t, speed: 0, point: null, actor: null };
+            emitStroke(p, 'start', p.x, p.y, t);
+            return;
+          }
+        } else {
+          const dt = Math.max(8, t - p.stroke.tLast);
+          p.stroke.speed = p.stroke.speed * 0.7 + (Math.hypot(p.x - prevX, p.y - prevY) / dt * 1000) * 0.3;
+          p.stroke.tLast = t;
+          emitStroke(p, 'move', p.x, p.y, t);
+          return;
+        }
+      }
       if (p.orbit) {
         view.yawT -= mx * YAW_PER_PX;
         view.pitchT = clampPitch(view.pitchT + my * PITCH_PER_PX);
@@ -1254,6 +1337,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       pointers.delete(e.pointerId);
       if (pointers.size < 2) pinch = null;
       boostUntil = Math.max(boostUntil, performance.now() + 250);
+      if (p.ignore) return;
+      if (p.stroke) { p.stroke.speed *= 0.5; endStroke(p, e.clientX, e.clientY); return; }
       if (e.type === 'pointercancel' || gestureMulti) return;
       if (p.button === 2) return; // right button only orbits
       const endT = performance.now();
@@ -1350,6 +1435,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       setYardTier,
       onYardChange(fn) { yardListeners.add(fn); return () => yardListeners.delete(fn); },
       yardInfo,
+      /** Pet strokes (CONTRACT_V8 §1): fn({ id, phase:'start'|'move'|'end', point, region:'head'|'chin'|'back', speed, durationMs, x, y }). Returns unsubscribe. */
+      onPetStroke(fn) { strokeFns.add(fn); return () => strokeFns.delete(fn); },
       /** Static props: addProp(id, object3d, {obstacle}), addMergedProp(id, parts, opts), addInstancedProp(id, geometry, items, opts). */
       addProp, addMergedProp, addInstancedProp, removeProp,
       hasProp: id => props.has(id),

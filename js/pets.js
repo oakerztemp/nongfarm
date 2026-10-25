@@ -8,7 +8,9 @@ import { EGGS, getEgg } from './data/eggs.js';
 import { SPECIES, HABITATS, RARITIES, getSpecies } from './data/species.js';
 import { getTraitDef, TRAIT_SCALE } from './data/traits.js';
 import { CROPS } from './data/crops.js';
-import { hashId } from './petBehaviour.js';
+import { hashId, favoriteSpot, FAV_LABEL, STROKE_MIN_MS } from './petBehaviour.js';
+
+import { tickFriends, bestFriendMap, bestFriendOf as bestFriendId, friendDecayMult, removePetFriends } from './friends.js';
 
 const HOUR = 3600 * 1000;
 
@@ -521,7 +523,11 @@ export function stationStatus(state, pet) {
 // ── Tick ────────────────────────────────────────────────────────────────────
 export function tickPets(state, dtMs, { offline = false } = {}) {
   const dt = Math.max(0, dtMs || 0);
-  if (dt > 0) for (const pet of state.pets) tickOnePet(pet, dt, offline);
+  if (dt > 0) {
+    const bf = bestFriendMap(state);   // happiness decays x0.8 while the best friend is home too (friends.js owns the rule)
+    for (const pet of state.pets) tickOnePet(pet, dt, offline, friendDecayMult(state, pet, bf));
+    try { tickFriends(state, dt, { offline }); } catch (e) { console.error('tickFriends failed', e); }
+  }
   if (dt > 0) tickYard(state, dt);
   tickIncubator(state, now());
   tickPostcards(state, offline);
@@ -532,7 +538,7 @@ function tirelessFactor(pet) {
   return tr && tr.id === 'tireless' ? Math.max(0.3, 1 - 0.3 * tr.scale) : 1;
 }
 
-function tickOnePet(pet, dt, offline) {
+function tickOnePet(pet, dt, offline, happyMult = 1) {
   const h = dt / HOUR;
   const decay = offline ? OFFLINE_DECAY : 1;
   const p = PERSONALITIES[pet.personality] || PERSONALITIES.cheerful;
@@ -541,7 +547,7 @@ function tickOnePet(pet, dt, offline) {
   const st = pet.stats;
 
   st.hunger -= RATE.hunger * h * decay * calm * p.hungerDecay;
-  st.happy -= RATE.happy * h * decay * calm * p.happyDecay * (pet.sick ? 2 : 1);
+  st.happy -= RATE.happy * h * decay * calm * p.happyDecay * (pet.sick ? 2 : 1) * happyMult;
   st.clean -= (RATE.clean + RATE.cleanPerPoop * pet.poop) * h * decay * calm;
 
   if (pet.status === 'working' || pet.status === 'expedition') {
@@ -802,6 +808,42 @@ export function patPet(state, petId) {
   return { ok: true, msg: '', rewarded: true, bond, left: PAT_DAILY_MAX - pet.patToday };
 }
 
+/**
+ * One stroke session on a pet (CONTRACT_V8 §1): rewards exactly like ONE pat (patPet: 5 a day, +1 bond through the
+ * 30/day cap), and only when the stroke lasted STROKE_MIN_MS. `region` is the spot stroked ('head' | 'chin' | 'back'):
+ * the pet's favourite one gives the discovery (pet.favKnown, saved) the first time. Never wakes a sleeping pet.
+ */
+export function strokePet(state, petId, { durationMs = 0, region = null } = {}) {
+  const pet = getPet(state, petId);
+  if (!pet) return fail('ไม่พบน้องตัวนี้');
+  const long = Number(durationMs) >= STROKE_MIN_MS;
+  const r = long ? patPet(state, petId) : { ok: true, msg: '', rewarded: false, bond: 0, left: patsLeftToday(pet) };
+  if (!r.ok) return r;
+  const out = { ...r, committed: long, favorite: false, discovered: false, region };
+  if (long && region && region === favoriteSpot(pet.id)) {
+    out.favorite = true;
+    if (!pet.favKnown) {
+      pet.favKnown = true;
+      out.discovered = true;
+      out.msg = `ค้นพบแล้ว! ${petName(pet)} ชอบให้${FAV_LABEL[region]} 💕`;
+    }
+  }
+  return out;
+}
+
+/** "ชอบ: เกาคาง" for the pet sheet once the favourite spot has been discovered, else ''. */
+export function favoriteLine(pet) {
+  return pet && pet.favKnown ? `ชอบ: ${FAV_LABEL[favoriteSpot(pet.id)]}` : '';
+}
+
+// ── เพื่อนซี้ (CONTRACT_V8 §4): points + best-friend rules live in js/friends.js; this is only the sheet line ──
+/** "เพื่อนซี้: 🐱 มะลิ" for the pet sheet, or ''. */
+export function friendLine(state, pet) {
+  const id = pet && bestFriendId(state, pet.id);
+  const f = id && getPet(state, id);
+  return f ? `เพื่อนซี้: ${petEmoji(f)} ${petName(f)}` : '';
+}
+
 export function giveToy(state, petId) {
   const pet = getPet(state, petId);
   const blocked = careBlocker(pet, { allowWorking: false });
@@ -935,6 +977,7 @@ export function swapWithNursery(state, nurseryPetId, yardPetId) {
   const y = ensureYard(state);
   const gift = takeGift(state, y, out.id);
   delete y.byPet[out.id];
+  removePetFriends(state, out.id);
   clearStationOf(state, out);
   state.pets.splice(state.pets.indexOf(out), 1);
   out.status = 'nursery';
@@ -979,6 +1022,7 @@ export function rehomePet(state, petId) {
   addCoins(state, RELEASE_COINS);
   addStardust(state, dust);
   bumpStat(state, 'released');
+  removePetFriends(state, pet.id);
   schedulePostcard(state, pet);
   const got = giftParts(gift.coins, gift.items);
   return { ok: true, msg: `💌 ส่ง${label}ไปบ้านใหม่แล้ว 🏡 (ได้รับ ${RELEASE_COINS} 🪙 และผงดาว ${dust} ✨${got ? ` + ของขวัญที่ค้างอยู่ ${got}` : ''}) เดี๋ยวน้องอาจส่งโปสการ์ดมานะ`, dust, gift };

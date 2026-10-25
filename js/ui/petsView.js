@@ -17,12 +17,26 @@ import {
   getTrait, bondProgress, giftAvailable, claimGift, BOND_DAILY_CAP, GIFT_MIN_HEARTS,
   STARDUST_BY_RARITY, BOOK_GOALS, getGoal, isGoalClaimed, claimGoal, makeShiny, buyHabitatEgg,
   RELEASE_COINS, NURSERY_SLOTS, nurseryPets, getNurseryPet, adoptFromNursery, swapWithNursery, compareCandidates,
-  arrivedPostcards, unreadPostcardCount, markPostcardRead,
+  arrivedPostcards, unreadPostcardCount, markPostcardRead, favoriteLine, friendLine,
 } from '../pets.js';
 import * as farmLogic from '../farm.js'; // decor build / place / remove (namespace import: guarded, in case it is missing)
 import { DECOR, getDecor } from '../data/decor.js';
+import { takeAwayDigest } from '../away.js';
+import { onBestFriend, friendEventMessage } from '../friends.js';
 
 const e = escapeHtml;
+
+// ── Greeting (CONTRACT_V8 §3): the away digest is told once per app open ───────────────────────────────────
+/** The digest of the time away (>= 30 min), handed out once per app open by away.js; null when there is none. */
+function takeGreeting() {
+  let d = null;
+  try { d = takeAwayDigest(); } catch (err) { console.warn('away digest unavailable', err); }
+  return d && Array.isArray(d.lines) && d.lines.length ? d : null;
+}
+
+// a new best-friend pair (CONTRACT_V8 §4): one toast, here (friends.js only queues / emits the event)
+onBestFriend(evt => { if (!evt.offline) notify(friendEventMessage(evt), 'success'); });
+let listGreet = null;   // { lines, i } for the list view (and reduced motion): just the speech bubble, no running pets
 const RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
 const DIET_TH = {
   veg: 'ผัก', fruit: 'ผลไม้', grain: 'ธัญพืช', meat: 'เนื้อสัตว์', fish: 'ปลา',
@@ -553,6 +567,12 @@ function renderBarn(state) {
           : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดลาน 3 มิติ…</div>'}
       </section></div>`;
   }
+  if (!listGreet) { const d = takeGreeting(); if (d) listGreet = { lines: d.lines.slice(0, 5), i: 0 }; }
+  const greetBar = listGreet ? (() => {
+    const l = listGreet.lines[listGreet.i];
+    return `<button type="button" class="greet-bar" data-action="greet-next"><span class="greet-t">${e(l.emoji || '💬')} ${e(l.text)}</span>
+      <small>${listGreet.i < listGreet.lines.length - 1 ? `แตะเพื่ออ่านต่อ ▸ (${listGreet.i + 1}/${listGreet.lines.length})` : 'แตะเพื่อปิด'}</small></button>`;
+  })() : '';
   const hasEgg = state.incubator.length > 0 || EGGS.some(eg => countItem(state, eg.id) > 0);
   const empty = `<div class="empty-state barn-empty">
       <div class="barn-empty-emoji">🥚</div>
@@ -560,6 +580,7 @@ function renderBarn(state) {
       <p class="muted">${hasEgg ? 'ใส่ไข่ในตู้ฟักด้านบน แล้วรอฟักเป็นเพื่อนตัวแรกของคุณ!' : 'ไปซื้อไข่ที่ร้านค้า 🛒 แล้วนำมาฟักในตู้ฟักได้เลย'}</p>
     </div>`;
   return `<div class="barn-view">
+    ${greetBar}
     ${renderIncubator(state, t)}
     ${renderNursery(state)}
     <section class="barn-section">
@@ -618,7 +639,9 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
   }
   const pers = persOf(pet);
   const station = stationStatus(state, pet);
-  const stationLine = station ? `<div class="b3-station">📌 ${station.label} · ${station.emoji} ${station.text}</div>` : '';
+  const stationLine = (station ? `<div class="b3-station">📌 ${station.label} · ${station.emoji} ${station.text}</div>` : '') +
+    (favoriteLine(pet) ? `<div class="b3-station">💕 ${e(favoriteLine(pet))}</div>` : '') +
+    (friendLine(state, pet) ? `<div class="b3-station">🤝 ${e(friendLine(state, pet))}</div>` : '');
   const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
       <b>${sp.rarity === 'legendary' ? '✦ ตำนานปรากฏตัว!' : pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
       <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
@@ -652,6 +675,7 @@ const barnCtx = {
   openEggPicker: () => openEggPicker(),
   revealHatch: (pet, toNursery) => openHatchReveal(pet, !!toNursery), // the list's normal reveal, used when the 3D ceremony is cut short
   nurserySheetHtml,
+  takeGreeting,
   nurseryAdopt: id => run(s => adoptFromNursery(s, id)),
   nurserySwap: id => openSwapPicker(id),
   nurseryRehome: id => confirmRehome(id),
@@ -896,6 +920,11 @@ function bindBarn(root) {
     'nursery-swap': withPet(id => openSwapPicker(id)),
     'nursery-rehome': withPet(id => confirmRehome(id)),
     'open-mail': () => openMailbox(),
+    'greet-next': () => {
+      if (!listGreet) return;
+      if (listGreet.i >= listGreet.lines.length - 1) listGreet = null; else listGreet.i++;
+      rerenderBarn();
+    },
     'barn-mode': btn => {
       setBarnViewPref(btn.dataset.mode === 'list' ? 'list' : '3d');
       rerenderBarn(); // (barnMode() starts loading the 3D modules when needed)

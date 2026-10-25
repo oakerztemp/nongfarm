@@ -272,9 +272,11 @@ export function decorOptions(pet, actorState = {}) {
   const size = Number.isFinite(actorState.size) ? actorState.size : 0.5;
   const out = [];
   for (const d of list) {
-    if (!d || d.busy || !Number.isFinite(d.x) || !Number.isFinite(d.z)) continue;
+    if (!d || !Number.isFinite(d.x) || !Number.isFinite(d.z)) continue;
+    const joining = !!d.busy && !!actorState.friendId && d.busy === actorState.friendId; // best friends share a bed / ball
+    if (d.busy && !joining) continue;
     const use = DECOR_USE[d.decorId];
-    if (!use) continue;
+    if (!use || (joining && use === 'rock')) continue;
     let wt = 0;
     switch (use) {
       case 'nap': wt = (num(actorState.napRatio) >= NAP_CAP) ? 0 : pers.nap * 2 + (energy < 60 ? 1.6 : 0) + 0.3; break;
@@ -286,7 +288,8 @@ export function decorOptions(pet, actorState = {}) {
     }
     if (wt <= 0) continue;
     wt /= 1 + dist(ax, az, d.x, d.z) * 0.1;
-    out.push({ d, use, wt });
+    if (joining) wt *= 3;
+    out.push({ d, use, wt, joining });
   }
   return out;
 }
@@ -369,7 +372,16 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
     approach: others.length && !sad ? pers.approach : 0,
     signature: 0,
     decor: 0,
+    buddy: 0,
   };
+  // best friends: nap beside a napping friend, trot over to say hi when the friend is far away
+  const fr = actorState.friend && Number.isFinite(actorState.friend.x) && Number.isFinite(actorState.friend.z) ? actorState.friend : null;
+  let buddyMode = null;
+  if (fr && fr.id !== (pet && pet.id)) {
+    const far = dist(ax, az, fr.x, fr.z);
+    if (fr.napping && energy < 96 && !sad) { buddyMode = 'nap'; w.buddy = 1.6 + pers.nap * 2 + (energy < 60 ? 1.4 : 0); w.nap = 0; }
+    else if (far > 2.4 && !sad && !fr.napping) { buddyMode = 'nuzzle'; w.buddy = 1.8 + pers.approach + (far > 4 ? 1.2 : 0); }
+  }
   const decorOpts = decorOptions(pet, { ...actorState, x: ax, z: az });
   if (decorOpts.length) w.decor = decorOpts.reduce((a, o) => a + o.wt, 0);
   // staggered naps: when a quarter of the awake pets already nap, nobody starts another one
@@ -379,12 +391,18 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
   const choice = weightedPick(Object.entries(w), rng);
 
   switch (choice) {
+    case 'buddy': {
+      const side = (hashId(pet.id) % 2 ? 1 : -1) * (buddyMode === 'nap' ? 0.8 : 0.9);
+      const target = clampToYard(fr.x + side, fr.z + 0.15);
+      return { type: 'buddy', mode: buddyMode, friendId: fr.id, target, speed: pace * 1.15, duration: buddyMode === 'nap' ? 8 + rng() * 6 : 1.6, nap: buddyMode === 'nap', side };
+    }
     case 'decor': {
       let r = rng() * w.decor, pick = decorOpts[decorOpts.length - 1];
       for (const o of decorOpts) { r -= o.wt; if (r < 0) { pick = o; break; } }
       return {
-        type: 'decor', use: pick.use, decorId: pick.d.decorId, instId: pick.d.id, target: decorStand(pick.use, pick.d.x, pick.d.z),
-        speed: pace, duration: decorDuration(pick.use, rng), nap: pick.use === 'nap',
+        type: 'decor', use: pick.use, decorId: pick.d.decorId, instId: pick.d.id,
+        target: pick.joining ? clampToYard(decorStand(pick.use, pick.d.x, pick.d.z).x + 0.5, decorStand(pick.use, pick.d.x, pick.d.z).z + 0.1) : decorStand(pick.use, pick.d.x, pick.d.z),
+        speed: pace, duration: decorDuration(pick.use, rng), nap: pick.use === 'nap', joining: !!pick.joining,
       };
     }
     case 'wander':
@@ -409,6 +427,178 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
   }
 }
 
+// ── Touch (CONTRACT_V8 §1): stroking a pet ──────────────────────────────────────────────────────────────────
+export const FAV_SPOTS = ['head', 'chin', 'back'];
+export const FAV_LABEL = { head: 'ลูบหัว', chin: 'เกาคาง', back: 'ลูบหลัง' };
+export const STROKE_MIN_MS = 600;      // a stroke shorter than this is no session (no reward)
+export const STROKE_MELT_S = 2;        // after about 2 s of stroking the pet melts
+export const STROKE_FAST = 3.5;        // world units / s of the hand: faster than this is a scrub (giggle)
+
+/** The spot a pet loves to be touched, from its id only (no RNG, same every time and on every device). */
+export function favoriteSpot(petId) {
+  return FAV_SPOTS[hashId(`${petId}:fav`) % FAV_SPOTS.length];
+}
+
+/**
+ * Region of a hit point on a pet: `local` = the point relative to the pet's feet in its own frame
+ * ({ x: right, y: up, z: forward }), `height` = model height. Upper part = head, lower front = chin, the rest = back.
+ * (The engine reports a region itself; this is the fallback and what the tests use.)
+ */
+export function regionFromLocal(local, height) {
+  const h = Math.max(0.2, num(height, 1));
+  const y = num(local && local.y) / h;
+  const f = num(local && local.z) / h;
+  if (y >= 0.68) return 'head';
+  if (f > 0.12 && y < 0.5) return 'chin';
+  return 'back';
+}
+
+/**
+ * One stroke session = press on a pet ... release. It owns its clock, the hand speed and the "already paid" flag, so
+ * however many 'move' events arrive it can be committed (patPet) exactly once.
+ */
+export function createStroke(petId, region = 'head') {
+  return { petId, region, t: 0, speed: 0, giggle: 0, last: null, regionT: { head: 0, chin: 0, back: 0 }, ended: false, committed: false };
+}
+
+/** The hand moved to `point` (world units) dt seconds after its last position: updates the smoothed hand speed. */
+export function handStroke(s, point, dt) {
+  if (!s || s.ended || !point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) return s;
+  const d = Math.max(0, num(dt));
+  if (s.last && d > 0) {
+    const v = Math.hypot(point.x - s.last.x, (num(point.y) - num(s.last.y)) * 0.5, point.z - s.last.z) / d;
+    s.speed += (Math.min(v, 30) - s.speed) * Math.min(1, d * 8);
+  }
+  s.last = { x: point.x, y: num(point.y), z: point.z };
+  return s;
+}
+
+/** Advances the session clock by dt seconds (a still hand slows the speed down, a fast one makes the pet giggle). */
+export function tickStroke(s, dt) {
+  if (!s || s.ended) return s;
+  const d = Math.max(0, num(dt));
+  s.t += d;
+  s.speed *= Math.max(0, 1 - d * 1.5);
+  if (s.regionT[s.region] !== undefined) s.regionT[s.region] += d;
+  s.giggle = s.speed > STROKE_FAST ? Math.min(1, s.giggle + d * 4) : Math.max(0, s.giggle - d * 2);
+  return s;
+}
+
+/** One step with both: the hand is at `point` and dt seconds went by. */
+export function moveStroke(s, dt, point) {
+  handStroke(s, point, dt);
+  return tickStroke(s, dt);
+}
+
+/** The spot the hand spent most of the session on. */
+export function dominantRegion(s) {
+  if (!s) return null;
+  let best = s.region, bt = -1;
+  for (const k of FAV_SPOTS) if (s.regionT[k] > bt) { bt = s.regionT[k]; best = k; }
+  return bt > 0 ? best : s.region;
+}
+
+/** 0 -> 1 while the pet melts (lies down / rolls over), starting at STROKE_MELT_S. */
+export function strokeMelt(s) {
+  return s ? Math.min(1, Math.max(0, (s.t - STROKE_MELT_S) / 0.6)) : 0;
+}
+
+/** Ends the session. Returns { commit, durationMs }: commit is true for the first end of a long-enough stroke only. */
+export function endStroke(s, durationMs = null) {
+  if (!s) return { commit: false, durationMs: 0 };
+  const ms = Math.max(num(durationMs, 0), s.t * 1000);
+  const commit = !s.ended && !s.committed && ms >= STROKE_MIN_MS;
+  s.ended = true;
+  if (commit) s.committed = true;
+  return { commit, durationMs: ms };
+}
+
+/** Forgets every trace of a stroke on an actor record (pose, squint, melt). */
+export function clearStrokeState(A) {
+  A.stroke = null; A.strokeMelt = 0; A.squint = 0; A.strokePoint = null; A.strokeEnd = null;
+}
+
+/**
+ * The 'end' of a stroke on actor record A. The session is always released (a pet that hid or is still spawning must not
+ * keep a stale stroke); the reward info { commit, durationMs, region } comes back only when the pet may be paid.
+ */
+export function finishActorStroke(A, durationMs, { canReward = true } = {}) {
+  const S = A && A.stroke;
+  if (!S) return null;
+  const res = endStroke(S, durationMs);
+  const region = dominantRegion(S);
+  if (!canReward) { clearStrokeState(A); return null; }
+  A.stroke = null;
+  return { ...res, region };
+}
+
+// ── 🎁 labels over pets (CONTRACT_V8 follow-up): at most a few at a time ─────────────────────────────────────
+export const GIFT_LABEL_MAX = 4;
+
+/**
+ * Which gifted pets get a 🎁 label. cands: [{ id, full, size, dist }] (size = how big the gift is, dist = distance from the
+ * middle of the screen). Full pets (🎁✨) first, then the biggest gifts, then the ones nearer the middle; at most `max`.
+ */
+export function pickGiftLabels(cands, max = GIFT_LABEL_MAX) {
+  return [...(cands || [])]
+    .sort((a, b) => (b.full ? 1 : 0) - (a.full ? 1 : 0) || b.size - a.size || a.dist - b.dist || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .slice(0, Math.max(0, max))
+    .map(c => c.id);
+}
+
+// ── Drag-feed (CONTRACT_V8 §2) ──────────────────────────────────────────────────────────────────────────────
+export const FEED_RANGE = 1.2;   // world units: food this close to a pet makes it look, open its mouth and lean in
+
+/** Closest candidate within `range` of the food. candidates: [{ id, x, z }]; food: { x, z } (or null). */
+export function pickFeedTarget(food, candidates, range = FEED_RANGE) {
+  if (!food || !Number.isFinite(food.x) || !Number.isFinite(food.z)) return null;
+  let best = null, bd = range;
+  for (const c of candidates || []) {
+    const d = Math.hypot(c.x - food.x, c.z - food.z);
+    if (d <= bd) { bd = d; best = c.id; }
+  }
+  return best;
+}
+
+/** A food item being dragged from the tray: drop() hands out the feeding exactly once (a miss springs back). */
+export function createFeedDrag(itemId) {
+  return {
+    itemId, over: null, done: false,
+    hover(petId) { if (!this.done) this.over = petId || null; },
+    drop() {
+      if (this.done) return null;
+      this.done = true;
+      return this.over ? { petId: this.over, itemId: this.itemId } : null;
+    },
+  };
+}
+
+// ── Greeting scene (CONTRACT_V8 §3) ─────────────────────────────────────────────────────────────────────────
+/**
+ * Who runs to the camera and what they say. digest = { lines: [{ petId?, emoji, text }], highlights: [petId] }.
+ * 2-4 pets that are in the yard and awake (highlights first, then a deterministic top-up); null when there is nothing to say.
+ */
+export function greetingPlan(digest, pets, { min = 2, max = 4 } = {}) {
+  const lines = digest && Array.isArray(digest.lines) ? digest.lines.filter(l => l && l.text).slice(0, 5) : [];
+  if (!lines.length) return null;
+  const ok = new Map();
+  for (const p of pets || []) if (p && p.status !== 'sleeping' && p.status !== 'working' && p.status !== 'expedition' && !p.sick) ok.set(p.id, p);
+  if (!ok.size) return null;
+  const ids = [];
+  for (const id of [...((digest && digest.highlights) || []), ...lines.map(l => l.petId)]) if (id && ok.has(id) && !ids.includes(id)) ids.push(id);
+  if (ids.length < min) {
+    const rest = [...ok.keys()].filter(id => !ids.includes(id)).sort((a, b) => hashId(a) - hashId(b));
+    for (const id of rest) { if (ids.length >= min) break; ids.push(id); }
+  }
+  return { ids: ids.slice(0, max), lines };
+}
+
+/** Standing spots in a row near the camera for n pets. */
+export function greetSpots(n) {
+  const z = Math.min(YARD.walkRadius - 0.9, 1.8);   // high enough to stay above the food tray
+  return Array.from({ length: n }, (_, i) => clampToYard((i - (n - 1) / 2) * 1.35, z));
+}
+
 // ── Action loop (pure; barn3d.js drives it every frame, tests drive it with a fake clock) ──────────────────
 export const WALK_BASE = 1.25;   // world units / second at pace 1
 export const TURN_RATE = 9;      // heading smoothing (1/s)
@@ -417,7 +607,7 @@ const WALKS = new Set(['wander', 'approach', 'walkTo']);
 export const DEFAULT_DUR = {
   idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3,
   flyCircle: 9, soar: 8, gallop: 6, sprint: 5, breach: 2.2, roar: 2.6, munch: 5, snowPuff: 3, shimmer: 2.4, flourish: 1.4,
-  wave: 1.7, decor: 5,
+  wave: 1.7, decor: 5, buddy: 5,
 };
 
 /** Shortest signed angle from a to b. */
@@ -445,12 +635,13 @@ export function advanceActor(A, dt, decide) {
   act.t += dt;
   const finish = () => { if (A.act === act) decide(A); }; // a callback may already have started a new action
   // A decor visit first walks to its stand point (act.arrived = false), then uses the decor for `dur` seconds from arrival.
-  const walkingToDecor = act.type === 'decor' && !act.arrived;
+  const walkingToDecor = (act.type === 'decor' || act.type === 'buddy') && !act.arrived;
   if (WALKS.has(act.type) || walkingToDecor) {
     const tgt = act.target;
     if (!tgt || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.z)) { finish(); return { moving: false, decided: true }; }
     const dx = tgt.x - A.x, dz = tgt.z - A.z, d = Math.hypot(dx, dz);
-    if (d < 0.12 || act.t > 25) {
+    // (a pet walking to its friend is held off by the yard's personal-space push, so "there" is a little looser)
+    if (d < (act.type === 'buddy' ? 0.5 : 0.12) || act.t > 25) {
       if (walkingToDecor) {
         act.arrived = true;
         act.t = 0;

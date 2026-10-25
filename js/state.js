@@ -7,9 +7,15 @@ import { getSpecies } from './data/species.js';
 // v5 constants other modules rely on (CONTRACT_V7 §1):
 //   NURSERY_SLOTS  max babies waiting in state.nursery        POSTCARDS_MAX  postcards kept (oldest dropped)
 //   YARD_CAP_MS    pets.js owns the live 6 h gift cap; the migration only clamps credited ms to the same value
-export const STATE_VERSION = 5;
+export const STATE_VERSION = 6;
 export const NURSERY_SLOTS = 3;
 export const POSTCARDS_MAX = 30;
+export const FRIEND_PAIRS_PER_PET = 4;  // v6: every pet keeps its 4 strongest pairs (plus its best-friend pair)...
+export const FRIEND_PAIRS_MAX = 120;    // ...so friends stays near 20 x 4 pairs; this is the hard ceiling on load
+export const FRIEND_BEST_POINTS = 72;   // a pair needs this many points to be best friends
+export const FRIENDS_MET_MAX = 40;      // pairKeys already announced as best friends (no second toast)
+/** Key of a friend pair in state.friends: the two pet ids sorted and joined by '|'. */
+export const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 const V4_YARD_CAP_MS = 6 * 3600 * 1000;
 export const DEFAULT_FARM_NAME = 'ฟาร์มของฉัน';
 const PLOT_COUNT = 4;
@@ -61,6 +67,9 @@ export function createNewState() {
     decor: [],            // [{ id, decorId, spot }] placed decorations
     inventoryDecor: {},   // decorId -> count built but not placed
     postcards: [],        // [{ id, petName, speciesId, text, at, read }] <= POSTCARDS_MAX
+    friends: {},          // v6: pairKey(a, b) -> points (fractional); each pet keeps its top FRIEND_PAIRS_PER_PET pairs; js/friends.js owns the rules
+    friendsMet: [],       // v6: pairKeys already announced as best friends, <= FRIENDS_MET_MAX (newest last)
+    lastGreetAt: 0,       // v6: ms of the last "pets greet you" scene (barn3d), so it plays once per away spell
   };
 }
 
@@ -94,6 +103,7 @@ function petDefaults(t) {
     status: 'idle', task: null, bornAt: t,
     bond: 0, bondDay: null, bondToday: 0, giftDay: null,
     station: null,
+    favKnown: false,   // v6: the player has discovered this pet's favourite stroking spot
   };
 }
 
@@ -258,6 +268,17 @@ export const MIGRATIONS = {
     s.version = 5;
     return s;
   },
+
+  // v5 -> v6: friend points between pets, favourite-spot discovery, greeting stamp. Pairs are built by tickFriends.
+  5(s) {
+    if (!isObj(s.friends)) s.friends = {};
+    if (!Array.isArray(s.friendsMet)) s.friendsMet = [];
+    if (!Number.isFinite(s.lastGreetAt)) s.lastGreetAt = 0;
+    for (const p of Array.isArray(s.pets) ? s.pets : []) if (isObj(p) && typeof p.favKnown !== 'boolean') p.favKnown = false;
+    for (const e of Array.isArray(s.nursery) ? s.nursery : []) if (isObj(e) && isObj(e.pet) && typeof e.pet.favKnown !== 'boolean') e.pet.favKnown = false;
+    s.version = 6;
+    return s;
+  },
 };
 
 /**
@@ -340,6 +361,57 @@ function sanitiseV5(s) {
   }
 }
 
+/**
+ * Best friends = a greedy matching over the pairs with >= FRIEND_BEST_POINTS: strongest pair first, a pet joins at most one pair
+ * (ties by key). Returns Map petId -> partnerId (both directions). Pure; friends.js, away.js and the pet logic all use it.
+ */
+export function friendMatching(friends) {
+  const out = new Map();
+  if (!isObj(friends)) return out;
+  const list = Object.entries(friends).filter(([, v]) => v >= FRIEND_BEST_POINTS);
+  list.sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  for (const [key] of list) {
+    const [a, b] = key.split('|');
+    if (!a || !b || out.has(a) || out.has(b)) continue;
+    out.set(a, b);
+    out.set(b, a);
+  }
+  return out;
+}
+
+/** New friends object keeping every pet's FRIEND_PAIRS_PER_PET strongest pairs plus the best-friend pairs (<= FRIEND_PAIRS_MAX). Pure. */
+export function pruneFriendPairs(friends) {
+  const entries = Object.entries(friends).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  const count = new Map();
+  const keep = new Set();
+  const matched = friendMatching(friends);
+  for (const [key] of entries) {
+    const [a, b] = key.split('|');
+    if (matched.get(a) === b) { keep.add(key); continue; }
+    if ((count.get(a) || 0) < FRIEND_PAIRS_PER_PET || (count.get(b) || 0) < FRIEND_PAIRS_PER_PET) keep.add(key);
+    if (keep.has(key)) { count.set(a, (count.get(a) || 0) + 1); count.set(b, (count.get(b) || 0) + 1); }
+  }
+  return Object.fromEntries(entries.filter(([k]) => keep.has(k)).slice(0, FRIEND_PAIRS_MAX));
+}
+
+/** v6: friends keeps only valid pairs of yard pets (rehomed / nursery pets drop out), pruned per pet; friendsMet cleaned. Idempotent. */
+function sanitiseV6(s) {
+  const ids = new Set(s.pets.map(p => p.id));
+  const good = {};
+  for (const [key, v] of Object.entries(s.friends)) {
+    const [a, b, ...rest] = key.split('|');
+    if (rest.length || !a || !b || a === b || key !== pairKey(a, b) || !ids.has(a) || !ids.has(b)) continue;
+    if (Number.isFinite(v) && v > 0) good[key] = v;
+  }
+  s.friends = pruneFriendPairs(good);
+  const met = [];
+  for (const k of s.friendsMet) {
+    const [a, b, ...rest] = typeof k === 'string' ? k.split('|') : [];
+    if (!rest.length && a && b && a !== b && k === pairKey(a, b) && !met.includes(k)) met.push(k);
+  }
+  s.friendsMet = met.slice(-FRIENDS_MET_MAX);
+}
+
 let warnedNewer = false;
 
 /** True for a save written by a newer client than this one understands (must never be uploaded). */
@@ -386,6 +458,7 @@ function migrateUnsafe(raw) {
   if (!s.plots.length) s.plots = base.plots;
   repairStations(s);
   sanitiseV5(s);
+  sanitiseV6(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

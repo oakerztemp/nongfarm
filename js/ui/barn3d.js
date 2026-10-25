@@ -17,10 +17,14 @@ import { getItem } from '../data/items.js';
 import {
   getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop,
   hatchReady, foodEffect, petGift, yardPreview, collectPetGift, collectYard, nurseryPets, NURSERY_SLOTS,
+  strokePet,
 } from '../pets.js';
+import { bestFriendMap, onBestFriend } from '../friends.js';
 import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, beginAction, advanceActor, angDiff,
   signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony,
-  configureYard, yardProps, yardTierOf, DECOR_USE } from '../petBehaviour.js';
+  configureYard, yardProps, yardTierOf, DECOR_USE,
+  favoriteSpot, createStroke, handStroke, tickStroke, strokeMelt, finishActorStroke, clearStrokeState, pickGiftLabels, GIFT_LABEL_MAX,
+  pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots } from '../petBehaviour.js';
 import { createWorld, mergeStaticParts } from '../world3d/engine.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
@@ -287,7 +291,7 @@ export function mountBarn3d(host, ctx) {
     const f = new THREE.Mesh(G.food, toon(0xe9c46a)); f.position.y = 0.23;
     bowl.add(b, f);
     bowl.position.set(YARD.bowl.x, 0, YARD.bowl.z);
-    world.addActor('bowl', bowl, { radius: 0.5, height: 0.35, shadowScale: 0.9 });
+    world.addActor('bowl', bowl, { radius: 0.5, height: 0.35, shadowScale: 0.9, stroke: false });
   }
   const ring = new THREE.Mesh(G.ring, ringMat);
   ring.visible = false;
@@ -318,6 +322,22 @@ export function mountBarn3d(host, ctx) {
     return { x: ((hashId(seed) % 100) / 100 - 0.5) * 3, z: 0.5 };
   }
 
+  /** Where the head / chin start on a model (heights above its feet): the engine uses them to tell head from chin from back. */
+  function strokeDims(model, holder) {
+    const h = Math.max(0.5, model.height);
+    if (model.kind === 'billboard') return { billboard: true };
+    try {
+      if (model.head) {
+        holder.updateMatrixWorld(true);
+        const bb = new THREE.Box3().setFromObject(model.head);
+        if (Number.isFinite(bb.min.y) && Number.isFinite(bb.max.y) && bb.max.y > bb.min.y) {
+          return { headY: bb.min.y + (bb.max.y - bb.min.y) * 0.12, chinY: Math.max(h * 0.18, bb.min.y * 0.45) };
+        }
+      }
+    } catch { /* default split */ }
+    return {};
+  }
+
   function createActor(pet, opts = {}) {
     const model = buildModel(pet);
     const holder = new THREE.Group();
@@ -332,11 +352,12 @@ export function mountBarn3d(host, ctx) {
       pinned: false,
       deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, waveAt: 5 + Math.random() * 6, sparkleAt: 4 + Math.random() * 8,
       gift: null, decorId: null,
+      squint: 0, stroke: null, strokeMelt: 0, strokeSide: hashId(pet.id) % 2 ? 1 : -1, strokePoint: null, strokeAt: 0, strokeEnd: null, popAt: 0.3, feedLook: null, greeting: false,
     };
     A.partBase = partBases(model.parts);
     if (opts.spawn) A.spawn = { t: 0, dur: opts.spawn.dur || 0.7, arc: opts.spawn.arc ?? 0.5, drop: opts.spawn.drop || 0, from: opts.spawn.from || null };
     if (A.hidden) holder.visible = false;
-    world.addActor(pet.id, holder, { radius: Math.max(0.35, model.radius), height: Math.max(0.5, model.height) });
+    world.addActor(pet.id, holder, { radius: Math.max(0.35, model.radius), height: Math.max(0.5, model.height), stroke: strokeDims(model, holder) });
     actors.set(pet.id, A);
     if (!A.hidden) decorate(A);
     return A;
@@ -350,7 +371,7 @@ export function mountBarn3d(host, ctx) {
     A.headBase = A.model.head ? A.model.head.rotation.clone() : null;
     A.sig = modelSig(pet);
     A.partBase = partBases(A.model.parts);
-    world.addActor(A.id, A.holder, { radius: Math.max(0.35, A.model.radius), height: Math.max(0.5, A.model.height) });
+    world.addActor(A.id, A.holder, { radius: Math.max(0.35, A.model.radius), height: Math.max(0.5, A.model.height), stroke: strokeDims(A.model, A.holder) });
     if (A.bubble) { const e = A.bubbleEmoji; A.bubble = null; A.bubbleEmoji = ''; setBubble(A, e); }
     if (!A.hidden) decorate(A);
     if (grew) {
@@ -392,6 +413,7 @@ export function mountBarn3d(host, ctx) {
   }
 
   function removeActorRec(A) {
+    clearStrokeState(A);
     releaseDecor(A);
     const ge = giftEls.get(A.id);
     if (ge) { ge.remove(); giftEls.delete(A.id); }
@@ -420,11 +442,12 @@ export function mountBarn3d(host, ctx) {
   function begin(A, act) {
     releaseDecor(A);
     A.act = beginAction(act);
-    A.last = act.type === 'walkTo' ? 'wander' : act.type === 'decor' ? (act.nap ? 'sleep' : 'decor') : act.type;
+    A.last = act.type === 'walkTo' ? 'wander' : (act.type === 'decor' || act.type === 'buddy') ? (act.nap ? 'sleep' : act.type) : act.type;
     if (act.type === 'decor') claimDecor(A, act);
   }
 
   function decide(A) {
+    if (A.greeting) { begin(A, { type: 'lookAtCamera', dur: 2 }); return; }
     if (A.hold > 0) { begin(A, { type: 'idle', dur: Math.min(1.5, A.hold), reason: 'hold' }); return; }
     const others = [];
     let awake = 0, napping = 0;
@@ -436,7 +459,8 @@ export function mountBarn3d(host, ctx) {
       others.push({ id: o.id, x: o.x, z: o.z, tx: tg ? tg.x : undefined, tz: tg ? tg.z : undefined });
     }
     const napRatio = awake > 0 ? napping / awake : 0;
-    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio, decor: decorList(), size: A.model.radius }, Math.random, now());
+    const fr = friendOf(A);
+    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio, decor: decorList(), size: A.model.radius, friend: fr, friendId: fr && fr.id }, Math.random, now());
     if (act.type === 'approach') {
       const o = actors.get(act.otherId);
       if (o) act.target = clampToYard(o.x + (A.x - o.x) * 0.3, o.z + (A.z - o.z) * 0.3);
@@ -457,7 +481,7 @@ export function mountBarn3d(host, ctx) {
     P.hop = 0; P.sy = 1; P.sx = 1; P.roll = 0; P.pitch = 0; P.yaw = 0; P.shake = 0;
     P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0;
     if (A.hold > 0 && A.hold < SELECT_HOLD / 2) A.hold = Math.max(0, A.hold - dt);
-    if (A.hidden) return P; // a newborn waiting for its hatch ceremony
+    if (A.hidden) { if (A.stroke || A.strokeMelt) clearStrokeState(A); return P; } // a newborn waiting for its hatch ceremony
 
     // pop-in (hatching, returning from work, growing up)
     if (A.spawn) {
@@ -471,20 +495,24 @@ export function mountBarn3d(host, ctx) {
       return P;
     }
 
+    if (A.stroke) tickStroke(A.stroke, dt);
+    const stroking = !!A.stroke || A.strokeMelt > 0.001;
     const act = A.act;
     const sleeping = pet.status === 'sleeping';
-    const held = A.hold > 0 && act.type !== 'eat' && act.type !== 'no' && act.type !== 'hop' && act.type !== 'play' && act.type !== 'bathe';
+    const held = A.hold > 0 && !A.greeting && act.type !== 'eat' && act.type !== 'no' && act.type !== 'hop' && act.type !== 'play' && act.type !== 'bathe';
     if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type) || act.type === 'decor')) begin(A, { type: 'idle', dur: 1 });
     if (!TRAIL_TYPES.has(A.act.type) && A.trail) stopTrail(A);
     A.scripted = FLY_TYPES.has(A.act.type) || RUN_TYPES.has(A.act.type);
 
-    let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) || (A.act.type === 'decor' && A.act.use === 'nap' && A.act.arrived) ? 1 : 0;
+    let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) || (A.act.type === 'decor' && A.act.use === 'nap' && A.act.arrived) || (A.act.type === 'buddy' && A.act.mode === 'nap' && A.act.arrived) ? 1 : 0;
     if (!sleeping && pet.sick) curlTarget = 0;
     // timers, walking and "action finished -> decide()" live in petBehaviour.advanceActor (unit-tested)
-    const moving = advanceActor(A, dt, decide).moving;
+    const moving = stroking ? false : advanceActor(A, dt, decide).moving;
 
-    switch (A.act.type) {
+    if (stroking) strokePose(A, P, t, dt);
+    else switch (A.act.type) {
       case 'wander': case 'approach': case 'walkTo': break;
+      case 'buddy': buddyPose(A, P, t, dt); break;
       case 'flyCircle': case 'soar': flightPose(A, P, t); break;
       case 'gallop': case 'sprint': runPose(A, P, t, dt); break;
       case 'breach': breachPose(A, P); break;
@@ -578,6 +606,7 @@ export function mountBarn3d(host, ctx) {
       default: break;
     }
 
+    if (A.feedLook && !stroking) feedLookPose(A, P, t, dt);
     // blink (eyes are tiny groups; skip while sleeping)
     A.curl += (curlTarget - A.curl) * Math.min(1, dt * 3.2);
     if (moving) {
@@ -767,7 +796,7 @@ export function mountBarn3d(host, ctx) {
       A.blinkAt -= dt;
       if (A.blinkAt < 0) { A.blink = 0.13; A.blinkAt = 2.5 + Math.random() * 4; }
       if (A.blink > 0) A.blink -= dt;
-      const closed = A.curl > 0.55 || A.blink > 0 ? 0.12 : 1;
+      const closed = A.curl > 0.55 || A.blink > 0 ? 0.12 : A.squint > 0.5 ? 0.3 : 1;
       for (const e of eyes) e.scale.y = closed;
     }
   }
@@ -791,8 +820,8 @@ export function mountBarn3d(host, ctx) {
         if (d >= min) continue;
         const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
         const push = d < hard ? (hard - d) : (soft - d) * Math.min(1, dt * 1.6);
-        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || (a.act.type === 'decor' && a.act.arrived);
-        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || (b.act.type === 'decor' && b.act.arrived);
+        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || ((a.act.type === 'decor' || a.act.type === 'buddy') && a.act.arrived);
+        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || ((b.act.type === 'decor' || b.act.type === 'buddy') && b.act.arrived);
         if (aFixed && bFixed) continue;
         const wa = aFixed ? 0 : bFixed ? 1 : 0.5, wb = bFixed ? 0 : aFixed ? 1 : 0.5;
         a.x -= nx * push * wa; a.z -= nz * push * wa;
@@ -833,7 +862,7 @@ export function mountBarn3d(host, ctx) {
       g.add(dish, rim);
       g.position.set(pos.x, 0, pos.z);
       const n = { i, id: `nest-${i}`, group: g, x: pos.x, z: pos.z, egg: null, eggKey: '', ready: false, seed: i * 1.7, wobbleAt: 2 + i };
-      world.addActor(n.id, g, { radius: 0.75, height: 0.9, shadowScale: 0.85 });
+      world.addActor(n.id, g, { radius: 0.75, height: 0.9, shadowScale: 0.85, stroke: false });
       nests.push(n);
       const label = document.createElement('div');
       label.className = 'b3-label';
@@ -964,7 +993,7 @@ export function mountBarn3d(host, ctx) {
           const g = makePoopMesh();
           g.position.set(spots[k].x, 0, spots[k].z);
           g.rotation.y = k * 2.1;
-          world.addActor(id, g, { radius: 0.34, height: 0.4, shadowScale: 0.5 });
+          world.addActor(id, g, { radius: 0.34, height: 0.4, shadowScale: 0.5, stroke: false });
           poopMeshes.set(id, { group: g, born: synced ? 0 : 1 });
           poopOwner.set(id, A.id);
           if (!synced) g.scale.setScalar(1); else g.scale.setScalar(0.01);
@@ -1033,6 +1062,7 @@ export function mountBarn3d(host, ctx) {
     const wantTier = yardTierOf(state.barnCapacity);
     if (wantTier !== yardTier) applyYardTier(wantTier, synced);
     if (lanternMat) lanternMat.color.set(hourIsNight() ? 0xffd966 : 0xfff1c9);
+    syncFriends(state);
     syncPoops(state);
     syncNests(state);
     syncCribs(state);
@@ -1525,12 +1555,33 @@ export function mountBarn3d(host, ctx) {
   }
 
   /** 🎁 / 🎁✨ labels above gifted pets (DOM, so a crowd costs no draw calls) + the corner chip. */
+  let labelPick = new Set();     // pets that wear a 🎁 label right now (at most GIFT_LABEL_MAX)
+  let labelPickAt = 0;
+  function pickLabels(force) {
+    const cands = [];
+    const w = stage.clientWidth || 1, hgt = stage.clientHeight || 1;
+    for (const A of actors.values()) {
+      if (!A.gift || !A.gift.big) continue;
+      let dist = 0;
+      try { const p = world.worldToScreen({ x: A.x, y: A.model.height * 0.5, z: A.z }); dist = Math.hypot(p.x - w / 2, p.y - hgt / 2) + (p.visible ? 0 : 1e4); } catch { dist = 0; }
+      cands.push({ id: A.id, full: !!A.gift.full, size: A.gift.coins + A.gift.itemCount * 25, dist });
+    }
+    const t = performance.now();
+    const ids = new Set(cands.map(c => c.id));
+    const stale = t - labelPickAt > 3000 || [...labelPick].some(id => !ids.has(id)) || (labelPick.size < Math.min(GIFT_LABEL_MAX, cands.length));
+    if (force || stale) { labelPick = new Set(pickGiftLabels(cands, GIFT_LABEL_MAX)); labelPickAt = t; }
+    return labelPick;
+  }
+
   function syncGifts(state) {
     for (const A of actors.values()) {
       const g = A.hidden ? null : petGift(state, A.id);
       A.gift = g && g.has ? g : null;               // anything >= 1 coin: a tap collects it
+    }
+    const shown = pickLabels(false);                // only a few labels at a time: no clutter
+    for (const A of actors.values()) {
       let el = giftEls.get(A.id);
-      if (A.gift && A.gift.big) {                    // only 1 h+ of production (or an item) earns the 🎁 label: no clutter
+      if (A.gift && A.gift.big && shown.has(A.id)) {
         if (!el) {
           el = document.createElement('div');
           el.className = 'b3-gift';
@@ -1591,7 +1642,7 @@ export function mountBarn3d(host, ctx) {
     group.add(mesh, holder);
     group.position.set(spot.x, 0, spot.z);
     const c = { id: `crib-${pet.id}`, petId: pet.id, group, holder, model, x: spot.x, z: spot.z, hidden: false, spawn: null, seed: (hashId(pet.id) % 600) / 100 };
-    world.addActor(c.id, group, { radius: 0.75, height: 0.9, shadowScale: 0.95 });
+    world.addActor(c.id, group, { radius: 0.75, height: 0.9, shadowScale: 0.95, stroke: false });
     cribs.set(pet.id, c);
     return c;
   }
@@ -1778,7 +1829,7 @@ export function mountBarn3d(host, ctx) {
     }
     group.position.set(pos.x, 0, pos.z);
     group.scale.setScalar(0.01);
-    world.addActor(`decor-${rec.id}`, group, { radius: 0.62, height: 0.7, shadowScale: rec.decorId === 'ball' ? 0.4 : 0.9 });
+    world.addActor(`decor-${rec.id}`, group, { radius: 0.62, height: 0.7, shadowScale: rec.decorId === 'ball' ? 0.4 : 0.9, stroke: false });
     decorInst.set(rec.id, inst);
     return inst;
   }
@@ -1831,7 +1882,7 @@ export function mountBarn3d(host, ctx) {
       const g = new THREE.Group();
       g.position.set(s.x, 0, s.z);
       const id = `spot-${s.index}`;
-      world.addActor(id, g, { radius: 0.8, height: 0.5, shadow: false });
+      world.addActor(id, g, { radius: 0.8, height: 0.5, shadow: false, stroke: false });
       spotActors.add(id);
     }
   }
@@ -1856,7 +1907,7 @@ export function mountBarn3d(host, ctx) {
   }
   function claimDecor(A, act) {
     const inst = decorInst.get(act.instId);
-    if (inst) inst.busy = A.id;
+    if (inst && !inst.busy) inst.busy = A.id;   // a best friend may join a decor somebody uses
     A.decorId = act.instId;
   }
   function releaseDecor(A) {
@@ -1986,6 +2037,346 @@ export function mountBarn3d(host, ctx) {
     }
   }
 
+  // ── ลูบหัว / เกาคาง (CONTRACT_V8 §1): a stroke session = one pat ─────────────────────────────────────────
+  /** Engine stroke events: start / move / end on a pet. The reward comes once, at the end (strokePet -> patPet once). */
+  function onStroke(ev) {
+    if (disposed || !isOn) return;
+    const A = actors.get(ev.id);
+    if (!A) return;
+    if (A.hidden || A.spawn) { // a stroke that ends on a pet that hid / is spawning must not stay behind (stuck melt pose)
+      if (ev.phase === 'end') finishActorStroke(A, ev.durationMs, { canReward: false });
+      return;
+    }
+    if (ev.phase === 'start') {
+      if (A.stroke) return;
+      armedFood = null;
+      if (hatching && hatching.petId === A.id) return;
+      A.stroke = createStroke(A.id, ev.region || 'head');
+      A.strokeAt = performance.now();
+      A.hold = Math.max(A.hold, 3);
+      A.popAt = 0.3;
+      if (A.act.type !== 'idle' && A.act.type !== 'sleep') begin(A, { type: 'idle', dur: 1 });
+    }
+    const S = A.stroke;
+    if (!S) return;
+    if (ev.region) S.region = ev.region;
+    if (ev.point) {
+      const nowMs = performance.now();
+      handStroke(S, ev.point, Math.max(0.008, (nowMs - (A.strokeAt || nowMs)) / 1000));
+      A.strokeAt = nowMs;
+      A.strokePoint = ev.point;
+    }
+    A.hold = Math.max(A.hold, 2);
+    if (ev.phase === 'end') finishStroke(A, ev.durationMs);
+  }
+
+  function finishStroke(A, durationMs) {
+    if (!A.stroke) return;
+    const res = finishActorStroke(A, durationMs, { canReward: alive(A.id) });
+    A.strokeEnd = { melt: A.strokeMelt };
+    A.hold = Math.max(A.hold, 2);
+    if (!res || !res.commit) return;
+    const region = res.region;
+    const r = ctx.run(s => strokePet(s, A.id, { durationMs: res.durationMs, region }));
+    if (!r || !r.ok) return;
+    const h = headPos(A);
+    if (r.rewarded) fx.heart(world, h); else fxo('emojiPop', world, h, '😌');
+    if (r.favorite) { fxo('sparkle', world, A.id); fxo('emojiPop', world, { x: h.x + 0.3, y: h.y + 0.1, z: h.z }, '💞'); }
+    if (r.discovered) { fx.confetti(world, h, 18); fxo('sparkleAt', world, h); }
+    syncGifts(getState());
+  }
+
+  /** Pose while the pet is being stroked (and while it recovers from melting). Models and billboards share it. */
+  function strokePose(A, P, t, dt) {
+    const S = A.stroke;
+    const pet = A.pet;
+    const sleeping = pet.status === 'sleeping';
+    const billboard = A.model.kind === 'billboard';
+    const target = S ? strokeMelt(S) : 0;
+    if (S) A.strokeMelt += (target - A.strokeMelt) * Math.min(1, dt * 5);
+    else A.strokeMelt = Math.max(0, A.strokeMelt - dt * 1.1);
+    const m = A.strokeMelt;
+    A.squint = S || m > 0.05 ? 1 : 0;
+    if (!S) { // recovering: the roll eases back
+      if (billboard) { P.roll = Math.sin(t * 9) * 0.14 * m; P.sy = 1 - 0.3 * m; P.sx = 1 + 0.15 * m; }
+      else { P.roll = 1.25 * m * A.strokeSide; P.sy = 1 - 0.18 * m; P.hop = 0.12 * m; }
+      return;
+    }
+    if (!sleeping) A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 4);
+    const fav = S.region === favoriteSpot(A.id);
+    const lean = sleeping ? 0.3 : 1;
+    P.pitch = -0.14 * lean * (1 - m);
+    P.hRoll = Math.sin(t * 2.1 + A.seed) * 0.2 * lean + (S.region === 'chin' ? 0.16 : 0);
+    if (S.region === 'head') P.hPitch += 0.28 * lean;
+    else if (S.region === 'chin') P.hPitch -= 0.35 * lean;
+    else { P.sy *= 1.04; P.pitch += 0.06; P.tail = Math.sin(t * 14) * 0.7; }
+    P.hYaw = Math.sin(t * 1.3 + A.seed) * 0.12;
+    // 💕 / ♪ drift up now and then; the favourite spot adds sparkles and a happy wiggle
+    A.popAt -= dt;
+    if (A.popAt < 0 && !lowTier()) {
+      A.popAt = (fav ? 0.4 : 0.6) + Math.random() * 0.3;
+      S.n = (S.n || 0) + 1;
+      popAt(A, sleeping ? '😊' : S.n % 3 === 0 ? '♪' : '💕', (Math.random() - 0.5) * 0.5, 0.05);
+    }
+    if (fav && !sleeping) {
+      P.roll += Math.sin(t * 13) * 0.09; P.tail = Math.sin(t * 18) * 0.8;
+      S.sparkAt = (S.sparkAt || 0) - dt;
+      if (S.sparkAt <= 0) { S.sparkAt = 1; fxo('sparkle', world, A.id); }
+    }
+    if (S.giggle > 0.5 && !sleeping) { // fast scrubbing: giggle + hop
+      P.hop = Math.max(P.hop, Math.abs(Math.sin(t * 15)) * 0.2 * S.giggle);
+      P.sy += Math.sin(t * 30) * 0.03;
+      S.gigAt = (S.gigAt || 0) - dt;
+      if (S.gigAt <= 0) { S.gigAt = 1.3; popAt(A, '😆', 0.25, 0.15); }
+    }
+    if (m > 0.02 && !sleeping) { // after ~2 s: melts (a model rolls over, a billboard squashes and wiggles)
+      if (billboard) { P.roll = Math.sin(t * 9) * 0.14 * m; P.sy = 1 - 0.3 * m; P.sx = 1 + 0.15 * m; }
+      else { P.roll = 1.25 * m * A.strokeSide; P.sy = 1 - 0.18 * m; P.hop = Math.max(P.hop, 0.12 * m); P.pitch *= 1 - m; }
+      if (m > 0.9 && !S.meltPop) { S.meltPop = true; popAt(A, '🥰', 0, 0.2); fxo('sparkle', world, A.id); }
+    }
+  }
+
+  // ── ลากอาหารไปป้อน (CONTRACT_V8 §2): drag a tray item onto a pet ─────────────────────────────────────────
+  let drag = null;               // { pointerId, btn, itemId, x0, y0, active, ghost, feed, targetId }
+  let dragEndedAt = 0;
+  const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.45);
+  const dragRay = new THREE.Raycaster();
+  const dragPt = new THREE.Vector3();
+
+  /** The pet under the dragged food: pointer -> ground-ish world point -> nearest pet within FEED_RANGE. */
+  function dragTargetAt(cx, cy) {
+    const r = stage.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const ndc = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -(((cy - r.top) / r.height) * 2 - 1));
+    world.camera.updateMatrixWorld();
+    dragRay.setFromCamera(ndc, world.camera);
+    if (!dragRay.ray.intersectPlane(dragPlane, dragPt)) return null;
+    const cands = [];
+    for (const A of actors.values()) if (!A.hidden && !A.spawn) cands.push({ id: A.id, x: A.x, z: A.z });
+    return pickFeedTarget({ x: dragPt.x, z: dragPt.z }, cands, FEED_RANGE);
+  }
+
+  function ghostTo(g, x, y) { g.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`; }
+
+  function endDrag(spring) {
+    const d = drag;
+    drag = null;
+    dragEndedAt = performance.now();
+    for (const A of actors.values()) A.feedLook = null;
+    if (!d) return;
+    try { d.btn.releasePointerCapture(d.pointerId); } catch { /* already released */ }
+    if (!d.ghost) return;
+    const g = d.ghost;
+    if (spring && typeof g.animate === 'function' && !calmMotion()) {
+      const to = d.btn.getBoundingClientRect();
+      const a = g.animate([{ transform: g.style.transform }, { transform: `translate(${to.left + to.width / 2}px, ${to.top + to.height / 2}px) translate(-50%, -50%)` }],
+        { duration: 260, easing: 'cubic-bezier(.3,1.4,.5,1)' });
+      a.onfinish = () => g.remove();
+      later(600, () => g.remove());
+    } else g.remove();
+  }
+
+  function onTrayDown(ev) {
+    if (drag || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+    const btn = ev.target.closest('.b3-food');
+    if (!btn || !trayEl.contains(btn)) return;
+    drag = { pointerId: ev.pointerId, btn, itemId: btn.dataset.itemId, x0: ev.clientX, y0: ev.clientY, active: false, ghost: null, feed: null, targetId: null };
+  }
+
+  function onDragMove(ev) {
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    const dx = ev.clientX - drag.x0, dy = ev.clientY - drag.y0;
+    if (!drag.active) {
+      const moved = Math.hypot(dx, dy);
+      // touch: a mostly-horizontal swipe scrolls the tray; mouse / upward pulls start the drag
+      if (moved < 10 || (ev.pointerType !== 'mouse' && Math.abs(dx) > Math.abs(dy) * 1.3)) return;
+      drag.active = true;
+      drag.feed = createFeedDrag(drag.itemId);
+      const it = getItem(drag.itemId);
+      const g = document.createElement('div');
+      g.className = 'b3-ghost';
+      g.textContent = it ? it.emoji : '🍖';
+      document.body.appendChild(g);
+      drag.ghost = g;
+      try { drag.btn.setPointerCapture(ev.pointerId); } catch { /* not capturable */ }
+      armedFood = null;
+      if (selected || selectedCrib) closeSheet();
+    }
+    ev.preventDefault();
+    ghostTo(drag.ghost, ev.clientX, ev.clientY);
+    drag.targetId = dragTargetAt(ev.clientX, ev.clientY);
+    drag.feed.hover(drag.targetId);
+    drag.px = ev.clientX; drag.py = ev.clientY;
+    world.boost(250);
+  }
+
+  function onDragUp(ev) {
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    if (!drag.active) { drag = null; return; }   // it was a click: the normal arm / disarm handler runs
+    const drop = ev.type === 'pointercancel' ? null : drag.feed.drop();
+    const id = drop && drop.petId, itemId = drop && drop.itemId;
+    const g = drag.ghost;
+    endDrag(!drop);
+    if (drop && g) g.remove();
+    if (drop) feedWith(id, itemId);
+  }
+
+  /** What a pet does while food hovers near it: looks at it, opens its mouth, leans in; sleeping / full pets turn away. */
+  function feedLookPose(A, P, t, dt) {
+    const L = A.feedLook;
+    const pet = A.pet;
+    const refuse = pet.status === 'sleeping' || pet.stats.hunger >= 99.5;
+    const p = world.worldToScreen({ x: A.x, y: A.y + A.model.height * 0.6, z: A.z });
+    const r = stage.getBoundingClientRect();
+    const sx = drag && drag.px != null ? drag.px - r.left : p.x, sy = drag && drag.py != null ? drag.py - r.top : p.y;
+    const dxn = Math.max(-1, Math.min(1, (sx - p.x) / 90)), dyn = Math.max(-1, Math.min(1, (sy - p.y) / 90));
+    if (!refuse) A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 5);
+    if (refuse) {
+      P.hYaw = (dxn >= 0 ? -1 : 1) * 0.85;              // looks away from the food
+      P.hPitch = 0.1;
+      if (!L.noed) { L.noed = true; if (pet.status !== 'sleeping') react(A, 'no'); else popAt(A, '💤', 0.2, 0); }
+    } else {
+      P.hYaw = dxn * 0.6;
+      P.hPitch = -0.3 + dyn * 0.25 - (Math.max(0, Math.sin(t * 9)) * 0.06);   // head up, mouth open, a little chomp
+      P.pitch = -0.12; P.sx *= 1.03;
+      if (!L.oh) { L.oh = true; popAt(A, '😮', 0.2, 0.1); }
+      A.squint = 0;
+    }
+  }
+
+  // ── น้องๆ มารับตอนเปิดเกม (CONTRACT_V8 §3): a few pets run to the camera, a speech bubble tells what happened ──────────
+  let greet = null;             // { ids, lines, i, t, arrived }
+  let greetDigest = undefined;  // undefined = not asked yet, null = nothing to tell, else the digest
+  let greetWait = 0;
+  const speechEl = document.createElement('div');
+  speechEl.className = 'b3-speech';
+  speechEl.hidden = true;
+  speechEl.innerHTML = '<button type="button" class="b3-speech-body" data-b3="greet-next"><span class="b3-speech-t"></span><small></small></button><button type="button" class="b3-speech-skip" data-b3="greet-skip" aria-label="ข้าม">✕</button>';
+  host.appendChild(speechEl);
+  const speechT = speechEl.querySelector('.b3-speech-t');
+  const speechHint = speechEl.querySelector('small');
+
+  function greetBusy() { return !!hatching || !!selectedCrib || !!selected || decorMode || !!revealId || !synced; }
+
+  function maybeGreet(dt) {
+    if (greet || greetDigest === null || disposed || !isOn) return;
+    if (greetDigest === undefined) {
+      greetDigest = ctx.takeGreeting ? (ctx.takeGreeting() || null) : null;   // once per app open (petsView keeps count)
+      greetWait = 1.2;
+      return;
+    }
+    greetWait -= dt;
+    if (greetWait > 0) return;
+    if (greetBusy()) { if (greetWait < -20) greetDigest = null; return; }     // never over a hatch / reveal; give up after a while
+    const state = getState();
+    const present = state.pets.filter(p => actors.has(p.id) && !actors.get(p.id).hidden && !actors.get(p.id).spawn);
+    const plan = greetingPlan(greetDigest, present);
+    greetDigest = null;
+    if (!plan) return;
+    const spots = greetSpots(plan.ids.length);
+    greet = { ids: plan.ids, lines: plan.lines, i: 0, t: 0, arrived: 0 };
+    plan.ids.forEach((id, k) => {
+      const A = actors.get(id);
+      A.greeting = true;
+      A.hold = 0;
+      A.stroke = null;
+      begin(A, { type: 'walkTo', target: spots[k], speed: 1.9, onArrive: AA => {
+        AA.hold = SELECT_HOLD;
+        greet && greet.arrived++;
+        begin(AA, { type: 'wave', dur: 2 });
+        if (k % 2) later(300, () => alive(id) && react(AA, 'hop', { dur: 1, hops: 2 }));
+      } });
+    });
+    world.boost(6000);
+    showGreetLine();
+  }
+
+  function showGreetLine() {
+    if (!greet) return;
+    const line = greet.lines[greet.i];
+    speechEl.hidden = false;
+    speechT.textContent = `${line.emoji || '💬'} ${line.text}`;   // textContent: names are user text
+    speechHint.textContent = greet.i < greet.lines.length - 1 ? `แตะเพื่ออ่านต่อ ▸ (${greet.i + 1}/${greet.lines.length})` : 'แตะเพื่อปิด';
+    greet.t = 0;
+  }
+
+  function endGreet() {
+    if (!greet) return;
+    const g = greet;
+    greet = null;
+    speechEl.hidden = true;
+    for (const id of g.ids) {
+      const A = actors.get(id);
+      if (!A) continue;
+      A.greeting = false;
+      A.hold = 1.2;
+      if (A.act.type === 'walkTo') begin(A, { type: 'idle', dur: 0.5 });
+    }
+  }
+
+  function advanceGreet() {
+    if (!greet) return;
+    if (greet.i >= greet.lines.length - 1) { endGreet(); return; }
+    greet.i++;
+    showGreetLine();
+  }
+
+  function stepGreet(dt) {
+    if (!greet) return;
+    if (hatching || decorMode) { endGreet(); return; }
+    greet.t += dt;
+    if (greet.t > 7 && greet.arrived >= greet.ids.length) advanceGreet();   // nobody tapped: move on by itself
+    // the bubble floats over the pet the line is about (else over the middle of the row)
+    const line = greet && greet.lines[greet.i];
+    const A = actors.get((line && line.petId && greet.ids.includes(line.petId)) ? line.petId : greet.ids[Math.floor(greet.ids.length / 2)]);
+    if (!A) return;
+    const p = world.worldToScreen({ x: A.x, y: A.y + A.model.height + 0.9, z: A.z });
+    const w = stage.clientWidth, half = Math.min(150, w * 0.42);
+    const x = Math.max(half + 6, Math.min(w - half - 6, p.x));
+    speechEl.style.transform = `translate(${x.toFixed(0)}px, ${Math.max(70, p.y).toFixed(0)}px) translate(-50%, -100%)`;
+  }
+
+  // ── เพื่อนซี้ (CONTRACT_V8 §4): friends wander, nap and play together; a heart arc when a pair forms ─────────────────
+  let bfMap = new Map();        // petId -> best friend id (refreshed every sync)
+
+  function friendOf(A) {
+    const fid = bfMap.get(A.id);
+    const F = fid && actors.get(fid);
+    if (!F || F.hidden || F.spawn) return null;
+    return { id: fid, x: F.x, z: F.z, napping: !!F.act.nap || F.pet.status === 'sleeping' };
+  }
+
+  function friendArc(A, B) {
+    if (!A || !B || lowTier()) return;
+    const a = headPos(A), b = headPos(B);
+    for (let k = 0; k < 6; k++) {
+      const u = k / 5;
+      later(k * 140, () => fxo('emojiPop', world, { x: a.x + (b.x - a.x) * u, y: a.y + Math.sin(u * Math.PI) * 0.9 + 0.2, z: a.z + (b.z - a.z) * u }, k % 2 ? '💕' : '❤️'));
+    }
+    react(A, 'hop', { dur: 1.1, hops: 2 }); react(B, 'hop', { dur: 1.1, hops: 2 });
+    A.hold = Math.max(A.hold, 2); B.hold = Math.max(B.hold, 2);
+  }
+
+  function syncFriends(state) { bfMap = bestFriendMap(state); }
+  // the moment a pair becomes best friends: a heart arc between them (the toast is shown by petsView)
+  const unFriend = onBestFriend(evt => { if (!evt.offline && synced && !disposed && isOn) friendArc(actors.get(evt.a), actors.get(evt.b)); });
+
+  /** Pose of a pet that walked to its best friend: naps beside it, or nuzzles it. */
+  function buddyPose(A, P, t, dt) {
+    const act = A.act;
+    const F = actors.get(act.friendId);
+    if (!F) { act.dur = 0; return; }
+    if (!act.arrived) { act.target = clampToYard(F.x + act.side, F.z + 0.15); return; } // follow the friend while walking over
+    A.heading += angDiff(A.heading, Math.atan2(F.x - A.x, F.z - A.z)) * Math.min(1, dt * 6);
+    if (act.mode === 'nap') { P.hop = 0; return; }
+    // nuzzle: lean in, head bumps, hearts; the friend gives a little hop
+    const u = act.t;
+    P.pitch = -0.22 * Math.sin(Math.min(1, u / 0.5) * Math.PI);
+    P.hRoll = Math.sin(u * 9) * 0.3; P.tail = Math.sin(u * 20) * 0.6;
+    P.hop = Math.max(0, Math.sin(u * 6)) * 0.1;
+    if (at(act, 'n1', 0.2)) { popAt(A, '💕', 0, 0.1); if (F.pet.status !== 'sleeping' && F.act.type === 'idle') react(F, 'hop', { dur: 0.7, hops: 1, height: 0.25 }); }
+  }
+
   // ── DOM events ─────────────────────────────────────────────────────────
   const handlers = {
     close: () => closeSheet(),
@@ -1996,7 +2387,10 @@ export function mountBarn3d(host, ctx) {
       closeSheet();
       feedWith(petId, btn.dataset.itemId);
     },
+    'greet-next': () => advanceGreet(),
+    'greet-skip': () => endGreet(),
     'tray-food': btn => {
+      if (performance.now() - dragEndedAt < 350) return;   // the click that follows a drag-feed
       const id = btn.dataset.itemId;
       armedFood = armedFood === id ? null : id;
       refreshUi();
@@ -2029,8 +2423,14 @@ export function mountBarn3d(host, ctx) {
     if (fn) fn(btn);
   };
   host.addEventListener('click', onClick);
+  trayEl.addEventListener('pointerdown', onTrayDown);
+  document.addEventListener('pointermove', onDragMove, { passive: false });
+  document.addEventListener('pointerup', onDragUp);
+  document.addEventListener('pointercancel', onDragUp);
+  const unStroke = typeof world.onPetStroke === 'function' ? world.onPetStroke(onStroke) : null;
   host.tabIndex = -1;
   const onKey = ev => {
+    if (ev.key === 'Escape' && drag) { endDrag(true); return; }
     if (ev.key !== 'Escape' || !selected || document.body.classList.contains('modal-open')) return;
     ev.preventDefault();
     closeSheet();
@@ -2077,6 +2477,13 @@ export function mountBarn3d(host, ctx) {
   }
 
   function frame(dt, t) {
+    if (drag && drag.active) {
+      for (const A of actors.values()) {
+        if (A.id === drag.targetId) { A.feedLook = A.feedLook || {}; A.hold = Math.max(A.hold, 1.2); } else A.feedLook = null;
+      }
+    }
+    maybeGreet(dt);
+    stepGreet(dt);
     for (const A of actors.values()) {
       step(A, dt, t);
     }
@@ -2135,7 +2542,7 @@ export function mountBarn3d(host, ctx) {
 
   buildYardProps(yardTier);
   sync(getState());
-  if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); } };
+  if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), stroke: (id, phase, region, point, ms) => onStroke({ id, phase, region, point: point || { x: 0, y: 0.5, z: 0 }, durationMs: ms }), greet: d => { greetDigest = d; greetWait = 0; }, kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); } };
 
   return {
     setActive(on) {
@@ -2159,6 +2566,13 @@ export function mountBarn3d(host, ctx) {
       for (const id of timers) clearTimeout(id);
       timers.clear();
       host.removeEventListener('click', onClick);
+      trayEl.removeEventListener('pointerdown', onTrayDown);
+      document.removeEventListener('pointermove', onDragMove);
+      document.removeEventListener('pointerup', onDragUp);
+      document.removeEventListener('pointercancel', onDragUp);
+      if (unStroke) unStroke();
+      unFriend();
+      endDrag(false);
       document.removeEventListener('keydown', onKey);
       try { world.camera.clearViewOffset(); } catch { /* ignore */ }
       for (const tg of tags) tg.el.remove();

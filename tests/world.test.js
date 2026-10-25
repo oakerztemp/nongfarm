@@ -973,3 +973,153 @@ test('v7 world: mouse right-drag and shift-drag still orbit, without panning', a
     assertEq(world.getPan(), { x: 0, z: 0 });
   });
 });
+
+// ---------------------------------------------------------------- V8: pet strokes
+
+test('v8 strokeRegion: head on top, chin on the lower front, back elsewhere; billboards split vertically', () => {
+  const dims = { height: 1, radius: 0.5 };
+  assertEq(engine.strokeRegion(0.9, 0, dims), 'head');
+  assertEq(engine.strokeRegion(0.9, -0.3, dims), 'head', 'the top is the head from any side');
+  assertEq(engine.strokeRegion(0.5, 0.3, dims), 'chin', 'lower front');
+  assertEq(engine.strokeRegion(0.5, -0.3, dims), 'back', 'same height behind = back');
+  assertEq(engine.strokeRegion(0.1, 0.4, dims), 'back', 'low = body');
+  assertEq(engine.strokeRegion(0.5, -0.3, { ...dims, billboard: true }), 'chin', 'billboards have no front/back');
+  assertEq(engine.strokeRegion(0.8, 0.3, { ...dims, headY: 0.9 }), 'chin', 'custom head anchor');
+  assertEq(engine.strokeRegion(0.95, 0, { ...dims, headY: 0.9 }), 'head');
+  assert(engine.STROKE_MIN_SESSION_MS === 600 && engine.STROKE_FAST_PX_S > 100);
+});
+
+test('v8 world: a press that starts on a pet and moves is a stroke (never a pan or a tap); ground drags still pan', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  const host = document.createElement('div');
+  host.style.cssText = 'width:360px;height:420px;position:fixed;left:0;top:0;';
+  document.body.appendChild(host);
+  const taps = [], grounds = [];
+  const world = engine.createWorld(host, { onTap: id => taps.push(id), onTapGround: p => grounds.push(p) }, { quality: 'low', yardTier: 'M' });
+  try {
+    const { THREE: T } = world;
+    const mk = (id, x, z, opts) => {
+      const g = new T.Group();
+      const body = new T.Mesh(new T.SphereGeometry(0.5, 10, 8), new T.MeshBasicMaterial({ color: 0xff8844 }));
+      body.position.y = 0.5;
+      g.add(body);
+      g.position.set(x, 0, z);
+      world.addActor(id, g, { radius: 0.5, height: 1, ...opts });
+      return g;
+    };
+    mk('pet:1', 1, 1);
+    mk('nest-0', -2, 1, { stroke: false });
+    world.setView({ zoom: 0.5 });
+    await frames(world, 40);
+    const rect = world.canvas.getBoundingClientRect();
+    const fire = (type, x, y, id = 1, extra = {}) => world.canvas.dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: 'touch', clientX: rect.left + x, clientY: rect.top + y, bubbles: true, button: 0, ...extra,
+    }));
+    const at = (x, y, z) => world.worldToScreen(new T.Vector3(x, y, z));
+    const events = [];
+
+    // nobody listens yet: the same drag from a pet pans (backwards compatible)
+    let s = at(1, 0.5, 1);
+    fire('pointerdown', s.x, s.y, 1);
+    for (let i = 1; i <= 8; i++) fire('pointermove', s.x - i * 8, s.y, 1);
+    fire('pointerup', s.x - 64, s.y, 1);
+    assert(world.getPan().x > 0.3, 'no stroke listener -> pan');
+    world.setPan(0, 0);
+    await frames(world, 40);
+
+    const off = world.onPetStroke(e => events.push(e));
+    s = at(1, 0.5, 1);
+    fire('pointerdown', s.x, s.y, 2);
+    assertEq(events.length, 0, 'nothing before the finger moves');
+    fire('pointermove', s.x + 3, s.y, 2);
+    assertEq(events.length, 0, 'under 8 px is not a stroke yet');
+    for (let i = 1; i <= 10; i++) { fire('pointermove', s.x + 3 + i * 4, s.y - i, 2); await wait(12); }
+    fire('pointerup', s.x + 43, s.y - 10, 2);
+    assertEq(events.map(e => e.phase).filter((p, i, a) => a.indexOf(p) === i), ['start', 'move', 'end']);
+    assertEq(events[0].phase, 'start');
+    assertEq(events.at(-1).phase, 'end');
+    assert(events.every(e => e.id === 'pet:1' && ['head', 'chin', 'back'].includes(e.region) && e.point && e.point.isVector3), 'events carry id, region, point');
+    assert(events.slice(1).every(e => e.speed > 0) && events.at(-1).durationMs > 50 && events[0].durationMs === 0, 'speed and duration');
+    assertEq(world.getPan(), { x: 0, z: 0 }, 'a stroke never pans');
+    assertEq([taps.length, grounds.length], [0, 0], 'and is never a tap');
+
+    // a tap (< 8 px) on the pet is still a tap and emits no stroke
+    events.length = 0;
+    fire('pointerdown', s.x, s.y, 3); fire('pointermove', s.x + 4, s.y + 3, 3); fire('pointerup', s.x + 4, s.y + 3, 3);
+    assertEq([taps, events.length], [['pet:1'], 0]);
+
+    // a drag from empty ground still pans even with a listener
+    world.setPan(0, 0);
+    await frames(world, 40);
+    fire('pointerdown', 300, 380, 4);
+    for (let i = 1; i <= 8; i++) fire('pointermove', 300 - i * 10, 380, 4);
+    fire('pointerup', 220, 380, 4);
+    assert(world.getPan().x > 0.5 && events.length === 0, 'ground drag pans, no stroke');
+
+    // an actor that opted out ({ stroke:false }) pans too
+    world.setPan(0, 0);
+    await frames(world, 40);
+    const n = at(-2, 0.5, 1);
+    fire('pointerdown', n.x, n.y, 5);
+    for (let i = 1; i <= 8; i++) fire('pointermove', n.x - i * 6, n.y, 5);
+    fire('pointerup', n.x - 48, n.y, 5);
+    assert(world.getPan().x > 0.2 && events.length === 0, 'opted-out actor: pan');
+
+    // regions: pressing the top of the pet is the head, the lower body the back
+    world.setPan(0, 0);
+    await frames(world, 40);
+    const press = async (wy, wz = 1) => {
+      const q = at(1, wy, wz);
+      events.length = 0;
+      fire('pointerdown', q.x, q.y, 6);
+      for (let i = 1; i <= 3; i++) fire('pointermove', q.x + i * 4, q.y, 6);
+      fire('pointerup', q.x + 12, q.y, 6);
+      return events[0] && events[0].region;
+    };
+    assertEq(await press(0.95), 'head', 'top of the sphere');
+    assertEq(await press(0.05, 1.45), 'chin', 'lower front while the pet faces the camera');
+    world.getActor('pet:1').object.rotation.y = Math.PI; // turned away: the same spot is now its back
+    assertEq(await press(0.05, 1.45), 'back', 'the same spot on a pet that faces away');
+    world.getActor('pet:1').object.rotation.y = 0;
+
+    // a second finger ends the stroke (pinch takes over); pointercancel ends it too
+    events.length = 0;
+    s = at(1, 0.5, 1);
+    fire('pointerdown', s.x, s.y, 7);
+    for (let i = 1; i <= 3; i++) fire('pointermove', s.x + i * 5, s.y, 7);
+    fire('pointerdown', 30, 30, 8);
+    assertEq(events.at(-1).phase, 'end', 'second finger ends the stroke');
+    fire('pointerup', 30, 30, 8); fire('pointerup', s.x + 15, s.y, 7);
+    const ended = events.filter(e => e.phase === 'end').length;
+    assertEq(ended, 1, 'exactly one end per stroke');
+    events.length = 0;
+    world.setPan(0, 0);
+    await frames(world, 40);
+    s = at(1, 0.5, 1);
+    fire('pointerdown', s.x, s.y, 9);
+    for (let i = 1; i <= 3; i++) fire('pointermove', s.x + i * 5, s.y, 9);
+    fire('pointercancel', s.x + 15, s.y, 9);
+    assertEq(events[0].phase, 'start');
+    assertEq(events.at(-1).phase, 'end');
+
+    // removing the actor mid-stroke still ends cleanly; unsubscribing stops delivery
+    events.length = 0;
+    world.setPan(0, 0);
+    await frames(world, 40);
+    s = at(1, 0.5, 1);
+    fire('pointerdown', s.x, s.y, 10);
+    for (let i = 1; i <= 3; i++) fire('pointermove', s.x + i * 5, s.y, 10);
+    world.removeActor('pet:1');
+    fire('pointermove', s.x + 25, s.y, 10);
+    fire('pointerup', s.x + 25, s.y, 10);
+    assertEq(events.at(-1).phase, 'end');
+    off();
+    const n0 = events.length;
+    s = at(-2, 0.5, 1);
+    fire('pointerdown', s.x, s.y, 11); fire('pointermove', s.x + 30, s.y, 11); fire('pointerup', s.x + 30, s.y, 11);
+    assertEq(events.length, n0, 'unsubscribed');
+  } finally {
+    world.dispose();
+    host.remove();
+  }
+});

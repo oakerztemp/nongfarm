@@ -10,6 +10,7 @@ import {
 import * as storage from './storage.js';
 import { initAuth, signInWithGoogle, signOutUser, isFirebaseConfigured } from './auth.js';
 import { advance, MAX_OFFLINE_MS } from './tick.js';
+import { AWAY_MIN_MS, snapshotForAway, buildAwayDigest, setAwayDigest, takeAwayDigest } from './away.js';
 import { CROPS } from './data/crops.js';
 import { initQuestBar } from './ui/questBar.js';
 import { openSettings } from './ui/settings.js';
@@ -43,8 +44,21 @@ let authBusy = false;
 
 // ---- time advance (ticks + offline catch-up live in tick.js) ----
 
+/** The "pets welcome you back" digest, once: { lines, highlights, awayMs, at } after an absence of >= 30 min, else null (CONTRACT_V8 §3). */
+export function getAwayDigest() {
+  const d = takeAwayDigest();
+  if (d) update(st => { st.lastGreetAt = now(); }); // shown now: no second greeting until another 30 min have passed
+  return d;
+}
+
 function advanceTo(state, toMs) {
+  // snapshot BEFORE the catch-up so the digest can say what changed while the player was away
+  const greeted = toMs - (Number(state.lastGreetAt) || 0) < AWAY_MIN_MS; // greeted less than 30 min ago: stay quiet
+  const before = !greeted && toMs - state.lastTick >= AWAY_MIN_MS ? snapshotForAway(state) : null;
   const { gap, replayed } = advance(state, toMs);
+  if (before) {
+    try { setAwayDigest(buildAwayDigest(before, state, Math.min(gap, MAX_OFFLINE_MS)), Math.min(gap, MAX_OFFLINE_MS)); } catch (e) { console.error('away digest failed', e); }
+  }
   if (replayed && gap > WELCOME_BACK_MS) {
     notify(`ยินดีต้อนรับกลับ! ผ่านไป ${formatDuration(Math.min(gap, MAX_OFFLINE_MS))}`, 'info');
   }

@@ -24,7 +24,7 @@
       <select id="stage"><option value="0">0 baby</option><option value="1">1 child</option><option value="2" selected>2 adult</option><option value="3">3 master</option></select>
     </label>
     <label>set
-      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="legendary">legendary row</option></select>
+      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="legendary">legendary row</option></select>
     </label>
     <label><input type="checkbox" id="shiny"> shiny</label>
     <label><input type="checkbox" id="spin" checked> turntable</label>
@@ -66,14 +66,15 @@
     scene.add(sun);
 
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
-    const isFarm = id => getSpecies(id).habitat === 'farm';
+    // farm = the 21 farm habitat species; forest = the 15 forest friends (V8 §5, panda stays with the legendaries); legendary = the rest
+    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : 'legendary'; };
     const ids = q.get('only') ? q.get('only').split(',')
-      : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || (setName === 'farm') === isFarm(id));
+      : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || setOf(id) === setName);
     const extras = [];
-    if (setName !== 'legendary') extras.push({ id: '_bb1', label: 'billboard \u{1F981}', emoji: '\u{1F981}' }, { id: '_bb2', label: 'fallback: dolphin', species: 'dolphin' });
-    if (setName !== 'farm') extras.push({ id: '_bb3', label: 'shark (epic billboard)', species: 'shark' });
+    if (setName === 'all' || setName === 'farm') extras.push({ id: '_bb1', label: 'billboard \u{1F981}', emoji: '\u{1F981}' }, { id: '_bb2', label: 'fallback: dolphin', species: 'dolphin' });
+    if (setName === 'all' || setName === 'legendary') extras.push({ id: '_bb3', label: 'shark (epic billboard)', species: 'shark' });
     const cells = ids.map(id => ({ id, label: id + (getSpecies(id).rarity === 'legendary' ? ' \u2726' : '') })).concat(q.get('only') ? [] : extras);
-    const cols = Math.min(cells.length, q.get('only') ? cells.length : 6), gap = q.get('only') ? 2.6 : 1.9;
+    const cols = Math.min(cells.length, q.get('only') ? cells.length : setName === 'forest' ? 5 : 6), gap = q.get('only') ? 2.6 : 1.9;
     const rows = Math.ceil(cells.length / cols);
 
     const holders = [];

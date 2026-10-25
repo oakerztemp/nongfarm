@@ -489,3 +489,33 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 @media (prefers-reduced-motion: reduce) { .b3-gift > span { animation: none; } }
 /* less chrome over the scene: the pets are the star */
 .b3-top-r .b3-egg-btn, .b3-top-r .b3-decor-btn, .b3-chip.b3-top-chip { min-height: 34px; padding: 0 10px; font-size: 0.82rem; }
+
+/* ───────── จับต้องน้องได้ (CONTRACT_V8): drag-feed ghost, greeting speech bubble ───────── */
+.b3-food { touch-action: pan-x; user-select: none; -webkit-user-select: none; cursor: grab; }
+.b3-ghost {
+  position: fixed; left: 0; top: 0; z-index: 500; font-size: 40px; line-height: 1; pointer-events: none; will-change: transform;
+  filter: drop-shadow(0 6px 6px rgba(0, 0, 0, 0.35)); font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+}
+.b3-speech { position: absolute; left: 0; top: 0; z-index: 6; display: flex; align-items: flex-start; gap: 4px; width: max-content; max-width: min(300px, 84%); pointer-events: none; will-change: transform; }
+.b3-speech[hidden] { display: none; }
+.b3-speech > * { pointer-events: auto; }
+.b3-speech-body {
+  position: relative; display: grid; gap: 2px; text-align: left; padding: 10px 14px; border-radius: 18px; border: 2px solid var(--accent);
+  background: var(--surface); color: var(--text); font: inherit; box-shadow: var(--shadow); cursor: pointer; animation: pet-pop 0.4s ease-out;
+}
+.b3-speech-body::after {
+  content: ''; position: absolute; left: 50%; bottom: -9px; width: 14px; height: 14px; transform: translateX(-50%) rotate(45deg);
+  background: var(--surface); border-right: 2px solid var(--accent); border-bottom: 2px solid var(--accent);
+}
+.b3-speech-t { font-weight: 700; line-height: 1.4; }
+.b3-speech-body small { color: var(--text-dim); }
+.b3-speech-skip { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); cursor: pointer; font-size: 0.8rem; }
+.b3-speech-body:focus-visible, .b3-speech-skip:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.greet-bar {
+  display: grid; gap: 2px; width: 100%; text-align: left; padding: 10px 14px; margin-bottom: 8px; border-radius: 18px; border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--text); font: inherit; cursor: pointer; box-shadow: var(--shadow);
+}
+.greet-bar .greet-t { font-weight: 700; line-height: 1.4; }
+.greet-bar small { color: var(--text-dim); }
+.greet-bar:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .b3-speech-body { animation: none; } }

@@ -1615,3 +1615,319 @@ test('3D gift label needs 1 h of production or an item; any gift of 1+ coin is s
   s.yard.byPet[pet.id] = { c: 1, ms: 1000, prog: 0, items: { food_milk: 1 } };
   assertEq(petGift(s, pet.id).big, true, 'a held item earns the label too');
 });
+
+// ── จับต้องน้องได้ (CONTRACT_V8): strokes, drag-feed, greeting, best friends ─────────────────────────────────
+import {
+  favoriteSpot, FAV_SPOTS, FAV_LABEL, regionFromLocal, createStroke, moveStroke, handStroke, tickStroke, strokeMelt, endStroke, dominantRegion,
+  STROKE_MIN_MS, STROKE_MELT_S, pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots,
+} from '../js/petBehaviour.js';
+import { strokePet, favoriteLine, friendLine } from '../js/pets.js';
+import { bestFriendMap, bestFriendOf, BEST_FRIEND_POINTS as FRIEND_POINTS, FRIEND_DECAY_MULT as FRIEND_HAPPY_DECAY, removePetFriends as dropFriendPairs, onBestFriend, friendEventMessage } from '../js/friends.js';
+import { pairKey as friendKey } from '../js/state.js';
+
+/** Plays one whole stroke session the way barn3d does: start, many frames of movement, end. */
+function playStroke(s, petId, { region = 'head', seconds = 3, speed = 1 } = {}) {
+  const S = createStroke(petId, region);
+  let x = 0;
+  for (let f = 0; f < Math.round(seconds * 60); f++) {
+    x += speed / 60;
+    handStroke(S, { x: Math.sin(x * 3), y: 0.5, z: 0 }, 1 / 60);
+    tickStroke(S, 1 / 60);
+  }
+  const end = endStroke(S);
+  const again = endStroke(S);   // a duplicated 'end' event must not pay twice
+  let r = null, calls = 0;
+  if (end.commit) { r = strokePet(s, petId, { durationMs: end.durationMs, region: dominantRegion(S) }); calls++; }
+  if (again.commit) { strokePet(s, petId, { durationMs: again.durationMs, region }); calls++; }
+  return { S, end, r, calls };
+}
+
+test('favorite spot: deterministic from the pet id, all three spots occur, labels exist', () => {
+  const seen = new Set();
+  for (let i = 0; i < 60; i++) { const f = favoriteSpot('pet' + i); assert(FAV_SPOTS.includes(f), 'valid'); seen.add(f); assertEq(favoriteSpot('pet' + i), f, 'same every time'); }
+  assertEq([...seen].sort(), ['back', 'chin', 'head'], 'every spot is somebody\'s favourite');
+  assertEq(FAV_LABEL.chin, 'เกาคาง', 'label');
+});
+
+test('stroke session = exactly one pat: bond +1, happy +3, one of the 5 daily pats, however long it lasts', () => {
+  const { s, pet } = setup('hamster', { stats: { happy: 50 } });
+  const run = playStroke(s, pet.id, { seconds: 4 });
+  assertEq(run.calls, 1, 'patPet runs once per session');
+  assertEq([run.end.commit, run.r.ok, run.r.rewarded], [true, true, true], 'rewarded');
+  assertEq([pet.patToday, pet.bond], [1, 1], 'one pat, +1 bond');
+  near(pet.stats.happy, 53, 'happy +3');
+  // too short: reacts but pays nothing
+  const quick = playStroke(s, pet.id, { seconds: (STROKE_MIN_MS - 100) / 1000 });
+  assertEq([quick.end.commit, quick.calls], [false, 0], 'a 0.5 s stroke is no session');
+  assertEq(pet.patToday, 1, 'nothing paid');
+  // a second event for the same session never pays again
+  const S = createStroke(pet.id, 'back');
+  for (let i = 0; i < 100; i++) moveStroke(S, 0.02, { x: i * 0.01, y: 0.5, z: 0 });
+  assertEq(endStroke(S).commit, true, 'first end');
+  assertEq(endStroke(S).commit, false, 'second end');
+  assertEq(endStroke(null).commit, false, 'no session');
+});
+
+test('stroke spam gives nothing beyond today\'s caps (5 pats, 30 bond)', () => {
+  const { s, pet } = setup('hamster');
+  let rewarded = 0;
+  for (let i = 0; i < 25; i++) { const r = playStroke(s, pet.id, { seconds: 1 }).r; assert(r && r.ok, 'always reacts'); if (r.rewarded) rewarded++; }
+  assertEq([rewarded, pet.patToday], [PAT_DAILY_MAX, PAT_DAILY_MAX], '5 rewarded pats, then nothing');
+  assert(pet.bond <= PAT_DAILY_MAX, 'bond only from those 5 pats: ' + pet.bond);
+  // taps and strokes share the same 5
+  const t = setup('cat');
+  patPet(t.s, t.pet.id); patPet(t.s, t.pet.id); patPet(t.s, t.pet.id);
+  const rs = [1, 2, 3, 4].map(() => playStroke(t.s, t.pet.id, { seconds: 1 }).r.rewarded);
+  assertEq(rs, [true, true, false, false], 'only 2 left after 3 taps');
+});
+
+test('favourite spot: discovered once (favKnown + toast text), only on the right region, the sheet line follows', () => {
+  const { s, pet } = setup('hamster');
+  const fav = favoriteSpot(pet.id);
+  const other = FAV_SPOTS.find(x => x !== fav);
+  assertEq(favoriteLine(pet), '', 'unknown at first');
+  const miss = playStroke(s, pet.id, { region: other });
+  assertEq([miss.r.favorite, miss.r.discovered, !!pet.favKnown], [false, false, false], 'wrong spot: nothing found');
+  const hit = playStroke(s, pet.id, { region: fav });
+  assertEq([hit.r.favorite, hit.r.discovered, pet.favKnown], [true, true, true], 'discovered');
+  assert(hit.r.msg.startsWith('ค้นพบแล้ว!') && hit.r.msg.includes(FAV_LABEL[fav]) && hit.r.msg.includes('💕'), 'toast: ' + hit.r.msg);
+  assertEq(favoriteLine(pet), `ชอบ: ${FAV_LABEL[fav]}`, 'sheet line');
+  const again = playStroke(s, pet.id, { region: fav });
+  assertEq([again.r.favorite, again.r.discovered, again.r.msg], [true, false, ''], 'known: still the extra reaction, no second toast');
+  // the dominant region of a session decides, not the last one
+  const S = createStroke(pet.id, fav);
+  for (let i = 0; i < 100; i++) tickStroke(S, 0.02);
+  S.region = other; tickStroke(S, 0.1);
+  assertEq(dominantRegion(S), fav, 'most of the time was on the favourite');
+});
+
+test('stroking a sleeping pet is a pat that never wakes it; short strokes never discover', () => {
+  const { s, pet } = setup('hamster', { status: 'sleeping' });
+  const r = playStroke(s, pet.id, { region: favoriteSpot(pet.id), seconds: 2 }).r;
+  assert(r.ok, 'allowed');
+  assertEq(pet.status, 'sleeping', 'still asleep');
+  const q = setup('hamster');
+  const r2 = strokePet(q.s, q.pet.id, { durationMs: 300, region: favoriteSpot(q.pet.id) });
+  assertEq([r2.rewarded, r2.discovered, !!q.pet.favKnown], [false, false, false], 'too short');
+  assertEq(strokePet(q.s, 'nope', { durationMs: 1000 }).ok, false, 'unknown pet');
+});
+
+test('stroke feel: melts after ~2 s, scrubbing fast makes it giggle, region comes from where the hand is', () => {
+  const S = createStroke('a', 'head');
+  for (let i = 0; i < 60; i++) moveStroke(S, 1 / 60, { x: 0, y: 0.5, z: 0 });
+  assertEq(strokeMelt(S), 0, 'still 1 s: not melted');
+  for (let i = 0; i < 100; i++) moveStroke(S, 1 / 60, { x: 0, y: 0.5, z: 0 });
+  assertEq(S.t > STROKE_MELT_S + 0.5, true, 'clock advanced');
+  assertEq(strokeMelt(S), 1, 'melted after 2 s');
+  assertEq(S.giggle, 0, 'a still hand does not make it giggle');
+  const F = createStroke('a', 'back');
+  for (let i = 0; i < 60; i++) moveStroke(F, 1 / 60, { x: (i % 2 ? 0.2 : -0.2), y: 0.5, z: 0 });   // a quick back-and-forth scrub
+  assert(F.giggle > 0.5, 'fast scrub: giggle ' + F.giggle);
+  const slow = createStroke('a', 'back');
+  for (let i = 0; i < 120; i++) moveStroke(slow, 1 / 60, { x: i * 0.004, y: 0.5, z: 0 });
+  assertEq(slow.giggle, 0, 'slow stroking: no giggle');
+  assertEq(regionFromLocal({ x: 0, y: 0.9, z: 0 }, 1), 'head', 'high = head');
+  assertEq(regionFromLocal({ x: 0, y: 0.35, z: 0.3 }, 1), 'chin', 'low front = chin');
+  assertEq(regionFromLocal({ x: 0, y: 0.4, z: -0.3 }, 1), 'back', 'low behind = back');
+});
+
+test('drag-feed: food near a pet picks it (nearest within range); a drop feeds once, a miss feeds nobody', () => {
+  const pets = [{ id: 'a', x: 0, z: 0 }, { id: 'b', x: 1, z: 0 }, { id: 'c', x: 5, z: 5 }];
+  assertEq(pickFeedTarget({ x: 0.9, z: 0.1 }, pets), 'b', 'nearest');
+  assertEq(pickFeedTarget({ x: 0.5 + FEED_RANGE, z: 0 }, [{ id: 'a', x: 0, z: 0 }]), null, 'out of range');
+  assertEq(pickFeedTarget({ x: 3, z: 3 }, pets), null, 'empty ground');
+  assertEq(pickFeedTarget(null, pets), null, 'no food');
+  const d = createFeedDrag('food_kibble');
+  d.hover('a'); d.hover('b');
+  assertEq(d.drop(), { petId: 'b', itemId: 'food_kibble' }, 'drop on the pet it hovers');
+  assertEq(d.drop(), null, 'a second drop gives nothing');
+  const miss = createFeedDrag('food_kibble');
+  miss.hover('a'); miss.hover(null);
+  assertEq(miss.drop(), null, 'a miss springs back (no feeding)');
+  // one drop = one feedPet, with feedPet's own rules
+  const { s, pet } = setup('hamster', { stats: { hunger: 40 } });
+  addItem(s, 'food_kibble', 5);
+  const kibble0 = countItem(s, 'food_kibble');
+  let fed = 0;
+  const drag = createFeedDrag('food_kibble'); drag.hover(pet.id);
+  for (let i = 0; i < 4; i++) { const drop = drag.drop(); if (drop && feedPet(s, drop.petId, drop.itemId).ok) fed++; }
+  assertEq([fed, kibble0 - countItem(s, 'food_kibble')], [1, 1], 'a single feeding, a single item');
+  const full = setup('hamster', { stats: { hunger: 100 } });
+  addItem(full.s, 'food_kibble', 1);
+  assertEq(feedPet(full.s, full.pet.id, 'food_kibble').ok, false, 'full pets refuse (they turn their head away)');
+});
+
+test('greeting plan: 2-4 awake pets from the highlights, lines kept, nothing when there is nothing to say', () => {
+  const mk = (id, over = {}) => ({ id, status: 'idle', sick: false, ...over });
+  const pets = [mk('a'), mk('b'), mk('c'), mk('d'), mk('e'), mk('s', { status: 'sleeping' }), mk('w', { status: 'working' })];
+  const lines = [{ petId: 'a', emoji: '😴', text: 'a หลับสบาย' }, { petId: 's', emoji: '🎁', text: 's มีของขวัญ' }, { emoji: '🌽', text: 'พืชพร้อมเก็บ' }];
+  const p = greetingPlan({ lines, highlights: ['s', 'a', 'w', 'c'] }, pets);
+  assertEq(p.ids, ['a', 'c', 'b'].slice(0, 2).concat([]), 'sleeping / working highlights are skipped');
+  assert(p.ids.length >= 2 && p.ids.length <= 4, '2-4 pets');
+  assertEq(p.lines.length, 3, 'lines kept');
+  const many = greetingPlan({ lines, highlights: ['a', 'b', 'c', 'd', 'e'] }, pets);
+  assertEq(many.ids, ['a', 'b', 'c', 'd'], 'at most 4');
+  const topUp = greetingPlan({ lines, highlights: ['a'] }, pets);
+  assertEq(topUp.ids.length, 2, 'topped up to 2');
+  assertEq(topUp.ids[0], 'a', 'highlight first');
+  assertEq(greetingPlan({ lines, highlights: ['a'] }, pets).ids, topUp.ids, 'deterministic');
+  assertEq(greetingPlan({ lines: [], highlights: ['a'] }, pets), null, 'no lines');
+  assertEq(greetingPlan(null, pets), null, 'no digest');
+  assertEq(greetingPlan({ lines, highlights: [] }, [mk('s', { status: 'sleeping' })]), null, 'everybody sleeps');
+  assertEq(greetingPlan({ lines: Array.from({ length: 9 }, (_, i) => ({ emoji: '💬', text: 'x' + i })), highlights: [] }, pets).lines.length, 5, 'at most 5 lines');
+  const saved = JSON.stringify(YARD);
+  try {
+    configureYard('M');
+    for (const n of [2, 3, 4]) {
+      const sp = greetSpots(n);
+      assertEq(sp.length, n, 'one spot each');
+      for (const q of sp) assert(Math.hypot(q.x, q.z) <= YARD.walkRadius + 1e-6, 'inside the yard');
+      for (let i = 1; i < n; i++) assert(sp[i].x - sp[i - 1].x > 1, 'in a row, not stacked');
+    }
+  } finally { Object.assign(YARD, JSON.parse(saved)); }
+});
+
+// ── เพื่อนซี้ ──────────────────────────────────────────────────────────────
+test('best friends: a mutual favourite pair with 72+ points; one friend each; pairs leave with the pet', () => {
+  const { s } = setup('hamster', { id: 'a' });
+  for (const id of ['b', 'c', 'd']) s.pets.push({ ...s.pets[0], id, nickname: id });
+  s.friends = { [friendKey('a', 'b')]: FRIEND_POINTS, [friendKey('a', 'c')]: 30 };
+  assertEq([...bestFriendMap(s)].sort(), [['a', 'b'], ['b', 'a']], 'a + b');
+  s.friends[friendKey('a', 'b')] = FRIEND_POINTS - 1;
+  assertEq(bestFriendMap(s).size, 0, 'not yet 72');
+  s.friends = { [friendKey('a', 'b')]: 90, [friendKey('b', 'c')]: 100, [friendKey('a', 'd')]: 80 };
+  assertEq([...bestFriendMap(s)].sort(), [['a', 'd'], ['b', 'c'], ['c', 'b'], ['d', 'a']], 'greedy matching: the strongest pair b+c first, then a+d (a cannot have b)');
+  s.friends = { [friendKey('a', 'b')]: 90, [friendKey('a', 'd')]: 80 };
+  assertEq(bestFriendOf(s, 'a'), 'b', 'the higher pair wins');
+  assertEq(bestFriendOf(s, 'd'), null, 'd\'s favourite (a) has another favourite');
+  assert(friendLine(s, s.pets[0]).startsWith('เพื่อนซี้: '), 'sheet line');
+  assertEq(friendLine(s, s.pets[3]), '', 'no friend, no line');
+  dropFriendPairs(s, 'b');
+  assertEq(Object.keys(s.friends), [friendKey('a', 'd')], 'b left: its pairs are gone');
+  // rehoming drops them too
+  s.friends[friendKey('a', 'c')] = 5;
+  assert(rehomePet(s, 'a').ok, 'a moves away');
+  assertEq(Object.keys(s.friends), [], 'a left: nothing remains');
+});
+
+test('best friends together: happiness decays x0.8 while the friend is home, normal when it is away', () => {
+  const mk = (friendStatus) => {
+    const { s } = setup('hamster', { id: 'a', stats: { happy: 80 } });
+    s.pets.push({ ...s.pets[0], id: 'b', nickname: 'b', stats: { hunger: 100, happy: 80, energy: 100, clean: 100 }, status: friendStatus });
+    s.pets.push({ ...s.pets[0], id: 'c', nickname: 'c', stats: { hunger: 100, happy: 80, energy: 100, clean: 100 } });
+    s.friends = { [friendKey('a', 'b')]: 100 };
+    tickPets(s, HOUR, { offline: false });
+    return s;
+  };
+  const base = 80 - 4;   // RATE.happy = 4 / h
+  const together = mk('idle');
+  near(together.pets[0].stats.happy, 80 - 4 * FRIEND_HAPPY_DECAY, 'friend at home: x0.8');
+  near(together.pets[1].stats.happy, 80 - 4 * FRIEND_HAPPY_DECAY, 'and the friend too');
+  near(together.pets[2].stats.happy, base, 'a pet without a best friend is unchanged');
+  assertEq(FRIEND_HAPPY_DECAY, 0.8, 'the contract number');
+  near(mk('working').pets[0].stats.happy, base, 'friend at work: no bonus');
+  near(mk('expedition').pets[0].stats.happy, base, 'friend on an expedition: no bonus');
+});
+
+test('best friends: the "new best friend" event fires live when a pair crosses 72 points (not for old friendships)', () => {
+  const mk = pts => {
+    const { s } = setup('hamster', { id: 'x', nickname: 'มะลิ' });
+    s.pets.push({ ...s.pets[0], id: 'y', nickname: 'โมจิ' });
+    s.friends = { [friendKey('x', 'y')]: pts };
+    return s;
+  };
+  const events = [];
+  const off = onBestFriend(evt => events.push(evt));
+  try {
+    const old = mk(100);
+    tickPets(old, HOUR, { offline: false });
+    assertEq(events.length, 0, 'already friends when first seen: silent');
+    const s = mk(FRIEND_POINTS - 0.5);
+    tickPets(s, 1000, { offline: false });
+    assertEq(events.length, 0, 'not yet');
+    tickPets(s, HOUR, { offline: false });
+    assertEq(events.length, 1, 'both home and awake for an hour: +1 point -> 72.5 -> friends');
+    assertEq([events[0].a, events[0].b, events[0].offline], ['x', 'y', false], 'live event');
+    const msg = friendEventMessage(events[0]);
+    assert(msg.includes('🤝') && msg.includes('มะลิ') && msg.includes('โมจิ') && msg.includes('เพื่อนซี้'), msg);
+    tickPets(s, HOUR, { offline: false });
+    assertEq(events.length, 1, 'only once');
+    const o = mk(FRIEND_POINTS - 0.5);
+    tickPets(o, 1000, { offline: true });
+    tickPets(o, HOUR, { offline: true });
+    assertEq([events.length, events[1].offline], [2, true], 'offline catch-up flags it (the away digest tells the story)');
+  } finally { off(); }
+});
+
+test('best friends behave together: nap beside a napping friend, go and nuzzle a far one, join its decor', () => {
+  configureYard('XL');
+  const pet = over => ({ id: 'q', speciesId: 'hamster', personality: 'cheerful', status: 'idle', sick: false, stats: { hunger: 80, happy: 90, energy: 60, clean: 90 }, ...over });
+  const pick = (actorState, n = 300) => { const seen = {}; for (let sd = 1; sd <= n; sd++) { const a = nextAction(pet(), { x: 0, z: 1, others: [], last: 'idle', ...actorState }, makeRng(sd), 0); const k = a.type === 'buddy' ? 'buddy:' + a.mode : a.type; seen[k] = (seen[k] || 0) + 1; } return seen; };
+  const napping = pick({ friend: { id: 'f', x: 2, z: 2, napping: true }, friendId: 'f' });
+  assert(napping['buddy:nap'] > 20, 'naps beside a napping friend: ' + JSON.stringify(napping));
+  const far = pick({ friend: { id: 'f', x: 4, z: -1, napping: false }, friendId: 'f' });
+  assert(far['buddy:nuzzle'] > 20, 'goes to say hi to a far friend: ' + JSON.stringify(far));
+  const near_ = pick({ friend: { id: 'f', x: 0.8, z: 1, napping: false }, friendId: 'f' });
+  assertEq(near_['buddy:nuzzle'] || 0, 0, 'no need to walk over when it is already close');
+  const alone = pick({});
+  assertEq((alone['buddy:nap'] || 0) + (alone['buddy:nuzzle'] || 0), 0, 'no friend, no buddy actions');
+  // the buddy action walks to a spot beside the friend, then stays for its duration
+  const a = nextAction(pet(), { x: 0, z: 1, others: [], last: 'idle', friend: { id: 'f', x: 2, z: 2, napping: true }, friendId: 'f' }, () => 0.0001, 0);
+  if (a.type === 'buddy') {
+    assert(Math.hypot(a.target.x - 2, a.target.z - 2) < 1.2, 'stands beside the friend');
+    assertEq(a.friendId, 'f', 'remembers who');
+  }
+  const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'buddy', mode: 'nuzzle', friendId: 'f', target: { x: 1.5, z: 0 }, speed: 1, duration: 1.5, side: 0.9 }) };
+  let decided = 0, t = 0;
+  while (t < 15 && !decided) { advanceActor(A, 0.1, () => { decided++; }); t += 0.1; }
+  assert(A.act.arrived && decided === 1, 'walked over, nuzzled, then decided again');
+  // friends share decor: a bed in use by the friend is allowed (and preferred), by anybody else it is not
+  const bed = busy => ({ id: 'd1', decorId: 'bed', x: 2, z: 3, busy });
+  assertEq(decorOptions(pet(), { decor: [bed('f')], friendId: 'f' }).length, 1, 'friend uses the bed: join');
+  assertEq(decorOptions(pet(), { decor: [bed('f')], friendId: 'g' }).length, 0, 'a stranger uses it: no');
+  assertEq(decorOptions(pet(), { decor: [bed('f')] }).length, 0, 'no friend: no');
+  const joinW = decorOptions(pet(), { decor: [bed('f')], friendId: 'f' })[0].wt, freeW = decorOptions(pet(), { decor: [bed(null)] })[0].wt;
+  assert(joinW > freeW * 2, 'joining a friend is preferred');
+  assertEq(decorOptions(pet(), { decor: [{ id: 'h', decorId: 'horse', x: 1, z: 1, busy: 'f' }], friendId: 'f' }).length, 0, 'the horse only takes one rider');
+});
+
+// ── review fixes: stale stroke on a hidden pet, at most 4 gift labels ───────────────────────────────────────────
+import { finishActorStroke, clearStrokeState, pickGiftLabels, GIFT_LABEL_MAX } from '../js/petBehaviour.js';
+
+test('a stroke that ends on a hidden / spawning pet is released, never rewarded, and the pet can be stroked again', () => {
+  const run = canReward => {
+    const A = { id: 'p1', stroke: createStroke('p1', 'head'), strokeMelt: 0.9, squint: 1, strokePoint: { x: 0, y: 0, z: 0 }, strokeEnd: null };
+    for (let i = 0; i < 200; i++) tickStroke(A.stroke, 0.02);
+    return { A, res: finishActorStroke(A, 4000, { canReward }) };
+  };
+  const hidden = run(false);
+  assertEq(hidden.res, null, 'no reward for a pet that is gone');
+  assertEq([hidden.A.stroke, hidden.A.strokeMelt, hidden.A.squint, hidden.A.strokePoint], [null, 0, 0, null], 'stroke state and melt pose cleared');
+  const normal = run(true);
+  assertEq([normal.res.commit, normal.res.region, normal.A.stroke], [true, 'head', null], 'a normal end pays once');
+  assertEq(finishActorStroke(normal.A, 4000), null, 'a second end finds nothing to pay');
+  hidden.A.stroke = createStroke('p1', 'back');   // comes back from work: the next stroke starts clean
+  assertEq(hidden.A.stroke.t, 0, 'fresh session');
+  const B = { stroke: createStroke('p2'), strokeMelt: 1, squint: 1, strokePoint: {}, strokeEnd: {} };
+  clearStrokeState(B);
+  assertEq([B.stroke, B.strokeMelt, B.squint, B.strokeEnd], [null, 0, 0, null], 'clearStrokeState');
+  assertEq(finishActorStroke(null, 100), null, 'no actor');
+});
+
+test('gift labels: at most 4; full pets first, then the biggest gifts, then the ones nearer the middle', () => {
+  const c = (id, full, size, dist) => ({ id, full, size, dist });
+  const many = Array.from({ length: 20 }, (_, i) => c('p' + i, false, 10 + i, 100 + i));
+  assertEq(pickGiftLabels(many).length, GIFT_LABEL_MAX, 'only 4 of 20');
+  assertEq(GIFT_LABEL_MAX, 4, 'the number');
+  assertEq(pickGiftLabels(many), ['p19', 'p18', 'p17', 'p16'], 'biggest gifts');
+  const mixed = [c('big', false, 500, 10), c('f1', true, 30, 300), c('f2', true, 80, 300), c('near', false, 500, 5), c('small', false, 5, 1), c('f3', true, 80, 100)];
+  assertEq(pickGiftLabels(mixed), ['f3', 'f2', 'f1', 'near'], 'full first (bigger, then nearer), then the biggest, nearer wins ties');
+  assertEq(pickGiftLabels([c('a', false, 5, 9), c('b', false, 5, 2)]), ['b', 'a'], 'fewer than 4: all of them, nearer first on a tie');
+  assertEq(pickGiftLabels([]), [], 'none');
+  assertEq(pickGiftLabels(null), [], 'null');
+  assertEq(pickGiftLabels(many, 0), [], 'max 0');
+  assertEq(pickGiftLabels(many).join(), pickGiftLabels([...many].reverse()).join(), 'does not depend on the input order');
+  // once the top ones are collected the next ones take their place
+  const rest = many.filter(x => !['p19', 'p18'].includes(x.id));
+  assertEq(pickGiftLabels(rest), ['p17', 'p16', 'p15', 'p14'], 're-pick after a collect');
+});

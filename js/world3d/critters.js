@@ -37,6 +37,7 @@ const GEO = {
   sphL:  T => new T.SphereGeometry(1, 8, 5),
   sphP:  T => new T.SphereGeometry(1, 6, 4),
   cone:  T => new T.ConeGeometry(1, 1, 10, 1).translate(0, 0.5, 0),
+  coneP: T => new T.ConeGeometry(1, 1, 5, 1).translate(0, 0.5, 0),   // low-poly spike / tine / claw (10 tris)
   cyl:   T => new T.CylinderGeometry(1, 1, 1, 8, 1).translate(0, 0.5, 0),
   cylT:  T => new T.CylinderGeometry(1, 0.78, 1, 8, 1).translate(0, 0.5, 0),
   thin:  T => new T.CylinderGeometry(1, 1, 1, 4, 1).translate(0, 0.5, 0),
@@ -289,10 +290,10 @@ function assemble(T, spec, shiny, seed, grad) {
   const L = { type: 'stub', h: 0.12, r: 0.08, ...spec.legs };
   const hasLegs = L.type !== 'none';
   const by = B.y ?? (hasLegs ? L.h * 0.6 + B.h * 0.95 : B.h * 0.98);
-  put(bodyG, 'sph', tm(B.color), B.w, B.h, B.d, 0, by, 0);
+  put(bodyG, B.lo ? 'sphM' : 'sph', tm(B.color), B.w, B.h, B.d, 0, by, 0);   // lo: 120 tris instead of 192 (forest commons have a 1.2k budget)
   if (B.belly) {
     const bl = { s: 0.84, dz: 0.22, dy: -0.1, ...B.belly };
-    put(bodyG, 'sphM', tm(bl.color), B.w * bl.s, B.h * bl.s * 1.05, B.d * bl.s, 0, by + B.h * bl.dy, B.d * bl.dz);
+    put(bodyG, bl.lo ? 'sphL' : 'sphM', tm(bl.color), B.w * bl.s, B.h * bl.s * 1.05, B.d * bl.s, 0, by + B.h * bl.dy, B.d * bl.dz);
   }
   const legMat = tm(L.color || B.color);
   if (L.type === 'stub') {
@@ -325,7 +326,7 @@ function assemble(T, spec, shiny, seed, grad) {
   headG.position.set(0, hy, hz);
   bodyG.add(headG);
   const headColor = H.color || B.color;
-  put(headG, 'sph', tm(headColor), hrx, hry, hrz);
+  put(headG, H.lo ? 'sphM' : 'sph', tm(headColor), hrx, hry, hrz);
   const hs = (az, el, push = 0) => surf(hrx, hry, hrz, az, el, push);
 
   if (spec.neck) {
@@ -349,6 +350,7 @@ function assemble(T, spec, shiny, seed, grad) {
     eg.userData.anim = true; // merged into the single 'eyes' mesh below
     eg.position.copy(p);
     face(eg, n);
+    if (E.ring) put(eg, 'disc', bm(E.ring), er * 1.5, er * (E.tall ?? 1.2) * 1.45, 1, 0, 0, er * 0.4);   // white rim so dark eyes stay readable on a dark mask / patch
     put(eg, 'sphP', fm(EYE), er, er * (E.tall ?? 1.2), er * 0.6);
     put(eg, 'discS', bm('#ffffff'), er * 0.34, er * 0.34, 1, er * 0.32, er * 0.5, er * 0.62);
     put(eg, 'discS', bm('#ffffff'), er * 0.17, er * 0.17, 1, -er * 0.3, -er * 0.35, er * 0.6);
@@ -476,7 +478,7 @@ function assemble(T, spec, shiny, seed, grad) {
     switch (Ta.type) {
       case 'puff': {
         const s = Ta.s ?? 0.12;
-        put(tailG, 'sphM', mat, s, s, s, 0, 0, -s * 0.6);
+        put(tailG, Ta.lo ? 'sphL' : 'sphM', mat, s, s, s, 0, 0, -s * 0.6);
         break;
       }
       case 'long': {
@@ -515,6 +517,13 @@ function assemble(T, spec, shiny, seed, grad) {
           const l = put(tailG, 'sphL', tm(Ta.lobe || Ta.color), w * 0.9, w * 0.09, w * 0.38, side * w * 0.72, 0, -len - w * 0.12);
           l.rotation.y = -side * 0.55;
         }
+        break;
+      }
+      case 'paddle': {   // beaver: flat oval paddle on a short stalk (rotate .x to slap)
+        const w = Ta.w ?? 0.13, d = Ta.d ?? 0.24;
+        tailG.rotation.x = Ta.rot ?? 0.15;
+        put(tailG, 'sphL', mat, w * 0.28, w * 0.28, d * 0.3, 0, 0, -d * 0.1);
+        put(tailG, 'sphL', tm(Ta.edge || Ta.color), w, w * 0.2, d, 0, -w * 0.05, -d * 0.95);
         break;
       }
       case 'curly': {
@@ -582,7 +591,7 @@ function assemble(T, spec, shiny, seed, grad) {
         const on = sp.on === 'head';
         const r = on ? hs(sp.az, sp.el, 0) : bodyPt(sp.az, sp.el, 0);
         const s = (on ? hr : B.h) * sp.s;
-        const m = put(on ? headG : bodyG, 'sphP', mat, s * (sp.sx ?? 1), s * (sp.sy ?? 1), s * 0.3, r.p.x, r.p.y, r.p.z);
+        const m = put(on ? headG : bodyG, o.g || 'sphP', mat, s * (sp.sx ?? 1), s * (sp.sy ?? 1), s * (sp.th ?? o.th ?? 0.3), r.p.x, r.p.y, r.p.z);   // th: thickness (thin masks stay under the eyes)
         face(m, r.n);
       }
     },
@@ -644,7 +653,7 @@ function assemble(T, spec, shiny, seed, grad) {
       const mat = tm(o.color || B.color), s = hr * (o.s ?? 0.4);
       for (const side of [-1, 1]) {
         const { p } = hs(side * 1.0, -0.3, -s * 0.7);
-        put(headG, 'sphM', mat, s, s * 0.9, s, p.x, p.y, p.z);
+        put(headG, o.lo ? 'sphL' : 'sphM', mat, s, s * 0.9, s, p.x, p.y, p.z);
       }
     },
     puffs(o) {
@@ -686,6 +695,89 @@ function assemble(T, spec, shiny, seed, grad) {
       const s = hr * (o.s ?? 0.3);
       const { p } = hs(0, 1.2, -s * 0.2);
       put(headG, 'sphL', tm(o.color || B.color), s * 0.6, s, s * 0.6, p.x, p.y + s * 0.3, p.z);
+    },
+    // ── forest kit (V8 §5) ──
+    /** Deer antlers: a bent main beam with small tines (static, merged into the head). */
+    antlers(o) {
+      const mat = tm(o.color || '#8a6a45'), s = hr * (o.s ?? 0.9), segs = o.segs ?? 3;
+      for (const side of [-1, 1]) {
+        const { p } = hs(side * (o.az ?? 0.45), o.el ?? 0.95, -s * 0.05);
+        const g = new T.Group();
+        g.position.copy(p);
+        along(g, V3(side * (o.out ?? 0.35), 1, o.back ?? -0.25));
+        headG.add(g);
+        let parent = g;
+        for (let i = 0; i < segs; i++) {
+          const sg = new T.Group();
+          if (i > 0) { sg.position.y = s / segs * 0.9; sg.rotation.z = -side * (o.bend ?? 0.35); }
+          parent.add(sg);
+          const k = 1 - i / segs * 0.55, w = s * 0.075 * k;
+          put(sg, 'coneP', mat, w, s / segs * 1.15, w);
+          if (i > 0 || o.tines0) {                       // a tine on every segment after the first, pointing outward + forward
+            const t = put(sg, 'coneP', mat, w * 0.8, s * 0.3 * (1.15 - i * 0.2), w * 0.8, 0, s / segs * 0.25, 0);
+            along(t, V3(side * 0.9, 0.7, 0.55));
+          }
+          parent = sg;
+        }
+      }
+    },
+    /** Hedgehog spines: low-poly cones spiralled over the back and flanks (never the face side). */
+    spines(o) {
+      const n = o.n ?? 36, s = hr * (o.s ?? 0.5), cols = o.colors || [o.color || '#5a4030'];
+      const ymax = o.ymax ?? 1, ymin = o.ymin ?? -0.3, zmax = o.zmax ?? 0.3;
+      let k = 0;
+      for (let i = 0; i < n; i++) {
+        const y = ymax - (i + 0.5) / n * (ymax - ymin);
+        const el = Math.asin(Math.max(-1, Math.min(1, y))), az = i * 2.39996;
+        const { p, n: nn } = bodyPt(az, el, -s * 0.12);
+        if (nn.z > zmax) continue;
+        const c = put(bodyG, 'coneP', tm(cols[k++ % cols.length]), s * 0.34, s * 0.95, s * 0.34, p.x, p.y, p.z);
+        along(c, nn.clone().add(V3(0, 0.05, -0.45)));
+      }
+    },
+    /** Long arms (sloth hangs them, orangutan reaches the ground, gorilla knuckle-walks): shoulder -> hand, static. */
+    arms(o) {
+      const mat = tm(o.color || B.color), hand = tm(o.hand || o.color || B.color), r = o.r ?? 0.07;
+      for (const side of [-1, 1]) {
+        const S = V3(side * B.w * (o.x ?? 0.88), by + B.h * (o.y ?? 0.3), B.d * (o.z ?? 0.15));
+        const Hd = V3(side * B.w * (o.hx ?? (o.x ?? 0.88) + 0.08), o.hy ?? r * 1.1, B.d * (o.hz ?? 0.25));
+        const dir = S.clone().sub(Hd), len = dir.length();
+        along(put(bodyG, 'cylT', mat, r, len, r, Hd.x, Hd.y, Hd.z), dir);
+        put(bodyG, 'sphP', mat, r * 1.25, r * 1.25, r * 1.25, S.x, S.y, S.z);          // shoulder ball hides the joint
+        put(bodyG, 'sphL', hand, r * 1.25, r * 1.1, r * 1.3, Hd.x, Hd.y, Hd.z + r * 0.15);   // fist / hand
+        for (let i = 0; i < (o.claws ?? 0); i++) {                                       // sloth claws
+          const c = put(bodyG, 'coneP', tm(o.clawColor || '#f1ecdd'), r * 0.28, r * 1.5, r * 0.28, Hd.x + (i - (o.claws - 1) / 2) * r * 0.55, Hd.y - r * 0.7, Hd.z + r * 0.35);
+          along(c, V3(0, -1, 0.35));
+        }
+      }
+    },
+    /** Two front teeth below a muzzle (beaver). */
+    teeth(o) {
+      const sn = spec.snout || {}, bp = hs(0, sn.el ?? -0.25).p, d = hr * (sn.d ?? 0.4), h = hr * (sn.h ?? 0.3);
+      const w = hr * (o.s ?? 0.07);
+      for (const sx of [-1, 1]) put(headG, 'box', bm(o.color || '#fff6dc'), w, w * 1.7, w * 0.6, sx * w * 0.55, bp.y - h * (o.dy ?? 0.55), bp.z + d * (o.dz ?? 0.4));
+    },
+    /** Dark bands around the body (tiger stripes, tapered to the body's cross-section). Static discs, no extra mesh. */
+    stripes(o) {
+      const mat = tm(o.color || '#3a2420');
+      for (const f of o.at || [-0.6, -0.3, 0, 0.3, 0.6]) {
+        const z = f * B.d, k = Math.sqrt(Math.max(0.02, 1 - f * f));
+        put(bodyG, 'sphL', mat, B.w * k * 1.035, B.h * k * 1.035, B.d * (o.th ?? 0.06), 0, by + B.h * (o.dy ?? 0.04), z);
+      }
+    },
+    /** Sleepy smile: two tiny dark slivers forming a U below the nose. */
+    smile(o) {
+      const w = hr * (o.w ?? 0.085);
+      for (const side of [-1, 1]) {
+        const { p, n } = hs(side * (o.az ?? 0.13), o.el ?? -0.42, hr * 0.004);
+        const m = put(headG, 'sphP', fm(o.color || '#4a3034'), w, w * 0.2, w * 0.2, p.x, p.y, p.z);
+        face(m, n);
+        m.rotateZ(side * (o.tilt ?? 0.5));
+      }
+    },
+    /** Lower-face patch: an ellipsoid poking out of the front of the head (follows the curve, unlike a flat disc), under the eyes. */
+    mask(o) {
+      put(headG, 'sphM', tm(o.color || '#f2d2ae'), hrx * (o.rx ?? 0.7), hry * (o.ry ?? 0.5), hrz * (o.rz ?? 0.75), 0, hry * (o.y ?? -0.25), hrz * (o.z ?? 0.3));
     },
     // ── legendary kit ──
     /** Spiral unicorn horn: stacked striped cones on the forehead. */

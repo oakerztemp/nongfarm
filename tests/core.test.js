@@ -1,7 +1,7 @@
 // Core/platform tests: state, migration (v1 fixtures), util, quests, storage merge (mock Firestore).
 import { test, assert, assertEq, withFakeNow, freshState } from './harness.js';
 import {
-  STATE_VERSION, NURSERY_SLOTS, POSTCARDS_MAX, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
+  STATE_VERSION, NURSERY_SLOTS, POSTCARDS_MAX, FRIEND_PAIRS_MAX, FRIENDS_MET_MAX, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
   addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, xpForLevel,
 } from '../js/state.js';
 import { QUESTS, currentQuest, claimQuest } from '../js/quests.js';
@@ -1038,7 +1038,7 @@ test('migrate v4 -> v5: yard gifts split onto the pets at home, nothing lost', a
   const T = 1790100000000;
   const s = await withFakeNow(T, () => migrate(raw));
   assertEq(s.version, STATE_VERSION, 'version');
-  assertEq(STATE_VERSION, 5, 'STATE_VERSION');
+  assertEq(STATE_VERSION, 6, 'STATE_VERSION');
   // pet5 (cow, sleeping) and pet7 (pig, idle) are the only pets at home; pet5 is first -> gets the remainder + the coin fraction
   assertEq(Object.keys(s.yard.byPet).sort(), ['pet5', 'pet7'], 'only pets at home receive gifts');
   const a = s.yard.byPet.pet5, b = s.yard.byPet.pet7;
@@ -1106,11 +1106,12 @@ test('v5 sanitising: dangling byPet keys, bad nursery / decor / postcards entrie
   assertEq(findBad(s), null);
 });
 
-test('migrate v1..v4 fixtures all the way to v5; every fixture loads and a second migrate changes nothing', async () => {
-  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame', 'save_v3_midgame', 'save_v4_midgame']) {
+test('migrate v1..v5 fixtures all the way to the current version; every fixture loads and a second migrate changes nothing', async () => {
+  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame', 'save_v3_midgame', 'save_v4_midgame', 'save_v5_midgame']) {
     const raw = await loadFixture(name);
     const once = await withFakeNow(1790100000000, () => migrate(raw));
-    assertEq(once.version, 5, `${name}: version`);
+    assertEq(once.version, STATE_VERSION, `${name}: version`);
+    assert(once.friends && typeof once.friends === 'object' && once.lastGreetAt === 0 && once.pets.every(p => p.favKnown === false), `${name}: v6 fields`);
     assert(Array.isArray(once.nursery) && Array.isArray(once.decor) && Array.isArray(once.postcards) && once.inventoryDecor && once.yard.byPet, `${name}: v5 fields`);
     const ids = new Set(once.pets.map(p => p.id));
     assert(Object.keys(once.yard.byPet).every(id => ids.has(id)), `${name}: byPet keys are real pets`);
@@ -1355,3 +1356,40 @@ test('adopting a v2-shaped cache from another tab goes through migrate()', () =>
     tab.close();
   }
 }));
+
+// ---- v5 -> v6 migration (friends, favKnown, lastGreetAt) ----
+
+test('migrate v5 -> v6: nothing lost, new fields default, nursery pets get favKnown too', async () => {
+  const raw = await loadFixture('save_v5_midgame');
+  const s = await withFakeNow(1790200000000, () => migrate(raw));
+  assertEq([s.version, STATE_VERSION], [6, 6]);
+  assertEq([s.friends, s.lastGreetAt], [{}, 0]);
+  assert(s.pets.length === 7 && s.pets.every(p => p.favKnown === false), 'every pet has favKnown');
+  assertEq(s.nursery.length, 1);
+  assertEq(s.nursery[0].pet.favKnown, false, 'nursery baby too');
+  assertEq([s.yard.byPet.pet5.c, s.yard.byPet.pet7.c, s.decor.length, s.postcards.length, s.inventoryDecor], [69.6, 68, 1, 1, { ball: 1 }], 'v5 data kept');
+  assertEq([s.player.coins, s.barnCapacity], [2300, 8]);
+  assertEq(findBad(s), null);
+});
+
+test('v6 sanitising: friends keeps valid pairs of yard pets, each pet its top 4; friendsMet cleaned; favKnown survives', () => {
+  const pets = Array.from({ length: 12 }, (_, i) => ({ id: `p${String(i).padStart(2, '0')}`, speciesId: 'hamster', favKnown: i === 0 }));
+  const friends = { 'p00|p01': 80, 'p01|p00': 5, 'p00|ghost': 50, 'p02|p02': 9, 'p03|p04': -3, 'p05|p06': NaN, 'a|b|c': 4, bad: 2 };
+  let k = 0;
+  for (let i = 0; i < 12; i++) for (let j = i + 1; j < 12; j++) if (!(i === 0 && j === 1)) friends[`p${String(i).padStart(2, '0')}|p${String(j).padStart(2, '0')}`] = 1 + (k++ % 7);
+  const s = migrate({ version: 6, pets, friends, friendsMet: ['p00|p01', 'p00|p01', 'p01|p00', 7, 'x|x', 'a|b'] });
+  const keys = Object.keys(s.friends);
+  assert(keys.length < 66 && keys.length <= FRIEND_PAIRS_MAX, `pruned per pet, got ${keys.length} of 66`);
+  assertEq(keys[0], 'p00|p01', 'strongest first');
+  assert(!('p01|p00' in s.friends) && !('p00|ghost' in s.friends) && !('p02|p02' in s.friends) && !('bad' in s.friends), 'unsorted, ghost, self and junk keys dropped');
+  assert(Object.values(s.friends).every(v => v > 0 && Number.isFinite(v)));
+  const per = {};
+  for (const key of keys) for (const id of key.split('|')) per[id] = (per[id] || 0) + 1;
+  assert(Object.keys(per).length === 12 && Math.min(...Object.values(per)) >= 4, 'every pet keeps at least its 4 strongest pairs');
+  assertEq(s.friendsMet, ['p00|p01', 'a|b'], 'friendsMet: valid unique pairKeys only');
+  assertEq(s.pets[0].favKnown, true);
+  assertEq(migrate(JSON.parse(JSON.stringify(s))).friends, s.friends, 'idempotent');
+  const many = Array.from({ length: 60 }, (_, i) => `a${i}|b${i}`);
+  assertEq(migrate({ version: 6, friendsMet: many }).friendsMet.length, FRIENDS_MET_MAX, 'friendsMet capped');
+  assertEq(migrate({ version: 5, friends: 'junk', lastGreetAt: 'x' }).friends, {}, 'junk fields repaired');
+});

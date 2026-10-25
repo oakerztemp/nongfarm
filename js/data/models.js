@@ -1,4 +1,4 @@
-// Procedural 3D model specs: the 21 farm-habitat species (CONTRACT_V4 §2), the legendaries (V5/V6) and the forest friends (V8 §5). Pure data, no imports.
+// Procedural 3D model specs: the 21 farm-habitat species (CONTRACT_V4 §2), the legendaries (V5/V6) the forest friends (V8 §5) and the water friends (V9 §6). Pure data, no imports.
 // Interpreted by js/world3d/critters.js. Units are "metres-ish": an adult hamster is ~0.8 tall.
 // Model faces +Z. Colours are CSS hex strings; they are hue-rotated for shiny pets.
 // Fields (all optional except body):
@@ -723,5 +723,291 @@ export const MODEL_SPECS = {
       { t: 'puffs', color: '#3e3a48', list: [['head', 0, 0.26, -0.04, 0.13]] },
     ],
     shinyPalette: { '#4a4654': '#a8a8b8', '#3e3a48': '#8a8a9c', '#38343f': '#6a6a7c', '#62606e': '#c8c8d8', '#6a6672': '#d8d8e4' },
+  },
+
+  // ───────── V9 §6: water friends (แหล่งน้ำ) ─────────
+  // Fully aquatic pets (fish, tropicalfish, blowfish, squid, octopus, dolphin, shark) float inside a translucent bubble (spec.bubble = { r, pitch? }, centre = r,
+  // so the bubble rests on the ground; one shared geometry + material, parts.bubble). Walkers: crab (sideways), frog (hops), turtle, otter, shrimp, lobster.
+  // Oyster / conch sit on a sand tuft with a `shell` pivot (rotate .x to open / tilt). Budgets as the forest: common/uncommon <= 1.2k tris + 6 calls, rare/epic <= 1.6k + 7 (+ the bubble).
+  // Animated parts keep the standard names: tail (fin), earL/earR (pectoral fins, claws, feelers, tentacles), tailTip, head, anchor.
+
+  fish: {
+    body: { w: 0.2, h: 0.25, d: 0.31, y: 0.47, color: '#7ec8f0', lo: true, belly: { color: '#eaf8ff', s: 0.8, dz: 0.12, dy: -0.28, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.21, w: 0.95, h: 1.0, d: 0.95, y: 0.48, z: 0.22, lo: true },
+    eyes: { s: 0.26, gap: 0.78, el: 0.14, ring: '#ffffff' },
+    blush: '#ff9fb8',
+    ears: { type: 'fin', s: 1.5, az: 1.35, el: -0.45, color: '#5db2e6', dir: [0.9, -0.35, -0.55] },
+    snout: { type: 'nose', color: '#ff8fa3', s: 0.065, el: -0.15 },
+    tail: { type: 'fin', s: 0.32, len: 0.08, y: -0.05, color: '#5db2e6', lobe: '#8fd3f5' },
+    extras: [
+      { t: 'blobs', color: '#5db2e6', list: [{ p: [0, 0.74, -0.03], s: [0.025, 0.11, 0.17], r: [-0.45, 0, 0] }, { p: [0, 0.3, -0.12], s: [0.02, 0.07, 0.1], r: [0.5, 0, 0] }] },
+      { t: 'blobs', color: '#a9e0fa', list: [{ g: 'sphP', p: [0.14, 0.5, 0.02], s: 0.05, mirror: true }] },
+    ],
+    bubble: { r: 0.4 },
+    shinyPalette: { '#7ec8f0': '#ffc873', '#5db2e6': '#ff9f5e', '#8fd3f5': '#ffd9a0', '#eaf8ff': '#fff6dc', '#a9e0fa': '#ffe6b0' },
+  },
+
+  tropicalfish: {
+    body: { w: 0.17, h: 0.3, d: 0.3, y: 0.47, color: '#ff8f3f', lo: true, belly: { color: '#ffd2a8', s: 0.78, dz: 0.1, dy: -0.3, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.21, w: 0.85, h: 1.1, d: 0.9, y: 0.48, z: 0.2, lo: true },
+    eyes: { s: 0.27, gap: 0.8, el: 0.12, ring: '#ffffff' },
+    blush: '#ff6f6f',
+    ears: { type: 'fin', s: 1.4, az: 1.35, el: -0.5, color: '#ff7a2a', dir: [0.9, -0.4, -0.45] },
+    snout: { type: 'nose', color: '#ff6f6f', s: 0.06, el: -0.15 },
+    tail: { type: 'fin', s: 0.32, len: 0.07, y: 0, color: '#ff7a2a', lobe: '#ffb270' },
+    extras: [
+      { t: 'stripes', color: '#fffdf6', at: [0.42, -0.2], th: 0.075, dy: 0, g: 'sphP' },
+      { t: 'blobs', color: '#ff7a2a', list: [{ p: [0, 0.8, -0.02], s: [0.025, 0.15, 0.2], r: [-0.4, 0, 0] }, { p: [0, 0.19, -0.1], s: [0.02, 0.08, 0.11], r: [0.5, 0, 0] }] },
+    ],
+    bubble: { r: 0.4 },
+    shinyPalette: { '#ff8f3f': '#ff9fc6', '#ff7a2a': '#ff7aa8', '#ffd2a8': '#ffe3ee', '#ffb270': '#ffc4d8', '#fffdf6': '#fff6ff' },
+  },
+
+  blowfish: {
+    body: { w: 0.31, h: 0.3, d: 0.31, y: 0.5, color: '#ffd45e', lo: true, belly: { color: '#fff3c9', s: 0.82, dz: 0.18, dy: -0.28, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.22, w: 1.1, h: 0.95, d: 0.85, y: 0.5, z: 0.2, lo: true },
+    eyes: { s: 0.25, gap: 0.6, el: 0.2, ring: '#ffffff' },
+    blush: '#ff9f8a',
+    ears: { type: 'fin', s: 0.8, az: 1.25, el: -0.35, color: '#f5b73e', dir: [1, -0.1, -0.2], wd: 0.5 },
+    snout: { type: 'nose', color: '#ff9fa8', s: 0.1, el: -0.28 },
+    tail: { type: 'fin', s: 0.3, len: 0.07, y: 0, color: '#f5b73e', lobe: '#ffe08f' },
+    extras: [
+      { t: 'spines', n: 20, s: 0.5, ymax: 0.95, ymin: -0.1, zmax: 0.45, colors: ['#f0a732', '#ffe08f'] },
+    ],
+    bubble: { r: 0.4 },
+    shinyPalette: { '#ffd45e': '#9fe0d0', '#f5b73e': '#6fc4b4', '#f0a732': '#4fa89a', '#ffe08f': '#d8f5ec', '#fff3c9': '#f2fff8' },
+  },
+
+  squid: {
+    body: { w: 0.2, h: 0.2, d: 0.38, y: 0.5, color: '#ff9fb4', lo: true, belly: { color: '#ffd9e2', s: 0.78, dz: 0.08, dy: -0.3, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.24, w: 1.05, h: 0.95, d: 0.9, y: 0.5, z: 0.3, lo: true },
+    eyes: { s: 0.36, gap: 0.8, el: 0.05, ring: '#ffffff' },
+    blush: '#ff7a96',
+    ears: { type: 'arm', s: 0.5, az: 0.5, el: -0.7, color: '#ff9fb4', inner: '#ff7a96', club: 2.2, len: 1.25, r: 0.12, dir: [0.3, -0.35, 1] },
+    tail: { type: 'fluke', s: 0.24, len: 0.1, rot: 0, y: 0, z: 0.92, color: '#ff9fb4', lobe: '#ffc2d0' },
+    extras: [
+      { t: 'blobs', color: '#ff9fb4', list: [
+        { g: 'coneP', p: [0.07, 0.34, 0.5], s: [0.05, 0.2, 0.05], dir: [0.5, -0.5, 1], mirror: true },
+        { g: 'coneP', p: [0.03, 0.31, 0.52], s: [0.05, 0.22, 0.05], dir: [0.2, -0.65, 1], mirror: true },
+        { g: 'coneP', p: [0.11, 0.38, 0.45], s: [0.045, 0.17, 0.045], dir: [0.9, -0.3, 0.8], mirror: true },
+      ] },
+      { t: 'spots', color: '#ff7a96', list: [{ on: 'body', az: 0.2, el: 0.9, s: 0.4 }, { on: 'body', az: 2.6, el: 0.8, s: 0.35 }, { on: 'body', az: -1.2, el: 0.7, s: 0.3 }, { on: 'body', az: 1.4, el: 0.4, s: 0.3 }] },
+    ],
+    bubble: { r: 0.4, pitch: -0.6 },
+    shinyPalette: { '#ff9fb4': '#b49cff', '#ffd9e2': '#e8e0ff', '#ff7a96': '#8a6cf0', '#ffc2d0': '#d6ccff' },
+  },
+
+  octopus: {
+    body: { w: 0.24, h: 0.2, d: 0.24, y: 0.4, color: '#b98cf0', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.33, w: 1.05, h: 1.0, d: 1.0, y: 0.7, z: 0.02, color: '#b98cf0' },
+    eyes: { s: 0.17, gap: 0.5, el: -0.12, ring: '#ffffff' },
+    blush: '#ff8fb8',
+    ears: { type: 'arm', s: 0.5, az: 0.95, el: -0.75, color: '#b98cf0', inner: '#e3c9ff', club: 0.6, len: 1.3, r: 0.2, dir: [0.9, -0.2, 0.9] },
+    snout: { type: 'nose', color: '#8a5cc8', s: 0.05, el: -0.3 },
+    extras: [
+      { t: 'tentacles', n: 6, p: [0, 0.34, 0], ring: 0.14, r: 0.075, step: 0.11, segs: 3, out: 0.9, down: 0.7, curl: 0.38, from: 0.9, span: 4.5, closed: false, color: '#a97ce6', tip: '#e3c9ff' },
+      { t: 'spots', color: '#e3c9ff', list: [{ on: 'head', az: 0.4, el: 1.0, s: 0.16 }, { on: 'head', az: -0.5, el: 0.85, s: 0.13 }] },
+    ],
+    bubble: { r: 0.4 },
+    shinyPalette: { '#b98cf0': '#ff9fc2', '#a97ce6': '#f58ab0', '#e3c9ff': '#ffe0ec' },
+  },
+
+  oyster: {
+    body: { w: 0.36, h: 0.11, d: 0.31, y: 0.1, color: '#a9a3c4', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.2, w: 1.15, h: 0.85, d: 0.85, y: 0.2, z: 0.03, color: '#ffd6de', lo: true },
+    eyes: { s: 0.17, gap: 0.5, el: 0.22 },
+    blush: '#ff8fa8',
+    snout: { type: 'nose', color: '#fff8ff', s: 0.06, el: -0.45 },
+    extras: [
+      { t: 'blobs', color: '#f2dca0', list: [{ p: [0, 0.035, 0.02], s: [0.5, 0.05, 0.44] }, { g: 'sphP', p: [0.33, 0.07, 0.2], s: [0.12, 0.08, 0.1] }, { g: 'sphP', p: [-0.3, 0.06, -0.22], s: [0.1, 0.07, 0.09] }] },
+      { t: 'blobs', color: '#8e87b0', list: [{ p: [0, 0.14, 0], s: [0.37, 0.025, 0.32] }, { g: 'sphP', p: [0.0, 0.1, 0.3], s: [0.09, 0.05, 0.04] }] },
+      { t: 'group', name: 'shell', p: [0, 0.18, -0.27], r: [-0.42, 0, 0], list: [
+        { g: 'sphM', c: '#bdb7d8', p: [0, 0.01, 0.27], s: [0.38, 0.1, 0.31] },
+        { c: '#a39cc6', p: [0, 0.095, 0.27], s: [0.3, 0.035, 0.24] },
+        { g: 'sphP', c: '#a39cc6', p: [0, 0.07, 0.07], s: [0.1, 0.05, 0.06] },
+        { g: 'sphP', c: '#9a93c0', p: [0.14, 0.085, 0.2], s: [0.08, 0.045, 0.07], mirror: true },
+      ] },
+    ],
+    shinyPalette: { '#a9a3c4': '#e8b4c8', '#bdb7d8': '#f5cadb', '#a39cc6': '#e2a6bd', '#8e87b0': '#cf93ab', '#ffd6de': '#fff0f0' },
+  },
+
+  conch: {
+    body: { w: 0.21, h: 0.11, d: 0.34, y: 0.12, color: '#f7cdb0', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.17, w: 1.1, h: 0.95, d: 0.95, y: 0.2, z: 0.3, lo: true },
+    eyes: { s: 0.2, gap: 0.5, el: 0.22 },
+    blush: '#ff9a8a',
+    ears: { type: 'long', s: 1.1, az: 0.5, el: 0.8, up: 0.55, flare: 0.25, color: '#f7cdb0', inner: false },
+    snout: { type: 'nose', color: '#c97a6a', s: 0.06, el: -0.2 },
+    extras: [
+      { t: 'blobs', color: '#f2dca0', list: [{ p: [0, 0.03, 0.04], s: [0.44, 0.05, 0.5] }, { g: 'sphP', p: [0.3, 0.05, 0.3], s: [0.1, 0.07, 0.09] }] },
+      { t: 'group', name: 'shell', p: [0, 0.22, -0.08], r: [0.18, 0, 0], list: [
+        { g: 'sphM', c: '#ffe9d2', p: [0, 0.04, -0.02], s: [0.22, 0.2, 0.25] },
+        { c: '#ffd8bf', p: [0, 0.2, -0.04], s: [0.17, 0.15, 0.19] },
+        { c: '#f4a98c', p: [0, 0.34, -0.05], s: [0.12, 0.11, 0.13] },
+        { g: 'cone', c: '#f4a98c', p: [0, 0.4, -0.06], s: [0.07, 0.16, 0.07] },
+        { g: 'coneP', c: '#f4a98c', p: [0.16, 0.12, 0.0], s: [0.05, 0.14, 0.05], dir: [1, 0.6, 0], mirror: true },
+        { g: 'coneP', c: '#f4a98c', p: [0.12, 0.1, 0.14], s: [0.045, 0.12, 0.045], dir: [0.7, 0.6, 0.8], mirror: true },
+        { g: 'coneP', c: '#f4a98c', p: [0.12, 0.1, -0.16], s: [0.045, 0.12, 0.045], dir: [0.7, 0.6, -0.8], mirror: true },
+        { g: 'coneP', c: '#f4a98c', p: [0.0, 0.1, -0.22], s: [0.045, 0.12, 0.045], dir: [0, 0.6, -1] },
+      ] },
+    ],
+    shinyPalette: { '#f7cdb0': '#cdeacb', '#ffe9d2': '#f2fff0', '#ffd8bf': '#dff5d8', '#f4a98c': '#8fd3b2' },
+  },
+
+  shrimp: {
+    body: { w: 0.15, h: 0.17, d: 0.28, y: 0.37, color: '#ff9c8a', lo: true, belly: { color: '#ffd9cf', s: 0.78, dz: 0.1, dy: -0.3, lo: true } },
+    legs: { type: 'stub', h: 0.14, r: 0.035, color: '#ffb7a8', x: 0.5, z: 0.45 },
+    head: { r: 0.18, w: 1.0, h: 0.95, d: 0.95, y: 0.41, z: 0.22, lo: true },
+    eyes: { s: 0.22, gap: 0.62, el: 0.2, ring: '#ffffff' },
+    blush: '#ff6f78',
+    ears: { type: 'arm', s: 1.3, az: 0.55, el: 0.35, color: '#ff8478', len: 1.5, r: 0.045, dir: [0.35, 0.7, 1] },
+    snout: { type: 'nose', color: '#ff6f78', s: 0.05, el: -0.3 },
+    tail: { type: 'long', n: 3, len: 0.42, r: 0.085, blob: 1.55, taper: 0.1, lift: -0.15, curve: -0.6, y: 0.0, z: 0.85, color: '#ff9c8a', colors: ['#ff9c8a', '#ff8a78', '#ff9c8a'], fan: '#ffb7a8' },
+    extras: [
+      { t: 'stripes', color: '#ff8478', at: [0.3, -0.2], th: 0.07, dy: 0, g: 'sphP' },
+      { t: 'blobs', on: 'head', color: '#ff8478', list: [{ g: 'coneP', p: [0, 0.14, 0.12], s: [0.04, 0.16, 0.04], dir: [0, 0.55, 1] }] },
+    ],
+    shinyPalette: { '#ff9c8a': '#ffe27a', '#ff8a78': '#f5c84a', '#ff8478': '#f0b830', '#ffb7a8': '#fff0b0', '#ffd9cf': '#fffbe0' },
+  },
+
+  lobster: {
+    body: { w: 0.3, h: 0.23, d: 0.46, y: 0.3, color: '#ff6f5c', lo: true, belly: { color: '#ffc3b0', s: 0.78, dz: 0.1, dy: -0.35, lo: true } },
+    legs: { type: 'crab', n: 3, r: 0.034, len: 0.26, x: 0.75, dy: 0.35, z: 0.5, color: '#ff8a76', down: 1.1, out: 0.7, fan: 0.4 },
+    head: { r: 0.22, w: 1.0, h: 0.9, d: 0.95, y: 0.34, z: 0.38, lo: true },
+    eyes: { s: 0.19, gap: 0.55, el: 0.3, ring: '#ffffff' },
+    blush: '#ff9a8a',
+    ears: { type: 'claw', s: 2.4, az: 1.15, el: -0.2, color: '#ff5f4d', inner: '#ffa28f', out: 0.55, lift: 0.1 },
+    snout: { type: 'nose', color: '#c94a3a', s: 0.05, el: -0.35 },
+    tail: { type: 'long', n: 4, len: 0.5, r: 0.115, blob: 1.5, taper: 0.1, lift: 0.15, curve: -0.25, y: 0.0, z: 0.85, color: '#ff6f5c', colors: ['#ff6f5c', '#f4584a', '#ff6f5c', '#f4584a'], fan: '#ff8a76' },
+    extras: [
+      { t: 'stripes', color: '#f4584a', at: [0.5, 0.15, -0.2, -0.5], th: 0.06, dy: 0, g: 'sphP' },
+      { t: 'whiskers', color: '#ff9a86', len: 2.4, n: 1, az: 0.25, el: 0.5 },
+    ],
+    shinyPalette: { '#ff6f5c': '#7a9cff', '#f4584a': '#5a7ae8', '#ff5f4d': '#5a7ae8', '#ff8a76': '#a4bcff', '#ffa28f': '#c4d4ff', '#ffc3b0': '#e6edff' },
+  },
+
+  crab: {
+    body: { w: 0.4, h: 0.2, d: 0.3, y: 0.24, color: '#ff7565', lo: true, belly: { color: '#ffc4b4', s: 0.8, dz: 0.1, dy: -0.35, lo: true } },
+    legs: { type: 'crab', n: 4, r: 0.03, len: 0.27, x: 0.82, dy: 0.15, z: 0.55, color: '#ff8e7e', down: 0.95, out: 0.85, fan: 0.35 },
+    head: { r: 0.17, w: 1.5, h: 0.8, d: 0.85, y: 0.34, z: 0.15, lo: true },
+    eyes: { s: 0.22, gap: 0.42, el: 0.4, ring: '#ffffff' },
+    blush: '#ffa09a',
+    ears: { type: 'claw', s: 2.0, az: 1.25, el: -0.45, color: '#ff5f50', inner: '#ffb3a6', out: 0.45, lift: 0.15 },
+    snout: { type: 'nose', color: '#c94a3a', s: 0.05, el: -0.45 },
+    tail: { type: 'puff', s: 0.07, lo: true, y: -0.05, z: 0.95, color: '#ff8e7e' },
+    extras: [
+      { t: 'spots', color: '#ffa89b', th: 0.2, list: [{ on: 'body', az: 0.6, el: 1.0, s: 0.55, sx: 1.4 }, { on: 'body', az: -0.6, el: 1.0, s: 0.55, sx: 1.4 }, { on: 'body', az: 3.0, el: 0.9, s: 0.5, sx: 1.5 }] },
+      { t: 'blobs', color: '#ff5f50', list: [{ g: 'ring', p: [0, 0.19, 0], s: [0.33, 0.26, 0.4], r: [Math.PI / 2, 0, 0] }] },
+    ],
+    shinyPalette: { '#ff7565': '#f5a8c8', '#ff5f50': '#e8789f', '#ff8e7e': '#f8c0d6', '#ffa89b': '#ffe0ec', '#ffb3a6': '#ffe8f0' },
+  },
+
+  frog: {
+    body: { w: 0.33, h: 0.26, d: 0.34, y: 0.27, color: '#7edb7c', lo: true, belly: { color: '#effac8', s: 0.8, dz: 0.2, dy: -0.2, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.3, w: 1.25, h: 0.78, d: 0.9, y: 0.46, z: 0.18, lo: true },
+    eyes: { s: 0.18, gap: 0.6, el: 0.45, ring: '#fffef0' },
+    blush: '#ff9fa8',
+    extras: [
+      { t: 'puffs', color: '#7edb7c', list: [['head', 0.19, 0.13, 0.06, 0.12], ['head', -0.19, 0.13, 0.06, 0.12]] },
+      { t: 'smile', color: '#3f7a52', w: 0.3, el: -0.3, az: 0.34, tilt: 0.28 },
+      { t: 'blobs', color: '#6bc86a', list: [
+        { p: [0.25, 0.16, -0.12], s: [0.1, 0.15, 0.2], mirror: true },
+        { p: [0.3, 0.03, 0.04], s: [0.13, 0.035, 0.17], mirror: true },
+        { p: [0.2, 0.05, 0.3], s: [0.07, 0.07, 0.1], mirror: true },
+        { g: 'sphP', p: [0.22, 0.03, 0.4], s: [0.09, 0.03, 0.07], mirror: true },
+      ] },
+      { t: 'spots', color: '#5eb85e', th: 0.2, list: [{ on: 'body', az: 0.5, el: 1.0, s: 0.45 }, { on: 'body', az: -0.7, el: 0.9, s: 0.4 }] },
+    ],
+    shinyPalette: { '#7edb7c': '#7ad8e8', '#6bc86a': '#4fb8d0', '#5eb85e': '#3a9fba', '#effac8': '#f2fdff' },
+  },
+
+  turtle: {
+    body: { w: 0.4, h: 0.3, d: 0.44, y: 0.3, color: '#6dbd72', lo: true },
+    legs: { type: 'stub', h: 0.14, r: 0.09, color: '#b3dc86', x: 0.62, z: 0.52 },
+    head: { r: 0.2, w: 1, h: 0.95, d: 1.05, y: 0.28, z: 0.52, color: '#b3dc86', lo: true },
+    neck: { r: 0.11, color: '#b3dc86', z: 0.85 },
+    eyes: { s: 0.17, gap: 0.5, el: 0.12 },
+    blush: '#ff9fa8',
+    snout: { type: 'nose', color: '#7a8a4a', s: 0.05, el: -0.3 },
+    tail: { type: 'puff', s: 0.055, lo: true, y: -0.35, z: 1.0, color: '#b3dc86' },
+    extras: [
+      { t: 'spots', color: '#a2dd8e', th: 0.15, list: [
+        { on: 'body', az: 0, el: 1.2, s: 0.55 }, { on: 'body', az: 0.9, el: 0.75, s: 0.5 }, { on: 'body', az: -0.9, el: 0.75, s: 0.5 },
+        { on: 'body', az: 2.1, el: 0.75, s: 0.5 }, { on: 'body', az: -2.1, el: 0.75, s: 0.5 }, { on: 'body', az: 3.14, el: 1.0, s: 0.45 },
+      ] },
+      { t: 'blobs', color: '#f0e2a8', list: [{ g: 'ring', p: [0, 0.2, 0], s: [0.37, 0.4, 0.34], r: [Math.PI / 2, 0, 0] }] },
+    ],
+    shinyPalette: { '#6dbd72': '#59c4c0', '#a2dd8e': '#a8ece4', '#b3dc86': '#c2e8b8', '#f0e2a8': '#fff4cf' },
+  },
+
+  otter: {
+    body: { w: 0.3, h: 0.25, d: 0.5, y: 0.3, color: '#a0724c', lo: true, belly: { color: '#f3dec3', s: 0.78, dz: 0.18, dy: -0.15, lo: true } },
+    legs: { type: 'stub', h: 0.1, r: 0.07, color: '#8c6140', x: 0.6, z: 0.55 },
+    head: { r: 0.26, w: 1.1, h: 0.95, d: 1.0, y: 0.5, z: 0.36 },
+    eyes: { s: 0.11, gap: 0.5, el: 0.15 },
+    blush: '#ff9a8a',
+    ears: { type: 'round', s: 0.36, az: 0.95, el: 0.5, up: 0.15, color: '#8c6140', inner: false },
+    snout: { type: 'muzzle', color: '#f3dec3', w: 0.52, h: 0.38, d: 0.4, el: -0.3, nose: '#3a2a2e', noseS: 0.13, noseY: 0.55, lo: true },
+    tail: { type: 'long', n: 4, len: 0.8, r: 0.12, taper: 0.12, lift: 0.25, curve: 0.3, y: 0.0, z: 0.9, color: '#8c6140' },
+    extras: [
+      { t: 'whiskers', color: '#ffffff', len: 0.42, n: 2 },
+      { t: 'blobs', color: '#ffd9e6', list: [{ g: 'sphP', p: [0, 0.3, 0.43], s: [0.07, 0.055, 0.06] }] },
+      { t: 'blobs', color: '#8c6140', list: [{ g: 'sphP', p: [0.085, 0.29, 0.4], s: 0.06, mirror: true }] },
+    ],
+    shinyPalette: { '#a0724c': '#8ab8c8', '#8c6140': '#6a9aaa', '#f3dec3': '#f6fbff', '#ffd9e6': '#ffe9a8' },
+  },
+
+  dolphin: {
+    body: { w: 0.3, h: 0.3, d: 0.36, y: 0.74, color: '#74abea', belly: { color: '#f2f9ff', s: 0.84, dz: 0.12, dy: -0.3, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.27, w: 1.0, h: 0.98, d: 1.0, y: 0.78, z: 0.36 },
+    eyes: { s: 0.12, gap: 0.62, el: 0.08 },
+    blush: '#ff9ab8',
+    ears: { type: 'fin', s: 1.5, az: 1.45, el: -0.5, color: '#5b94d8', dir: [0.9, -0.45, -0.5], wd: 0.38 },
+    snout: { type: 'pointy', color: '#8ab9f0', w: 0.26, h: 0.2, d: 0.55, el: -0.28, nose: '#3a4a6a' },
+    tail: { type: 'fluke', s: 0.32, len: 0.2, rot: 0.55, y: 0.0, z: 0.9, color: '#74abea', lobe: '#5b94d8' },
+    extras: [
+      { t: 'smile', color: '#3a4a6a', w: 0.09, el: -0.5, az: 0.4, tilt: 0.45 },
+      { t: 'blobs', color: '#5b94d8', list: [{ g: 'cone', p: [0, 0.98, -0.02], s: [0.04, 0.2, 0.17], dir: [0, 1, -0.7] }] },
+    ],
+    bubble: { r: 0.6, pitch: 0.25 },
+    shinyPalette: { '#74abea': '#ffa8c8', '#5b94d8': '#f08aae', '#8ab9f0': '#ffc4d8', '#f2f9ff': '#fff6fb' },
+  },
+
+  shark: {
+    body: { w: 0.3, h: 0.29, d: 0.4, y: 0.74, color: '#8aa8cc', belly: { color: '#f4f8fc', s: 0.84, dz: 0.12, dy: -0.32, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.29, w: 1.0, h: 0.95, d: 1.05, y: 0.76, z: 0.34 },
+    eyes: { s: 0.1, gap: 0.62, el: 0.12 },
+    blush: '#ff9ab0',
+    ears: { type: 'fin', s: 1.6, az: 1.45, el: -0.5, color: '#7898be', dir: [1, -0.4, -0.55], wd: 0.4 },
+    snout: { type: 'nose', color: '#5a6a88', s: 0.05, el: 0.1 },
+    tail: { type: 'fin', s: 0.5, len: 0.16, up: 1.5, y: 0.1, z: 0.92, color: '#8aa8cc', lobe: '#7898be' },
+    extras: [
+      { t: 'smile', color: '#3a4a6a', w: 0.16, el: -0.4, az: 0.34, tilt: 0.3 },
+      { t: 'blobs', on: 'head', color: '#ffffff', list: [
+        { g: 'coneP', p: [0.045, -0.115, 0.27], s: [0.022, 0.05, 0.022], dir: [0, -1, 0], mirror: true },
+        { g: 'coneP', p: [0.12, -0.12, 0.24], s: [0.022, 0.05, 0.022], dir: [0, -1, 0], mirror: true },
+      ] },
+      { t: 'blobs', color: '#7898be', list: [
+        { g: 'cone', p: [0, 1.0, 0.0], s: [0.035, 0.3, 0.26], dir: [0, 1, -0.75] },
+        { p: [0, 0.8, -0.35], s: [0.02, 0.07, 0.1], dir: [0, 1, -1], g: 'cone' },
+      ] },
+      { t: 'blobs', color: '#6a88ae', list: [
+        { g: 'sphP', p: [0.275, 0.76, 0.12], s: [0.01, 0.07, 0.016], r: [0, 0, 0.1], mirror: true },
+        { g: 'sphP', p: [0.28, 0.76, 0.17], s: [0.01, 0.07, 0.016], r: [0, 0, 0.1], mirror: true },
+        { g: 'sphP', p: [0.28, 0.76, 0.22], s: [0.01, 0.07, 0.016], r: [0, 0, 0.1], mirror: true },
+      ] },
+    ],
+    bubble: { r: 0.6, pitch: 0.25 },
+    shinyPalette: { '#8aa8cc': '#c4a4e8', '#7898be': '#a888d8', '#6a88ae': '#8a6ac0', '#f4f8fc': '#fdf6ff' },
   },
 };

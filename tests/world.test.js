@@ -1123,3 +1123,93 @@ test('v8 world: a press that starts on a pet and moves is a stroke (never a pan 
     host.remove();
   }
 });
+
+// ---------------------------------------------------------------- v9: weather + snapshot (CONTRACT_V9 §2, §4)
+
+test('v9 weather maths: targets, light multipliers, puddle layout (deterministic, clear of obstacles, inside the yard)', () => {
+  assertEq(engine.weatherTargets('sunny', 1), { cloud: 0, rain: 0 });
+  const cl = engine.weatherTargets('cloudy', 0.5);
+  assert(cl.rain === 0 && cl.cloud > 0.4 && cl.cloud < 1, 'cloudy has cloud, no rain');
+  const rn = engine.weatherTargets('rain', 0.8);
+  assertEq([rn.cloud, rn.rain], [1, 0.8]);
+  assert(engine.weatherTargets('rain', 0).rain >= 0.15, 'rain never targets nothing');
+  assertEq(engine.weatherTargets('rain', NaN).rain, 1, 'junk intensity -> full');
+  const dry = engine.weatherLight(0, 0), wet = engine.weatherLight(1, 1);
+  assertEq(dry, { hemi: 1, sun: 1, grey: 0 });
+  assert(wet.hemi < 1 && wet.sun < wet.hemi && wet.hemi > 0.5 && wet.sun > 0.2 && wet.grey > 0, 'storm is dimmer, sun most');
+  const obs = [{ x: 0, z: -4, r: 2 }, { x: 3, z: 0, r: 0.5 }];
+  const a = engine.puddleLayout(5, obs), b = engine.puddleLayout(5, obs);
+  assertEq(a, b, 'deterministic');
+  assert(a.length >= 4 && a.length <= 6, `got ${a.length} puddles`);
+  for (const p of a) {
+    assert(Math.hypot(p.x, p.z) + p.r < 5, 'inside the yard');
+    assert(obs.every(o => Math.hypot(o.x - p.x, o.z - p.z) > o.r + p.r), 'clear of obstacles');
+  }
+  for (let i = 0; i < a.length; i++) for (let j = i + 1; j < a.length; j++) assert(Math.hypot(a[i].x - a[j].x, a[i].z - a[j].z) > a[i].r + a[j].r, 'puddles do not overlap');
+});
+
+test('v9 world: rain = one streak mesh + one puddle mesh (<= 2 draw calls), none when dry; sky and lights go grey and come back', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto', yardTier: 'XL' }, async (world, host) => {
+    assertEq(world.getWeather(), { kind: 'sunny', intensity: 1 });
+    await frames(world, 3);
+    world.renderer.render(world.scene, world.camera);
+    const dryCalls = world.renderer.info.render.calls;
+    const dryHemi = world.lights.hemi.intensity;
+    assertEq([world.weatherInfo().meshes, world.weatherInfo().drops], [0, 0], 'dry costs nothing');
+    assert(world.puddles.length >= 4, 'puddle places exist even when dry');
+    world.setWeather('rain', 1);
+    await wait(4500); // ease (~2.5 s time constant is 1/0.9 s) at idle fps
+    await frames(world, 3);
+    const info = world.weatherInfo();
+    assert(info.rain > 0.9 && info.meshes === 2 && info.drops > 50 && info.puddles >= 4, `rain not in full swing: ${JSON.stringify(info)}`);
+    world.renderer.render(world.scene, world.camera);
+    assert(world.renderer.info.render.calls - dryCalls <= 2, `rain cost ${world.renderer.info.render.calls - dryCalls} draw calls`);
+    assert(world.lights.hemi.intensity < dryHemi * 0.95, 'lights dimmer');
+    assert(host.style.getPropertyValue('--world-sky-top') !== '', 'sky tinted through the host custom property');
+    // puddles never overlap the barn or props
+    for (const p of world.puddles) assert(world.obstacles.every(o => Math.hypot(o.x - p.x, o.z - p.z) > o.r + p.r), 'puddle clear of obstacles');
+    world.setWeather('sunny');
+    await wait(6000);
+    await frames(world, 3);
+    assertEq([world.weatherInfo().meshes, host.style.getPropertyValue('--world-sky-top')], [0, ''], 'dry again, sky restored');
+    assert(Math.abs(world.lights.hemi.intensity - dryHemi) < 0.05, 'lights back to normal');
+    world.setYardTier('S', { animate: false });
+    const small = world.puddles;
+    assert(small.every(p => Math.hypot(p.x, p.z) < world.walkRadius), 'puddles follow the yard tier');
+  });
+});
+
+test('v9 world: snapshot renders one frame at the requested size (JPEG), restores the live size and never throws on bad input', async () => {
+  if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
+  await withWorld({ quality: 'auto' }, async (world, host) => {
+    await frames(world, 3);
+    const w0 = world.canvas.width, h0 = world.canvas.height, aspect0 = world.camera.aspect;
+    const url = await world.snapshot({ width: 640, height: 360, hideUi: true });
+    assert(url.startsWith('data:image/jpeg;base64,') && url.length > 2000, 'a real JPEG data url');
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    assertEq([img.naturalWidth, img.naturalHeight], [640, 360]);
+    assertEq([world.canvas.width, world.canvas.height, world.camera.aspect], [w0, h0, aspect0], 'live size restored');
+    assert(!host.classList.contains('world3d-snapshot'), 'host class removed');
+    const png = await world.snapshot({ width: 100, height: 100, type: 'image/png' });
+    assert(png.startsWith('data:image/png'), 'png on request');
+    const odd = await world.snapshot({ width: 'x', height: -5 });
+    assert(odd.startsWith('data:image/jpeg'), 'junk sizes fall back to a sane size');
+    // a hidden UI helper is not part of the picture, and is visible again afterwards
+    const helper = new world.THREE.Mesh(new world.THREE.BoxGeometry(1, 1, 1), new world.THREE.MeshBasicMaterial({ color: 0xff00ff }));
+    helper.name = 'ui-marker'; helper.position.set(0, 1, 2);
+    world.scene.add(helper);
+    await world.snapshot({ width: 160, height: 90, hideUi: true });
+    assert(helper.visible, 'ui helper visible again');
+    world.scene.remove(helper);
+  });
+  const host = document.createElement('div');
+  host.style.cssText = 'width:200px;height:200px;position:fixed;left:0;top:0;';
+  document.body.appendChild(host);
+  const w = engine.createWorld(host, {}, { quality: 'auto' });
+  w.dispose();
+  host.remove();
+  let failed = false;
+  await w.snapshot({ width: 100, height: 100 }).catch(() => { failed = true; });
+  assert(failed, 'a disposed world rejects instead of hanging');
+});

@@ -101,6 +101,7 @@ python tests/run_tests.py
 | `tests/index.html`, `harness.js`, `run_tests.py`, `core.test.js`, `fixtures/`, `.github/workflows/pages.yml`, `.github/scripts/version_assets.py` | A (Core/Platform) |
 | `js/data/species.js`, `data/eggs.js`, `js/pets.js`, `js/ui/petsView.js`, `css/pets.css` | B (Pets) |
 | `js/data/crops.js`, `data/items.js`, `js/farm.js`, `js/ui/farmView.js`, `css/farm.css` | C (Farm) |
+| `js/album.js`, `js/journal.js`, `js/weather.js`, `js/birthday.js`, `js/world3d/rain.js`, `tests/memories.test.js` (V9: อัลบั้มรูป IndexedDB, บันทึกน้อง, อากาศ, วันเกิด) | A (Core/Platform) |
 | `docs/GAME_DESIGN.md`, `docs/CONTRACT.md` | Lead |
 
 ## กติกาเซฟบนคลาวด์ (กันเซฟทับกัน)

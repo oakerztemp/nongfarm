@@ -13,9 +13,10 @@ import {
   slotJobs, plotTeam, plotSpeed, TEAM_COMBO, plotBonusPreview,
   stationPet, unstationPet, stationInfo, stationLabel, yardTierOf, yardUpgradePreview,
   barnUpgradeCost, barnUpgradeStatus, SLOT_MATERIALS, TIER_ENTRY_ITEMS, DECOR_SPOTS, decorSpotCount, decorSpotList, decorBuildStatus,
-  buildDecor, placeDecor, removeDecor, sortPetsForSlot,
+  buildDecor, placeDecor, removeDecor, sortPetsForSlot, buyAccessory, accessoryOwned, getZone, MAX_ACCESSORY_COPIES,
 } from '../js/farm.js';
 import { DECOR, getDecor } from '../js/data/decor.js';
+import { ACCESSORIES, getAccessory, shopAccessories } from '../js/data/accessories.js';
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -1259,3 +1260,89 @@ test('sortPetsForSlot orders real pets by their power on the slot', () => withFa
   const sorted = sortPetsForSlot(s.pets, p => pw(p, 'carrot'));
   assertEq(sorted.map(p => p.id), [strong.id, mid.id, weak.id]);
 }));
+
+// ── V9 §1: accessories ──────────────────────────────────────────────────────
+test('accessories catalogue: 10 items, head/neck, shop 300-3000 or expedition-only with a zone, never sellable', () => {
+  assertEq(ACCESSORIES.length, 10);
+  assertEq(ACCESSORIES.filter(a => a.slot === 'head').length, 6);
+  assertEq(ACCESSORIES.filter(a => a.slot === 'neck').length, 4);
+  assertEq(new Set(ACCESSORIES.map(a => a.id)).size, 10, 'unique ids');
+  assertEq(ACCESSORIES.filter(a => a.price == null).length, 3, 'three expedition-only');
+  for (const a of ACCESSORIES) {
+    assert(a.emoji && a.nameTh, a.id + ' has emoji + name');
+    assert(a.price == null ? !!getZone(a.zone) : (a.price >= 300 && a.price <= 3000), a.id + ' price/zone');
+    assertEq(getAccessory(a.id), a);
+    assert(!getItem(a.id), a.id + ' is not an inventory item');
+  }
+  assertEq(getAccessory('nope'), null);
+  assertEq(shopAccessories().length, 7);
+});
+
+test('buyAccessory: spends coins into state.wardrobe (stacking), refuses expedition-only and poor players; defaults a missing wardrobe', () => {
+  const s = createNewState();
+  delete s.wardrobe;
+  s.player.coins = 700;
+  let r = buyAccessory(s, 'acc_bow');
+  assert(r.ok, r.reason);
+  assertEq(s.player.coins, 400);
+  assertEq(s.wardrobe.acc_bow, 1);
+  assert(buyAccessory(s, 'acc_bow').ok, 'a second copy');
+  assertEq(s.wardrobe.acc_bow, 2);
+  assertEq(accessoryOwned(s, 'acc_bow'), 2);
+  r = buyAccessory(s, 'acc_tophat');
+  assert(!r.ok && s.player.coins === 100, 'too poor');
+  assert(!buyAccessory(s, 'acc_crown').ok, 'expedition-only is not for sale');
+  assert(!buyAccessory(s, 'nope').ok);
+  assert(!sellItem(s, 'acc_bow', 1).ok, 'cannot be sold');
+});
+
+test('expedition accessory drop: ~1% per trip in a fitting zone only; claim puts it into the wardrobe', () => withFakeNow(T0, clock => {
+  const realRandom = Math.random;
+  try {
+    // forced low roll: every roll < 0.01 -> egg and accessory both drop where the zone has one
+    Math.random = () => 0.0001;
+    const s = fresh();
+    s.player.level = 20;
+    const pet = mkPet(s, { speciesId: 'hamster', stage: 2 });
+    for (const [zid, acc] of [['forest', 'acc_crown'], ['mountain', 'acc_grad'], ['cloud', 'acc_butterfly']]) {
+      clock.set(T0);
+      assert(startExpedition(s, pet.id, zid).ok, 'start ' + zid);
+      const zone = ZONES.find(z => z.id === zid);
+      clock.set(T0 + zone.durationMs + 1);
+      tickFarm(s, T0 + zone.durationMs + 1);
+      const ex = s.expeditions[0];
+      assertEq(ex.rewards[acc], 1, zid + ' drops ' + acc);
+      const r = claimExpedition(s, ex.id);
+      assert(r.ok && r.msg.includes(getAccessory(acc).nameTh), 'message names it: ' + r.msg);
+      assertEq(s.wardrobe[acc], 1);
+    }
+    // the pond has no expedition-only item
+    clock.set(T0);
+    assert(startExpedition(s, pet.id, 'pond').ok);
+    clock.set(T0 + 16 * MIN);
+    tickFarm(s, T0 + 16 * MIN);
+    assert(!Object.keys(s.expeditions[0].rewards).some(id => getAccessory(id)), 'no accessory at the pond');
+    // a high roll never drops
+    Math.random = () => 0.5;
+    claimExpedition(s, s.expeditions[0].id);
+    clock.set(T0);
+    startExpedition(s, pet.id, 'forest');
+    clock.set(T0 + 6 * MIN);
+    tickFarm(s, T0 + 6 * MIN);
+    assert(!s.expeditions[0].rewards.acc_crown, 'no drop on a normal roll');
+  } finally { Math.random = realRandom; }
+}));
+
+test('buyAccessory: at most 99 copies per item (the save caps it); the 100th keeps its coins', () => {
+  const s = createNewState();
+  s.player.coins = 300 * 120;
+  s.wardrobe = { acc_bow: 98 };
+  assertEq(MAX_ACCESSORY_COPIES, 99);
+  assert(buyAccessory(s, 'acc_bow').ok, 'the 99th');
+  assertEq(s.wardrobe.acc_bow, 99);
+  const coins = s.player.coins;
+  const r = buyAccessory(s, 'acc_bow');
+  assert(!r.ok && r.reason.includes('99'), 'polite refusal: ' + r.reason);
+  assertEq(s.player.coins, coins, 'no coins taken');
+  assertEq(s.wardrobe.acc_bow, 99);
+});

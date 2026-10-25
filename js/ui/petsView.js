@@ -17,8 +17,11 @@ import {
   getTrait, bondProgress, giftAvailable, claimGift, BOND_DAILY_CAP, GIFT_MIN_HEARTS,
   STARDUST_BY_RARITY, BOOK_GOALS, getGoal, isGoalClaimed, claimGoal, makeShiny, buyHabitatEgg,
   RELEASE_COINS, NURSERY_SLOTS, nurseryPets, getNurseryPet, adoptFromNursery, swapWithNursery, compareCandidates,
-  arrivedPostcards, unreadPostcardCount, markPostcardRead, favoriteLine, friendLine,
+  arrivedPostcards, unreadPostcardCount, markPostcardRead, favoriteLine, friendLine, wearOf, wardrobeList, wearAccessory, takeOffAccessory,
 } from '../pets.js';
+import { getAccessory, ACC_SLOTS } from '../data/accessories.js';
+import { journalDays } from '../journal.js';
+import { listPhotos, getPhotoUrl, deletePhoto, downloadPhoto, photoFilename } from '../album.js';
 import * as farmLogic from '../farm.js'; // decor build / place / remove (namespace import: guarded, in case it is missing)
 import { DECOR, getDecor } from '../data/decor.js';
 import { takeAwayDigest } from '../away.js';
@@ -282,6 +285,7 @@ function renderPetCard(pet, state) {
     </div>
     <div class="pet-actions">
       ${petActionsHtml(pet, 'data-action')}
+      ${actionBtn('wear', pet.id, '👗 แต่งตัว', pet.status === 'sleeping' ? '' : '')}
     </div>
   </article>`;
 }
@@ -445,6 +449,80 @@ function openMailbox() {
   if (cards.some(c => !c.read)) update(s => { for (const c of arrivedPostcards(s)) markPostcardRead(s, c.id); });
 }
 
+/** 📔 บันทึก: the diary, newest day first, in a cute handwritten style (CSS only). */
+function openJournal() {
+  const days = journalDays(getState());
+  const dayLabel = d => { try { return new Date(`${d}T12:00:00`).toLocaleDateString('th-TH', { weekday: 'short', day: 'numeric', month: 'short' }); } catch { return d; } };
+  const html = days.length
+    ? `<div class="jr-book">${days.map((d, i) => `<section class="jr-day${i === 0 ? ' is-today' : ''}">
+        <h4 class="jr-date">${i === 0 ? '✏️ ' : ''}${e(dayLabel(d.day))}</h4>
+        <ul class="jr-lines">${[...d.lines].reverse().map(l => `<li><span class="jr-e" aria-hidden="true">${e(l.emoji || '🐾')}</span><span class="jr-t">${e(l.text)}</span></li>`).join('')}</ul></section>`).join('')}</div>`
+    : '<p class="muted pet-picker-empty jr-empty">สมุดบันทึกยังว่างอยู่ — ลองเล่นกับน้องๆ แล้วเรื่องน่ารักจะมาอยู่ที่นี่ 📔</p>';
+  openModal({ title: '📔 บันทึกน้อง', html });
+}
+
+/** 🖼️ อัลบั้ม: photo grid (local to this device); tap to view full size, delete there. */
+async function openAlbum() {
+  const urls = [];
+  const revoke = () => { for (const u of urls) URL.revokeObjectURL(u); urls.length = 0; };
+  const photos = await listPhotos();
+  const items = [];
+  for (const m of photos) { const u = await getPhotoUrl(m.id); if (u) { urls.push(u); items.push({ m, u }); } }
+  const grid = items.length
+    ? `<div class="al-grid">${items.map(({ m, u }) => `<button type="button" class="al-cell" data-photo-id="${e(m.id)}" aria-label="ดูรูป"><img src="${u}" alt="รูปน้อง" loading="lazy"></button>`).join('')}</div><p class="muted al-note">รูปเก็บไว้ในเครื่องนี้เท่านั้น (สูงสุด 30 รูป)</p>`
+    : '<p class="muted pet-picker-empty">ยังไม่มีรูป — กด 📸 บนลานเพื่อถ่ายรูปน้องๆ ได้เลย</p>';
+  let close = () => {};
+  close = openModal({
+    title: '🖼️ อัลบั้ม',
+    html: grid,
+    onClose: revoke,
+    onMount(el) {
+      el.addEventListener('click', ev => {
+        const b = ev.target.closest('.al-cell');
+        if (!b) return;
+        const it = items.find(x => x.m.id === b.dataset.photoId);
+        if (!it) return;
+        const when = new Date(it.m.at).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' });
+        el.innerHTML = `<div class="al-view"><img src="${it.u}" alt="รูปน้อง"><small class="muted">${e(when)}</small>
+          <div class="al-acts"><button type="button" class="btn btn-sm" data-al="back">‹ กลับ</button>
+          <button type="button" class="btn btn-sm" data-al="dl">⬇️ ดาวน์โหลด</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-al="del">🗑️ ลบ</button></div></div>`;
+        el.onclick = ev2 => {
+          const a = ev2.target.closest('[data-al]');
+          if (!a) return;
+          if (a.dataset.al === 'dl') downloadPhoto(it.u, photoFilename(it.m));
+          else if (a.dataset.al === 'del') {
+            if (!confirm('ลบรูปนี้ออกจากอัลบั้ม?')) return;
+            deletePhoto(it.m.id).then(() => { close(); openAlbum(); });
+          } else { close(); openAlbum(); }
+        };
+      });
+    },
+  });
+}
+
+/** List view: the same wear panel in a modal. */
+function openWearModal(petId) {
+  const pet = getPet(getState(), petId);
+  if (!pet) return;
+  let box = null;
+  const paint = () => { const p = getPet(getState(), petId); if (box && p) box.innerHTML = wearPanelHtml(p, getState()); };
+  openModal({
+    title: `👗 แต่งตัว ${petName(pet)}`,
+    html: `<div class="wear-modal">${wearPanelHtml(pet, getState())}</div>`,
+    onMount(el) {
+      box = el.querySelector('.wear-modal');
+      el.addEventListener('click', ev => {
+        const b = ev.target.closest('[data-b3]');
+        if (!b) return;
+        if (b.dataset.b3 === 'wear-pick') run(s => wearAccessory(s, petId, b.dataset.accId));
+        else if (b.dataset.b3 === 'wear-off') run(s => takeOffAccessory(s, petId, b.dataset.slot));
+        paint();
+      });
+    },
+  });
+}
+
 /** Decor picker for one spot of the 3D yard: place something you built, or take the placed one back. */
 function openDecorPicker(spot) {
   const state = getState();
@@ -552,6 +630,11 @@ function mailBtnHtml(state) {
   return `<button type="button" class="yard-mail${unread ? ' has-new' : ''}" data-action="open-mail" aria-label="โปสการ์ดจากบ้านใหม่${unread ? ` (ใหม่ ${unread})` : ''}">💌${unread ? `<b class="yard-mail-n">${unread}</b>` : ''}</button>`;
 }
 
+/** 📔 บันทึก and 🖼️ อัลบั้ม chips on the yard header. */
+const memoryBtnsHtml = () =>
+  '<button type="button" class="yard-mail yard-memo" data-action="open-journal" title="บันทึกน้อง" aria-label="บันทึกน้อง">📔</button>' +
+  '<button type="button" class="yard-mail yard-memo" data-action="open-album" title="อัลบั้ม" aria-label="อัลบั้มรูป">🖼️</button>';
+
 function renderBarn(state) {
   const t = now();
   const pets = state.pets;
@@ -561,7 +644,7 @@ function renderBarn(state) {
     return `<div class="barn-view barn-3d">
       <section class="barn-section">
         <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
-          <div class="barn-head-r">${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+          <div class="barn-head-r">${memoryBtnsHtml()}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
         ${mode === '3d'
           ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
           : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดลาน 3 มิติ…</div>'}
@@ -585,7 +668,7 @@ function renderBarn(state) {
     ${renderNursery(state)}
     <section class="barn-section">
       <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
-        <div class="barn-head-r">${giftChipHtml(state)}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+        <div class="barn-head-r">${giftChipHtml(state)}${memoryBtnsHtml()}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
       ${pets.length ? `<div class="barn-grid">${pets.map(p => renderPetCard(p, state)).join('')}</div>` : empty}
     </section></div>`;
 }
@@ -629,7 +712,7 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
   const st = stageOf(pet);
   const bond = bondProgress(pet);
   const head = `<div class="b3-sheet-head">
-      ${mode === 'feed' ? '<button type="button" class="btn btn-sm btn-ghost" data-b3="back" aria-label="กลับ">‹</button>' : ''}
+      ${mode === 'feed' || mode === 'wear' ? '<button type="button" class="btn btn-sm btn-ghost" data-b3="back" aria-label="กลับ">‹</button>' : ''}
       <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
       <div class="b3-sheet-title"><b>${e(petName(pet))}</b>
         <small>${sp ? e(sp.nameTh) : ''} · ${st.icon} ${st.nameTh}${pet.shiny ? ' · ✨' : ''}${sp && sp.rarity === 'legendary' ? ' · ✦ ตำนาน' : ''}</small></div>
@@ -637,6 +720,7 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
   if (mode === 'feed') {
     return `${head}<div class="b3-sheet-body">${foodListHtml(pet, state, 'data-b3')}</div>`;
   }
+  if (mode === 'wear') return `${head}<div class="b3-sheet-body">${wearPanelHtml(pet, state)}</div>`;
   const pers = persOf(pet);
   const station = stationStatus(state, pet);
   const stationLine = (station ? `<div class="b3-station">📌 ${station.label} · ${station.emoji} ${station.text}</div>` : '') +
@@ -652,7 +736,29 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
       <div class="b3-stats">
         ${miniStat('🍖', 'อิ่ม', pet.stats.hunger)}${miniStat('💖', 'สุข', pet.stats.happy)}
         ${miniStat('⚡', 'พลัง', pet.stats.energy)}${miniStat('🫧', 'สะอาด', pet.stats.clean)}</div>
-      <div class="pet-actions b3-acts">${petActionsHtml(pet, 'data-b3')}</div></div>`;
+      <div class="pet-actions b3-acts">${petActionsHtml(pet, 'data-b3')}</div>
+      <button type="button" class="b3-wear-row" data-b3="wear" data-pet-id="${e(pet.id)}" aria-label="แต่งตัวให้${e(petName(pet))}">
+        <span class="b3-wear-t">👗 แต่งตัว</span><span class="b3-wear-now">${wornEmojis(pet) || '<small class="muted">ยังไม่ได้ใส่อะไร</small>'}</span><span aria-hidden="true">›</span></button></div>`;
+}
+
+const SLOT_TH = { head: 'หัว', neck: 'คอ' };
+const wornEmojis = pet => Object.values(wearOf(pet)).map(id => { const a = getAccessory(id); return a ? `<span class="b3-wear-e">${a.emoji}</span>` : ''; }).join('');
+
+/** "👗 แต่งตัว": what the pet wears (tap ✕ to take off) and the free items in the wardrobe. */
+function wearPanelHtml(pet, state) {
+  const w = wearOf(pet);
+  const slots = ACC_SLOTS.map(slot => {
+    const a = getAccessory(w[slot]);
+    return `<div class="wear-slot${a ? ' has' : ''}"><small>${SLOT_TH[slot]}</small>` +
+      (a ? `<span class="wear-slot-e">${a.emoji}</span><b>${e(a.nameTh)}</b><button type="button" class="wear-off" data-b3="wear-off" data-pet-id="${e(pet.id)}" data-slot="${slot}" aria-label="ถอด${e(a.nameTh)}">✕</button>`
+        : '<span class="wear-slot-e is-empty">·</span><span class="muted">ว่าง</span>') + '</div>';
+  }).join('');
+  const items = wardrobeList(state);
+  const list = items.length
+    ? `<div class="wear-list">${items.map(({ acc, n }) => `<button type="button" class="wear-item" data-b3="wear-pick" data-pet-id="${e(pet.id)}" data-acc-id="${e(acc.id)}">
+        <span class="wear-item-e">${acc.emoji}</span><span class="wear-item-n">${e(acc.nameTh)}</span><small>${SLOT_TH[acc.slot]}${n > 1 ? ` ×${n}` : ''}</small></button>`).join('')}</div>`
+    : '<p class="muted pet-picker-empty">ตู้เสื้อผ้ายังว่างอยู่ — ซื้อได้ที่ร้านค้า 🛒 หรือลุ้นเจอตอนออกสำรวจ 🧭</p>';
+  return `<div class="wear-slots">${slots}</div>${list}`;
 }
 
 /** Edible items for the food tray (chips); `pet` (optional) marks favorites. */
@@ -907,6 +1013,7 @@ function bindBarn(root) {
     sleep: withPet(id => run(s => toggleSleep(s, id))),
     poop: withPet(id => run(s => pickPoop(s, id))),
     details: withPet(id => openDetails(id)),
+    wear: withPet(id => openWearModal(id)),
     gift: withPet(id => run(s => claimGift(s, id))),
     'put-egg': () => openEggPicker(),
     hatch: btn => {
@@ -920,6 +1027,8 @@ function bindBarn(root) {
     'nursery-swap': withPet(id => openSwapPicker(id)),
     'nursery-rehome': withPet(id => confirmRehome(id)),
     'open-mail': () => openMailbox(),
+    'open-journal': () => openJournal(),
+    'open-album': () => { openAlbum(); },
     'greet-next': () => {
       if (!listGreet) return;
       if (listGreet.i >= listGreet.lines.length - 1) listGreet = null; else listGreet.i++;

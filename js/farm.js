@@ -15,6 +15,7 @@ import { CROPS, getCrop } from './data/crops.js';
 import { EGGS } from './data/eggs.js';
 import { getItem } from './data/items.js';
 import { DECOR, getDecor } from './data/decor.js';
+import { getAccessory, expeditionAccessories, ACC_DROP_CHANCE } from './data/accessories.js';
 
 const MIN = 60 * 1000;
 export const MAX_PLOTS = 16;
@@ -433,7 +434,7 @@ export function sortPetsForSlot(pets, powerOf) {
 export function formatRewards(rewards) {
   const parts = [];
   for (const [id, n] of Object.entries(rewards || {})) {
-    const it = getItem(id);
+    const it = getItem(id) || getAccessory(id);
     if (it && n > 0) parts.push(`${it.emoji} ${it.nameTh} x${n}`);
   }
   return parts.join(', ') || 'ไม่มีอะไรเลย';
@@ -559,6 +560,12 @@ function rollLoot(zone, pet, ms) {
   if (zone.eggs && zone.eggs.length && Math.random() < chance) {
     const egg = zone.eggs[Math.floor(Math.random() * zone.eggs.length)];
     out[egg] = (out[egg] || 0) + 1;
+  }
+  // V9 §1: expedition-only accessories, ~1% per trip in a matching zone. Cosmetic and unsellable, so the loot value is unchanged.
+  const accs = expeditionAccessories(zone.id);
+  if (accs.length && Math.random() < ACC_DROP_CHANCE * accs.length) {
+    const a = accs[Math.floor(Math.random() * accs.length)];
+    out[a.id] = (out[a.id] || 0) + 1;
   }
   return out;
 }
@@ -998,6 +1005,7 @@ export function claimExpedition(state, expeditionId) {
   const rewards = ex.rewards || {};
   for (const [id, n] of Object.entries(rewards)) {
     if (getItem(id) && n > 0) addItem(state, id, n);
+    else if (getAccessory(id) && n > 0) addToWardrobe(state, id, n);
   }
   if (zone) addPlayerXp(state, zone.xp);
   if (zone && getPet(state, ex.petId)) addPetXp(state, ex.petId, zone.petXp);
@@ -1007,6 +1015,29 @@ export function claimExpedition(state, expeditionId) {
 }
 
 // ---------------------------------------------------------------- shop
+
+// V9 §1: state.wardrobe { accId: count } comes with state v7; default it defensively for older in-memory states.
+export function addToWardrobe(state, accId, n = 1) {
+  if (!getAccessory(accId) || !(n > 0)) return;
+  if (!state.wardrobe || typeof state.wardrobe !== 'object') state.wardrobe = {};
+  state.wardrobe[accId] = (Number(state.wardrobe[accId]) || 0) + n;
+}
+
+/** Copies owned (state v7: worn copies stay counted in state.wardrobe). */
+export function accessoryOwned(state, accId) {
+  return Number(state.wardrobe && state.wardrobe[accId]) || 0;
+}
+
+export const MAX_ACCESSORY_COPIES = 99;   // state.js sanitise caps each accessory at 99 copies
+
+export function buyAccessory(state, accId) {
+  const a = getAccessory(accId);
+  if (!a || a.price == null) return fail('ชิ้นนี้ไม่มีขายในร้าน (หาได้จากการสำรวจ)');
+  if (accessoryOwned(state, accId) >= MAX_ACCESSORY_COPIES) return fail(`มี ${a.emoji} ${a.nameTh} ครบ ${MAX_ACCESSORY_COPIES} ชิ้นแล้ว เก็บไว้พอแล้วนะ`);
+  if (!spendCoins(state, a.price)) return fail(`เหรียญไม่พอ (ต้องใช้ ${a.price} 🪙)`);
+  addToWardrobe(state, accId, 1);
+  return done(`ซื้อ ${a.emoji} ${a.nameTh} แล้ว (-${a.price} 🪙) ไปแต่งตัวให้น้องที่หน้าน้องได้เลย`);
+}
 
 function cleanQty(qty) {
   const n = Math.floor(Number(qty));

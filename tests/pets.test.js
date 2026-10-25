@@ -1931,3 +1931,119 @@ test('gift labels: at most 4; full pets first, then the biggest gifts, then the 
   const rest = many.filter(x => !['p19', 'p18'].includes(x.id));
   assertEq(pickGiftLabels(rest), ['p17', 'p16', 'p15', 'p14'], 're-pick after a collect');
 });
+
+// ── CONTRACT_V9 (Coder B): dress-up, rain, party, water locomotion ──────────────────────────────────────────
+import { wearAccessory, takeOffAccessory, wardrobeCount, wardrobeList, wearOf, WEAR_HAPPY } from '../js/pets.js';
+import { claimBirthday as claimBirthdayV9 } from '../js/birthday.js';
+import { locomotionOf, AQUATIC, rainLover, shelterSpots, puddleSpots, partySpot } from '../js/petBehaviour.js';
+
+test('dress-up: wear takes a free copy, the same slot swaps, take-off frees it, a copy is worn by one pet at a time', () => {
+  const { s, pet } = setup('hamster', { stats: { happy: 50 } });
+  s.pets.push({ ...pet, id: 'p2', wear: { head: null, neck: null }, stats: { ...pet.stats } });
+  s.wardrobe = { acc_bow: 1, acc_cap: 1, acc_bell: 1 };
+  assertEq(wardrobeCount(s, 'acc_bow'), 1, 'one free');
+  let r = wearAccessory(s, 'p1', 'acc_bow');
+  assert(r.ok && r.firstToday, 'worn');
+  assertEq(wearOf(pet).head, 'acc_bow', 'on the head');
+  assertEq(wardrobeCount(s, 'acc_bow'), 0, 'copy in use');
+  assert(!wearAccessory(s, 'p2', 'acc_bow').ok, 'the same copy cannot be worn twice');
+  r = wearAccessory(s, 'p1', 'acc_cap');                       // swaps the head item
+  assert(r.ok && !r.firstToday, 'second wear today gives no extra happy');
+  assertEq(wardrobeCount(s, 'acc_bow'), 1, 'bow is free again');
+  assert(wearAccessory(s, 'p1', 'acc_bell').ok, 'neck slot is separate');
+  assertEq(wardrobeList(s).map(x => x.acc.id), ['acc_bow'], 'only free items listed');
+  assert(takeOffAccessory(s, 'p1', 'head').ok && wearOf(pet).head === null, 'taken off');
+  assertEq(wardrobeCount(s, 'acc_cap'), 1, 'cap is free');
+  assert(!takeOffAccessory(s, 'p1', 'head').ok, 'nothing left to take off');
+  assert(!wearAccessory(s, 'p1', 'acc_nope').ok, 'unknown item');
+});
+
+test('dress-up: first wear of the day is happy +5 (no bond), and only once a day', () => withFakeNow(Date.UTC(2026, 9, 25, 5), clock => {
+  const { s, pet } = setup('hamster', { stats: { happy: 50 } });
+  s.wardrobe = { acc_bow: 1, acc_cap: 1 };
+  wearAccessory(s, 'p1', 'acc_bow');
+  assertEq(pet.stats.happy, 50 + WEAR_HAPPY, '+5');
+  assertEq(pet.bond, 0, 'no bond');
+  wearAccessory(s, 'p1', 'acc_cap');
+  assertEq(pet.stats.happy, 50 + WEAR_HAPPY, 'not again today');
+  clock.advance(26 * HOUR);
+  takeOffAccessory(s, 'p1', 'head');
+  wearAccessory(s, 'p1', 'acc_bow');
+  assertEq(pet.stats.happy, 50 + 2 * WEAR_HAPPY, 'next day +5 again');
+}));
+
+test('dress-up: rehoming hands the accessories back', () => {
+  const { s, pet } = setup('hamster');
+  s.wardrobe = { acc_bow: 1 };
+  wearAccessory(s, 'p1', 'acc_bow');
+  assert(rehomePet(s, 'p1').ok, 'rehomed');
+  assertEq(wardrobeCount(s, 'acc_bow'), 1, 'free in the wardrobe');
+  assertEq(wearOf(pet).head, null, 'pet no longer wears it');
+});
+
+test('birthday gift: +1 bond through addBond, once; the 30-a-day bond cap still holds', () => withFakeNow(Date.UTC(2026, 9, 25, 5), () => {
+  const { s, pet } = setup('hamster', { bornAt: Date.now() - 60 * 24 * HOUR });
+  pet.bondDay = null;
+  const r = claimBirthdayV9(s, 'p1');
+  assert(r.ok && r.months === 2, 'claimed');
+  assertEq(pet.bond, 1, '+1 heart point');
+  assert(!claimBirthdayV9(s, 'p1').ok, 'once per birthday');
+  const full = setup('hamster', { bornAt: Date.now() - 30 * 24 * HOUR });
+  full.pet.bondDay = require_today(); full.pet.bondToday = 30;
+  claimBirthdayV9(full.s, 'p1');
+  assertEq(full.pet.bondToday, 30, 'the daily cap of 30 still holds');
+}));
+function require_today() { const d = new Date(now()); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+
+test('water locomotion: aquatic pets float, crab sidesteps, frog hops, turtle is slow, shells stay put', () => {
+  for (const id of ['fish', 'tropicalfish', 'blowfish', 'squid', 'octopus', 'dolphin', 'shark']) { assert(AQUATIC.has(id), id); assertEq(locomotionOf(id).kind, 'float', id); }
+  assertEq(locomotionOf('crab').kind, 'side', 'crab'); assertEq(locomotionOf('frog').kind, 'hop', 'frog');
+  assert(locomotionOf('turtle').speed < 0.7 && locomotionOf('turtle').turn < 1, 'turtle slow');
+  assertEq(locomotionOf('hamster').kind, 'walk', 'default');
+  configureYard('L');
+  const rng = makeRng(7);
+  const walk = id => { const { pet } = setup(id); let n = 0; for (let i = 0; i < 60; i++) { const a = nextAction(pet, { x: 0, z: 0, others: [], last: 'idle' }, rng, 0); if (a.type === 'wander' || a.type === 'approach') n++; } return n; };
+  assert(walk('oyster') < walk('hamster') * 0.4 + 1, 'shells mostly stay put');
+  const { pet: turtle } = setup('turtle');
+  for (let i = 0; i < 40; i++) { const a = nextAction(turtle, { x: 0, z: 0, others: [], last: 'idle' }, rng, 0); if (a.type === 'wander') assert(a.speed <= 0.7, 'slow turtle ' + a.speed); }
+  // a crab walks sideways: its heading aims 90 degrees off the walking direction
+  const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'walkTo', target: { x: 0, z: 5 }, speed: 1 }), loco: locomotionOf('crab'), sideDir: 1 };
+  for (let i = 0; i < 120; i++) advanceActor(A, 0.05, () => {});
+  near(Math.abs(A.heading), Math.PI / 2, 'sideways', 0.05);
+});
+
+test('rain: puddle lovers jump in puddles, others shelter; nobody does either on a dry day; shelters avoid a taken spot', () => {
+  configureYard('XL');
+  const rain = { puddles: puddleSpots('t', 4), shelters: shelterSpots(yardProps('XL')) };
+  assert(rain.puddles.length >= 3 && rain.shelters.length >= 8, 'spots exist');
+  const kinds = (id, ctx) => { const { pet } = setup(id, { personality: 'cheerful' }); const rng = makeRng(3); const c = {}; for (let i = 0; i < 200; i++) { const a = nextAction(pet, { x: 0, z: 0, others: [], last: 'idle', ...ctx }, rng, 0); c[a.type] = (c[a.type] || 0) + 1; } return c; };
+  assert(rainLover(setup('duck').pet) && rainLover(setup('frog').pet) && !rainLover(setup('lion').pet), 'lovers');
+  const duck = kinds('duck', { rain }), cat = kinds('cat', { rain }), dry = kinds('duck', {});
+  assert((duck.puddle || 0) > (cat.puddle || 0) * 2 && (duck.puddle || 0) > 20, 'ducks splash');
+  assert((cat.shelter || 0) > (duck.shelter || 0), 'others prefer cover');
+  assert(!dry.puddle && !dry.shelter, 'dry day: none');
+  const busy = { puddles: [], shelters: rain.shelters.map(x => ({ ...x, busy: true })) };
+  assert(!kinds('cat', { rain: busy }).shelter, 'taken spots are skipped');
+  for (const a of [partySpot(-1, 1, 0, 1), partySpot(3, 8, 0, 1)]) assert(Number.isFinite(a.x + a.z), 'party spots are finite');
+});
+
+test('party: guests walk to the cake and the host stays beside it', () => {
+  configureYard('L');
+  const { pet } = setup('cat', { personality: 'cheerful' });
+  const rng = makeRng(11);
+  const host = nextAction(pet, { x: 0, z: 0, others: [], last: 'idle', party: { x: -0.7, z: 1.2, hostId: 'p1' } }, rng, 0);
+  assertEq(host.type, 'party', 'host'); assert(host.host, 'flagged');
+  let guests = 0;
+  for (let i = 0; i < 60; i++) if (nextAction({ ...pet, id: 'g' }, { x: 2, z: 0, others: [], last: 'idle', party: { x: -0.7, z: 1.2, hostId: 'p1' } }, rng, 0).type === 'party') guests++;
+  assert(guests > 10, 'guests gather ' + guests);
+});
+
+test('dress-up: swapping a dressed yard pet into the nursery frees its accessories', () => {
+  const { s, pet } = setup('hamster');
+  s.wardrobe = { acc_bow: 1 };
+  wearAccessory(s, 'p1', 'acc_bow');
+  s.nursery = [{ pet: { ...pet, id: 'b1', status: 'nursery', wear: { head: null, neck: null }, stats: { ...pet.stats } }, hatchedAt: now() }];
+  assert(swapWithNursery(s, 'b1', 'p1').ok, 'swapped');
+  assertEq(wardrobeCount(s, 'acc_bow'), 1, 'copy is free again');
+  assertEq(wearOf(pet).head, null, 'baby wears nothing');
+});

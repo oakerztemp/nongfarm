@@ -10,6 +10,7 @@
 //  - x2 for 5 days while either pet is a newcomer (born < 5 days ago): the yard wants to meet it, so late arrivals find friends;
 //  - best friends = greedy matching over pairs >= 72 points (state.js friendMatching): strongest pair first, a pet joins one pair.
 import { now } from './util.js';
+import { journalEvent } from './journal.js';
 import {
   pairKey, FRIEND_PAIRS_MAX, FRIEND_PAIRS_PER_PET, FRIEND_BEST_POINTS, FRIENDS_MET_MAX, friendMatching, pruneFriendPairs,
 } from './state.js';
@@ -135,6 +136,7 @@ function announce(state, a, b, offline) {
   const name = p => p.nickname || p.speciesId;
   const evt = { a, b, aName: name(pa), bName: name(pb), points: friendPoints(state, a, b), at: now(), offline: !!offline };
   queue.push(evt);
+  journalEvent(state, 'bestFriend', { petId: a, otherId: b, name: evt.aName, other: evt.bName }); // v9 diary line (deduped per day)
   if (queue.length > QUEUE_MAX) queue.shift();
   for (const fn of [...listeners]) { try { fn(evt); } catch (e) { console.error(e); } }
 }

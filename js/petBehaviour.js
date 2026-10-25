@@ -310,7 +310,11 @@ const pause = (rng, mult, lo = 3, hi = 8) => (lo + rng() * (hi - lo)) * mult;
  * and every `target` is a finite point inside the walkable yard. `eat` and `poop` are never chosen here:
  * barn3d plays them as reactions (feedPet result / a poop appearing).
  */
-export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { // eslint-disable-line no-unused-vars
+export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) {
+  return applyLoco(pet, nextActionBase(pet, actorState, rng, now), rng);
+}
+
+function nextActionBase(pet, actorState, rng, now) { // eslint-disable-line no-unused-vars
   const st = (pet && pet.stats) || {};
   const ax = num(actorState.x), az = num(actorState.z);
   const others = (Array.isArray(actorState.others) ? actorState.others : [])
@@ -373,7 +377,28 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
     signature: 0,
     decor: 0,
     buddy: 0,
+    party: 0,
+    puddle: 0,
+    shelter: 0,
   };
+  // 🎂 a birthday party (CONTRACT_V9 §5): the birthday pet stays by the cake, the others gather and hop around it
+  const pty = actorState.party && Number.isFinite(actorState.party.x) && Number.isFinite(actorState.party.z) ? actorState.party : null;
+  if (pty && !sad) {
+    if (pty.hostId === (pet && pet.id)) return { type: 'party', host: true, target: partySpot(-1, 1, pty.x, pty.z), speed: Math.min(1.4, pace * 1.2), duration: 5 + rng() * 3 };
+    w.party = (pet && pet.personality === 'shy' ? 1.2 : 3.6 + pers.approach) * (last === 'party' ? 0.5 : 1);
+  }
+  // 🌧️ rain (CONTRACT_V9 §4): puddle jumping for water lovers, sheltering for the rest
+  const rain = actorState.rain && (actorState.rain.puddles || actorState.rain.shelters) ? actorState.rain : null;
+  let puddles = [], shelters = [];
+  if (rain) {
+    const lover = rainLover(pet);
+    puddles = (rain.puddles || []).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.z));
+    shelters = (rain.shelters || []).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.z) && !p.busy);
+    const loco = locomotionOf(pet && pet.speciesId);
+    if (puddles.length && !sad && loco.kind !== 'float' && loco.kind !== 'shell') w.puddle = lover ? 5.5 : 0.7 + pers.hop * 0.8;
+    if (shelters.length && loco.kind !== 'float' && loco.kind !== 'shell') w.shelter = lover ? 0.5 : 1.4 + pers.idle * 0.35 + (pet && (pet.personality === 'shy' || pet.personality === 'lazy') ? 2.5 : 0);
+    w.wander *= 0.7;
+  }
   // best friends: nap beside a napping friend, trot over to say hi when the friend is far away
   const fr = actorState.friend && Number.isFinite(actorState.friend.x) && Number.isFinite(actorState.friend.z) ? actorState.friend : null;
   let buddyMode = null;
@@ -391,6 +416,19 @@ export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) { /
   const choice = weightedPick(Object.entries(w), rng);
 
   switch (choice) {
+    case 'party': {
+      const slot = hashId(pet.id) % 8;
+      return { type: 'party', target: partySpot(slot, 8, pty.x, pty.z), speed: pace * 1.15, duration: 5 + rng() * 4 };
+    }
+    case 'puddle': {
+      const pu = puddles[Math.floor(rng() * puddles.length)];
+      return { type: 'puddle', puddle: { x: pu.x, z: pu.z }, target: clampToYard(pu.x, pu.z), speed: pace * 1.2, duration: 3.5 + rng() * 3 };
+    }
+    case 'shelter': {
+      const free = shelters.slice().sort((a, b) => dist(ax, az, a.x, a.z) - dist(ax, az, b.x, b.z));
+      const sh = free[Math.min(free.length - 1, Math.floor(rng() * 2))];
+      return { type: 'shelter', target: clampToYard(sh.x, sh.z), shelterId: sh.id, speed: pace * 1.3, duration: 8 + rng() * 8 };
+    }
     case 'buddy': {
       const side = (hashId(pet.id) % 2 ? 1 : -1) * (buddyMode === 'nap' ? 0.8 : 0.9);
       const target = clampToYard(fr.x + side, fr.z + 0.15);
@@ -603,11 +641,12 @@ export function greetSpots(n) {
 export const WALK_BASE = 1.25;   // world units / second at pace 1
 export const TURN_RATE = 9;      // heading smoothing (1/s)
 const WALKS = new Set(['wander', 'approach', 'walkTo']);
+const ARRIVE_TYPES = new Set(['decor', 'buddy', 'party', 'puddle', 'shelter']);   // walk to the spot first, then the timer runs from arrival
 /** Fallback durations (s) for timed actions that do not carry one. */
 export const DEFAULT_DUR = {
   idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3,
   flyCircle: 9, soar: 8, gallop: 6, sprint: 5, breach: 2.2, roar: 2.6, munch: 5, snowPuff: 3, shimmer: 2.4, flourish: 1.4,
-  wave: 1.7, decor: 5, buddy: 5,
+  wave: 1.7, decor: 5, buddy: 5, party: 6, puddle: 5, shelter: 10,
 };
 
 /** Shortest signed angle from a to b. */
@@ -635,13 +674,13 @@ export function advanceActor(A, dt, decide) {
   act.t += dt;
   const finish = () => { if (A.act === act) decide(A); }; // a callback may already have started a new action
   // A decor visit first walks to its stand point (act.arrived = false), then uses the decor for `dur` seconds from arrival.
-  const walkingToDecor = (act.type === 'decor' || act.type === 'buddy') && !act.arrived;
+  const walkingToDecor = ARRIVE_TYPES.has(act.type) && !act.arrived;
   if (WALKS.has(act.type) || walkingToDecor) {
     const tgt = act.target;
     if (!tgt || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.z)) { finish(); return { moving: false, decided: true }; }
     const dx = tgt.x - A.x, dz = tgt.z - A.z, d = Math.hypot(dx, dz);
     // (a pet walking to its friend is held off by the yard's personal-space push, so "there" is a little looser)
-    if (d < (act.type === 'buddy' ? 0.5 : 0.12) || act.t > 25) {
+    if (d < (act.type === 'buddy' ? 0.5 : act.type === 'party' ? 0.35 : 0.12) || act.t > 25) {
       if (walkingToDecor) {
         act.arrived = true;
         act.t = 0;
@@ -653,9 +692,11 @@ export function advanceActor(A, dt, decide) {
       return { moving: false, decided: true };
     }
     const sp = WALK_BASE * (act.speed || 1);
-    const stp = Math.min(d, sp * dt);
+    const stp = Math.min(d, sp * dt * (Number.isFinite(A.speedMod) ? A.speedMod : 1));
     A.x += (dx / d) * stp; A.z += (dz / d) * stp;
-    A.heading += angDiff(A.heading, Math.atan2(dx, dz)) * Math.min(1, dt * TURN_RATE);
+    const lo = A.loco; // water critters: a crab walks sideways, a turtle / floating fish turn slowly
+    const aim = Math.atan2(dx, dz) + (lo && lo.kind === 'side' ? (A.sideDir || 1) * Math.PI / 2 : 0);
+    A.heading += angDiff(A.heading, aim) * Math.min(1, dt * TURN_RATE * (lo && lo.turn ? lo.turn : 1));
     A.phase += dt * (5.2 + sp * 3);
     return { moving: true, decided: false };
   }
@@ -679,7 +720,7 @@ const rot = o => (o && o.rotation && Number.isFinite(o.rotation.x) ? { x: o.rota
 /** Remembers the resting rotation of the optional parts so animations are offsets from it. */
 export function partBases(parts) {
   const p = parts || {};
-  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke) };
+  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke), lid: rot(p.lid), shell: rot(p.shell) };
 }
 
 /**
@@ -700,9 +741,87 @@ export function applyPartPose(parts, base, P) {
   set('trunk', 'x', P.trunk || 0);
   set('mane', 'z', P.mane || 0);
   set('fluke', 'x', P.fluke || 0);
+  set('lid', 'x', -(P.shell || 0));
+  set('shell', 'x', -(P.shell || 0) * 0.8);      // oyster / conch: the shell top opens and closes
 }
 
 /** A new hatch ceremony may start unless another one is still before its burst (egg still in the nest). */
 export function canStartCeremony(h) {
   return !h || h.phase === 'burst';
+}
+
+// ── Locomotion of the water critters (CONTRACT_V9 §6) ───────────────────────────────────────────────────────
+/** Fully aquatic species live in a floating water bubble (model built by critters.js): they hover and bob, never walk. */
+export const AQUATIC = new Set(['fish', 'tropicalfish', 'blowfish', 'squid', 'octopus', 'dolphin', 'shark']);
+const LOCO = {
+  crab: { kind: 'side', speed: 0.9 }, lobster: { kind: 'side', speed: 0.8 },
+  frog: { kind: 'hop', speed: 1.15 }, shrimp: { kind: 'hop', speed: 1.1 },
+  turtle: { kind: 'slow', speed: 0.5, turn: 0.45 }, otter: { kind: 'play', speed: 1.15 },
+  oyster: { kind: 'shell', speed: 0.3 }, conch: { kind: 'shell', speed: 0.3 },
+};
+for (const id of AQUATIC) LOCO[id] = { kind: 'float', speed: 0.7, turn: 0.4 };
+const WALK_LOCO = { kind: 'walk', speed: 1 };
+/** { kind: 'walk'|'float'|'side'|'hop'|'slow'|'play'|'shell', speed (x walking pace), turn? (x turn rate) } */
+export function locomotionOf(speciesId) { return LOCO[speciesId] || WALK_LOCO; }
+
+/** Slows the walkers down per species; shells (oyster / conch) mostly stay put and just open and close. Pure. */
+function applyLoco(pet, act, rng) {
+  const lo = locomotionOf(pet && pet.speciesId);
+  if (lo === WALK_LOCO || !act) return act;
+  const walking = act.type === 'wander' || act.type === 'approach';
+  if (lo.kind === 'shell' && walking && !act.reason && rng() < 0.85) return { type: 'idle', duration: 5 + rng() * 5, reason: 'shell' };
+  if (lo.kind === 'play' && act.type === 'idle' && !act.reason && rng() < 0.3) return { type: 'hop', duration: 1.6, hops: 3 };
+  if (Number.isFinite(act.speed) && lo.speed) return { ...act, speed: act.speed * lo.speed };
+  return act;
+}
+
+// ── Rain (CONTRACT_V9 §4) ───────────────────────────────────────────────────────────────────────────────────
+/** Puddle lovers: the waterLover trait, the water habitat, ducks and frogs. */
+export function rainLover(pet) {
+  const sp = pet && getSpecies(pet.speciesId);
+  return !!sp && (sp.trait === 'waterLover' || sp.habitat === 'water' || sp.id === 'duck' || sp.id === 'frog');
+}
+
+/** Standing spots around a prop that gives cover (a tree or the gazebo). Ids are stable. */
+export function shelterSpots(props) {
+  const out = [];
+  for (const p of props || []) {
+    if (p.kind !== 'tree' && p.kind !== 'hill') continue;
+    const r = p.kind === 'tree' ? 0.82 : p.r + 0.28;
+    const n = p.kind === 'tree' ? 5 : 6;
+    for (let i = 0; i < n; i++) {
+      // face the yard centre: the spots on the open side of the prop come first
+      const base = Math.atan2(-p.z, -p.x);
+      const a = base + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI * 2 / (n + 1));
+      out.push({ id: `${p.id}:${i}`, x: p.x + Math.cos(a) * r, z: p.z + Math.sin(a) * r });
+    }
+  }
+  return out;
+}
+
+/** Deterministic puddle spots (a few per yard) for a given rain hour; they avoid the props and the nest strip. */
+export function puddleSpots(seed, n = 4) {
+  const out = [];
+  for (let k = 0; k < n * 6 && out.length < n; k++) {
+    const h1 = hashId(`${seed}:pa${k}`), h2 = hashId(`${seed}:pb${k}`);
+    const a = ((h1 % 3600) / 3600) * Math.PI * 2, r = 1.0 + ((h2 % 1000) / 1000) * Math.max(0.5, YARD.walkRadius - 2.0);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (z < YARD.backLimit + 0.5 || dist(x, z, YARD.bowl.x, YARD.bowl.z) < 1.3) continue;
+    if (YARD.obstacles.some(o => dist(x, z, o.x, o.z) < o.r + 0.8)) continue;
+    if (out.some(q => dist(x, z, q.x, q.z) < 1.6)) continue;
+    out.push({ x, z });
+  }
+  return out;
+}
+
+/** Does the weather {kind} count as rain for pet behaviour? */
+export const isRainKind = kind => kind === 'rain' || kind === 'lightRain' || kind === 'drizzle' || kind === 'shower';
+
+// ── Birthday party (CONTRACT_V9 §5) ─────────────────────────────────────────────────────────────────────────
+/** Spot i of n around the cake at (cx, cz); i = -1 is the birthday pet's own spot (right beside the cake). */
+export function partySpot(i, n, cx, cz) {
+  if (i < 0) return clampToYard(cx + 0.7, cz + 0.15);
+  const a = -Math.PI * 0.15 + (i / Math.max(1, n)) * Math.PI * 1.75 + Math.PI * 0.5;
+  const r = 1.35 + (i % 2) * 0.35;
+  return clampToYard(cx + Math.cos(a) * r, cz + Math.sin(a) * r);
 }

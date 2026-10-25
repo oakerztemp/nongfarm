@@ -9,6 +9,7 @@ import { JOBS } from '../data/species.js';
 import { CROPS, getCrop } from '../data/crops.js';
 import { ITEMS, getItem, YARD_MATERIALS } from '../data/items.js';
 import { DECOR } from '../data/decor.js';
+import { ACCESSORIES } from '../data/accessories.js';
 import { getEgg } from '../data/eggs.js';
 import {
   ZONES, getZone, MAX_PLOTS, MAX_BARN,
@@ -16,7 +17,7 @@ import {
   incubatorUpgradePrice, upgradeIncubator, MAX_INCUBATOR, nextMidnight,
   startExpedition, claimExpedition, buyItem, sellItem,
   plotPrice, buyPlot, upgradeBarn, barnUpgradeStatus, sortPetsForSlot,
-  buildDecor, placeDecor, decorBuildStatus, decorSpotList,
+  buildDecor, placeDecor, decorBuildStatus, decorSpotList, buyAccessory, accessoryOwned,
   plotSpeed, plotEtaMs, effectivePower, plotTeam, slotPowerPreview, slotJobs, TEAM_COMBO, plotBonusPreview,
   stationPet, unstationPet, stationInfo, stationLabel, MAX_STATIONS, yardUpgradePreview,
 } from '../farm.js';
@@ -657,6 +658,34 @@ function decorSection(state) {
     <div class="decor-list">${cards}</div>`;
 }
 
+// "ร้านแต่งตัว": cosmetic accessories bought into state.wardrobe (worn from the pet sheet). Three are expedition-only; none can be sold.
+function dressShopSection(state) {
+  const coins = coinsOf(state);
+  const zoneName = id => { const z = getZone(id); return z ? `${z.emoji} ${z.nameTh}` : ''; };
+  const cards = ACCESSORIES.map(a => {
+    const own = accessoryOwned(state, a.id);
+    const badge = own ? ` <span class="badge">มี ${own}</span>` : '';
+    const slot = a.slot === 'head' ? 'หัว' : 'คอ';
+    if (a.price == null) {
+      return `<div class="decor-card">
+        <span class="decor-emoji">${a.emoji}</span>
+        <div class="decor-info"><div><b>${esc(a.nameTh)}</b>${badge}</div>
+          <div class="muted farm-small">${slot} · หาได้จากการสำรวจ ${esc(zoneName(a.zone))} เท่านั้น (หายาก)</div></div>
+      </div>`;
+    }
+    return `<div class="decor-card">
+      <span class="decor-emoji">${a.emoji}</span>
+      <div class="decor-info"><div><b>${esc(a.nameTh)}</b>${badge}</div>
+        <div class="muted farm-small">${slot} · แค่ความน่ารัก ไม่มีโบนัส</div></div>
+      <div class="decor-btns"><span class="shop-price">🪙 ${num(a.price)}</span>
+        <button class="btn btn-primary btn-sm" data-action="buy-accessory" data-acc="${a.id}" ${coins < a.price ? 'disabled' : ''}>ซื้อ</button></div>
+    </div>`;
+  }).join('');
+  return `<h3 class="farm-h">👗 ร้านแต่งตัว</h3>
+    <div class="muted farm-small">ของแต่งตัวน้อง ใส่ได้ที่หน้าน้อง · ขายคืนไม่ได้</div>
+    <div class="decor-list">${cards}</div>`;
+}
+
 function upgradeCards(state) {
   const coins = coinsOf(state);
   const pp = plotPrice(state);
@@ -673,7 +702,8 @@ function upgradeCards(state) {
   return card('🌾', 'ขยายแปลงไร่', `ตอนนี้ ${plots}/${MAX_PLOTS} แปลง · ปลูกได้พร้อมกันมากขึ้น`, pp, 'buy-plot')
     + yardCard(state)
     + card('🥚', 'ขยายตู้ฟัก', `ตอนนี้ ${incCap}/${MAX_INCUBATOR} ช่อง · ฟักไข่ได้พร้อมกันมากขึ้น`, ip, 'upgrade-incubator')
-    + decorSection(state);
+    + decorSection(state)
+    + dressShopSection(state);
 }
 
 function shopRender(state) {
@@ -700,6 +730,7 @@ function shopBind(rootEl) {
     buy: d => run(s => buyItem(s, d.item, Number(d.qty) || 1)),
     'buy-plot': () => run(s => buyPlot(s)),
     'upgrade-barn': () => run(s => upgradeBarn(s)),
+    'buy-accessory': d => run(s => buyAccessory(s, d.acc)),
     'build-decor': d => run(s => buildDecor(s, d.decor)),
     'place-decor': d => run(s => {
       const spot = decorSpotList(s).find(x => !x.placed);

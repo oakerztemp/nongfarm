@@ -7,6 +7,8 @@
 //
 // Conventions: model faces +Z, +Y is up, origin = feet on the ground. `body` is the squash/stretch
 // target (origin at the feet); `head` is a child group pivoting at the head centre (look-at / nod).
+// Water pets (V9 §6): spec.bubble = { r, pitch? } wraps a fully aquatic model in a translucent floating bubble (parts.bubble, ONE extra draw
+// call, a geometry + material shared by every water pet); spec.bubble.pitch tilts the swimmer inside it. Oyster / conch carry a `shell` pivot.
 // Stage scale lives on `root` (so B's body.scale squash never fights it). Everything built here
 // shares geometries (unit shapes, scaled per mesh) and materials (keyed by colour) per THREE instance.
 
@@ -48,6 +50,26 @@ const GEO = {
   curl:  T => new T.TorusGeometry(1, 0.26, 6, 12, Math.PI * 1.75),
   hood:  T => new T.SphereGeometry(1, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.58),
 };
+// Water bubble (V9 §6): unit sphere with per-vertex alpha (faint body, a bright glint upper-left, a soft glow underneath).
+GEO.bubble = T => {
+  const g = new T.SphereGeometry(1, 12, 8);
+  const p = g.attributes.position, col = new Float32Array(p.count * 4);
+  const L = new T.Vector3(-0.42, 0.72, 0.55).normalize(), B = new T.Vector3(0.35, -0.8, 0.45).normalize(), n = new T.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    n.fromBufferAttribute(p, i).normalize();
+    const hl = Math.max(0, n.dot(L)), gl = Math.max(0, n.dot(B));
+    const k = Math.pow(hl, 14), kb = Math.pow(gl, 6);
+    col.set([0.78 + 0.22 * k + 0.1 * kb, 0.93 + 0.07 * k, 1, 0.16 + 0.62 * k + 0.16 * kb], i * 4);
+  }
+  g.setAttribute('color', new T.BufferAttribute(col, 4));
+  return g;
+};
+function bubbleMat(T) {
+  const k = kit(T);
+  let m = k.mat.get('bubble');
+  if (!m) { m = new T.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }); k.mat.set('bubble', m); }
+  return m;
+}
 function geo(T, name) {
   const k = kit(T);
   let g = k.geo.get(name);
@@ -229,7 +251,7 @@ export function buildPetModel(T, pet, species, opts = {}) {
     parts: {
       eyes: eyes ? [eyes] : [], ears: [earL, earR].filter(Boolean), earL, earR,
       tail: find('tail'), tailTip: find('tailTip'), wingL: find('wingL'), wingR: find('wingR'),
-      fluke: find('fluke'), spout: find('spout'),
+      fluke: find('fluke'), spout: find('spout'), shell: find('shell'), bubble: find('bubble'),
       trunk: find('trunk'), mane: find('mane'), breath: find('breath'), crown: null,
     },
     crownY: tpl.crownY, crownLift: tpl.crownLift, baseHeight: tpl.baseHeight, baseRadius: tpl.baseRadius, height: tpl.baseHeight, radius: tpl.baseRadius,
@@ -312,6 +334,13 @@ function assemble(T, spec, shiny, seed, grad) {
       const x = sx * B.w * (L.x ?? 0.4);
       put(bodyG, 'cyl', legMat, L.r, L.h, L.r, x, 0, 0.02);
       put(bodyG, 'cyl', legMat, L.r * (web ? 4.2 : 3), L.h * 0.12, L.r * (web ? 5 : 4), x, 0, L.r * 2.2);
+    }
+  } else if (L.type === 'crab') {   // V9: n pairs of thin splayed legs (crab / lobster); cones fat at the body, tip on the ground
+    const n = L.n ?? 4;
+    for (const sx of [-1, 1]) for (let i = 0; i < n; i++) {
+      const f = n === 1 ? 0 : i / (n - 1) * 2 - 1;
+      const a = V3(sx * B.w * (L.x ?? 0.8), by - B.h * (L.dy ?? 0.3), f * B.d * (L.z ?? 0.55));
+      along(put(bodyG, 'coneP', legMat, L.r ?? 0.03, L.len ?? 0.3, L.r ?? 0.03, a.x, a.y, a.z), V3(sx * (L.out ?? 1), -(L.down ?? 0.8), f * (L.fan ?? 0.4)));
     }
   }
 
@@ -404,6 +433,29 @@ function assemble(T, spec, shiny, seed, grad) {
           put(pivot, 'sphL', mat, s * 0.82, s * 0.24, s * 0.3, side * s * 0.7, 0, 0);
           if (inn) put(pivot, 'sphL', inn, s * 0.6, s * 0.14, s * 0.2, side * s * 0.72, 0, s * 0.08);
           break;
+        case 'fin': {   // V9 pectoral fin: a flat paddle swept out and back (rotate the pivot to flap)
+          const d = Ea.dir || [0.9, -0.3, -0.5];
+          along(outer, V3(side * d[0], d[1], d[2]));
+          put(pivot, 'sphL', mat, s * 0.1, s * 0.62, s * (Ea.wd ?? 0.34), 0, s * 0.55, 0);
+          break;
+        }
+        case 'claw': {  // V9 crab / lobster claw: arm + palm + two pincers, reaching forward
+          along(outer, V3(side * (Ea.out ?? 0.4), Ea.lift ?? 0.2, 1));
+          put(pivot, 'cylT', mat, s * 0.1, s * 0.7, s * 0.1);
+          put(pivot, 'sphL', mat, s * 0.34, s * 0.36, s * 0.22, 0, s * 0.86, 0);
+          for (const k of [-1, 1]) {
+            const f = put(pivot, 'coneP', inn || mat, s * 0.13, s * 0.42, s * 0.1, k * s * 0.14, s * 1.02, 0);
+            f.rotation.z = -k * 0.18;
+          }
+          break;
+        }
+        case 'arm': {   // V9 tentacle / antenna: a tapered cone (optionally with a club tip) pointing forward-down
+          const d = Ea.dir || [0.35, -0.5, 1];
+          along(outer, V3(side * d[0], d[1], d[2]));
+          put(pivot, 'cone', mat, s * (Ea.r ?? 0.14), s * (Ea.len ?? 1.2), s * (Ea.r ?? 0.14));
+          if (Ea.club) put(pivot, 'sphL', inn || mat, s * Ea.club * 0.2, s * Ea.club * 0.28, s * Ea.club * 0.16, 0, s * (Ea.len ?? 1.2), 0);
+          break;
+        }
         default: break;
       }
       headG.add(outer);
@@ -496,6 +548,9 @@ function assemble(T, spec, shiny, seed, grad) {
           else put(g, 'cylT', col, rr, len * 1.05, rr);
           parent = g;
         }
+        if (Ta.fan) {   // V9 lobster / shrimp tail fan: three flat lobes
+          for (const a of [-1, 0, 1]) put(parent, 'sphL', tm(Ta.fan), r * 1.5, len * 0.62, r * 0.3, a * r * 1.5, len * 1.1, 0).rotation.z = -a * 0.5;
+        }
         if (Ta.tuft) put(parent, 'sphL', tm(Ta.tuft), r * 2.4, r * 3.2, r * 2.4, 0, len, 0);
         if (Ta.flame) {
           put(parent, 'cone', tm('#ff7a1a'), r * 1.9, r * 4.4, r * 1.9, 0, len * 0.9, 0);
@@ -526,6 +581,18 @@ function assemble(T, spec, shiny, seed, grad) {
         put(tailG, 'sphL', tm(Ta.edge || Ta.color), w, w * 0.2, d, 0, -w * 0.05, -d * 0.95);
         break;
       }
+      case 'fin': {   // V9 fish tail: short stalk + a vertical two-lobed fan (rotate .y to swish); Ta.up = size of the upper lobe (shark)
+        const w = Ta.s ?? 0.3, len = Ta.len ?? 0.14;
+        tailG.rotation.x = Ta.rot ?? 0;
+        const stalk = put(tailG, 'cone', mat, w * 0.2, len, w * 0.2);
+        stalk.rotation.x = -Math.PI / 2;
+        for (const sy of [-1, 1]) {
+          const k = sy > 0 ? (Ta.up ?? 1) : 1 / Math.max(1, Ta.up ?? 1) ** 0.5;
+          const l = put(tailG, 'sphL', tm(Ta.lobe || Ta.color), w * 0.06, w * 0.5 * k, w * 0.3 * k, 0, sy * w * 0.3 * k, -len - w * 0.22);
+          l.rotation.x = sy * 0.5;
+        }
+        break;
+      }
       case 'curly': {
         const s = Ta.s ?? 0.1;
         const m = put(tailG, 'curl', mat, s, s, s, 0, s * 0.4, -s * 0.5);
@@ -539,7 +606,51 @@ function assemble(T, spec, shiny, seed, grad) {
 
   // ---- extras ----
   const bodyPt = (az, el, push = 0) => { const r = surf(B.w, B.h, B.d, az, el, push); r.p.y += by; return r; };
+  const groups = {};
   const EX = {
+    /** V9 generic static ellipsoids: list of { g, c, p:[x,y,z], s:[sx,sy,sz]|n, r:[rx,ry,rz], dir:[x,y,z], mirror }. Absolute units in the host's space. */
+    blobs(o) {
+      const host = o.host || (o.on === 'head' ? headG : bodyG);
+      for (const b of o.list) {
+        const [px, py, pz] = b.p, [rx = 0, ry = 0, rz = 0] = b.r || [];
+        const [sx, sy, sz] = Array.isArray(b.s) ? b.s : [b.s, b.s, b.s];
+        for (const k of (b.mirror ?? o.mirror) ? [1, -1] : [1]) {
+          const m = put(host, b.g || 'sphL', tm(b.c || o.color || B.color), sx, sy, sz, px * k, py, pz);
+          if (b.dir) along(m, V3(b.dir[0] * k, b.dir[1], b.dir[2]));
+          else m.rotation.set(rx, ry * k, rz * k);
+        }
+      }
+    },
+    /** V9 named pivot (parts.shell ...) holding static blobs: o = { name, on, p, r, list, color, mirror }. */
+    group(o) {
+      const g = new T.Group();
+      g.name = o.name;
+      g.userData.anim = true;
+      g.position.set(...(o.p || [0, 0, 0]));
+      if (o.r) g.rotation.set(...o.r);
+      (o.on === 'head' ? headG : bodyG).add(g);
+      groups[o.name] = g;
+      EX.blobs({ host: g, list: o.list, color: o.color, mirror: o.mirror });
+    },
+    /** V9 tentacles radiating from a point: n arms, each a chain of squashed blobs curling down/out and back up at the tip. */
+    tentacles(o) {
+      const n = o.n ?? 6, segs = o.segs ?? 3, mat = tm(o.color || B.color);
+      const base = o.p || [0, 0.3, 0], r0 = o.r ?? 0.06, step = o.step ?? 0.11, a0 = o.from ?? 0, span = o.span ?? TAU;
+      for (let i = 0; i < n; i++) {
+        const a = a0 + (n === 1 ? 0 : i / (o.closed === false ? n - 1 : n)) * span;
+        const dir = V3(Math.sin(a) * (o.out ?? 0.7), -(o.down ?? 0.55), Math.cos(a) * (o.out ?? 0.7)).normalize();
+        const pos = V3(base[0] + Math.sin(a) * (o.ring ?? 0.12), base[1], base[2] + Math.cos(a) * (o.ring ?? 0.12));
+        for (let j = 0; j < segs; j++) {
+          const rr = r0 * (1 - j * 0.2);
+          put(bodyG, o.g || 'sphP', j === segs - 1 && o.tip ? tm(o.tip) : mat, rr, rr * (o.flat ?? 1), rr * 1.15, pos.x, pos.y, pos.z);
+          pos.addScaledVector(dir, step);
+          dir.y += o.curl ?? 0.3;                         // curls up
+          dir.x += Math.sin(a + 1.2) * (o.swirl ?? 0.12); dir.z += Math.cos(a + 1.2) * (o.swirl ?? 0.12);
+          dir.normalize();
+          if (pos.y < rr) pos.y = rr;
+        }
+      }
+    },
     comb(o) {
       const n = o.n ?? 3, s = hr * (o.s ?? 0.2), mat = tm(o.color || '#e8403a');
       for (let i = 0; i < n; i++) {
@@ -762,7 +873,7 @@ function assemble(T, spec, shiny, seed, grad) {
       const mat = tm(o.color || '#3a2420');
       for (const f of o.at || [-0.6, -0.3, 0, 0.3, 0.6]) {
         const z = f * B.d, k = Math.sqrt(Math.max(0.02, 1 - f * f));
-        put(bodyG, 'sphL', mat, B.w * k * 1.035, B.h * k * 1.035, B.d * (o.th ?? 0.06), 0, by + B.h * (o.dy ?? 0.04), z);
+        put(bodyG, o.g || 'sphL', mat, B.w * k * 1.035, B.h * k * 1.035, B.d * (o.th ?? 0.06), 0, by + B.h * (o.dy ?? 0.04), z);
       }
     },
     /** Sleepy smile: two tiny dark slivers forming a U below the nose. */
@@ -930,10 +1041,8 @@ function assemble(T, spec, shiny, seed, grad) {
     if (fn) fn(ex);
   }
 
-  // ---- finish: bounds, merge static parts, anchors ----
+  // ---- finish: merge static parts, bubble, anchors, bounds ----
   root.updateMatrixWorld(true);
-  const box = new T.Box3().setFromObject(root);
-  const size = box.getSize(V3());
   const S = spec.size ?? 1;
 
   // Bake colours into vertex colours and merge every static part into one mesh per animated group.
@@ -985,6 +1094,45 @@ function assemble(T, spec, shiny, seed, grad) {
   anchor.name = 'anchor';
   anchor.position.set(0, hry * 1.02, 0);
   headG.add(anchor);
+  if (spec.bubble) {
+    // V9: the swimmer floats in a translucent bubble that rests on the ground. `pitch` tips the nose up inside it; the bubble is fitted around
+    // the (tilted) content - radius = the farthest vertex from the content centre + a small pad, never below spec.bubble.r - and the content is
+    // re-centred so the bubble sits on the ground right under the root.
+    const measure = () => {
+      root.updateMatrixWorld(true);
+      const pts = [], p = V3();
+      const box = new T.Box3();
+      root.traverse(o => {
+        if (!o.isMesh) return;
+        const a = o.geometry.attributes.position;
+        for (let i = 0; i < a.count; i++) { p.fromBufferAttribute(a, i).applyMatrix4(o.matrixWorld); pts.push(p.x, p.y, p.z); box.expandByPoint(p); }
+      });
+      return { pts, c: box.getCenter(V3()) };
+    };
+    let m0 = measure();
+    if (spec.bubble.pitch) {
+      const pose = new T.Group();
+      pose.name = 'pose';
+      pose.position.copy(m0.c);
+      pose.rotation.x = -spec.bubble.pitch;
+      for (const c of [...bodyG.children]) { c.position.sub(m0.c); pose.add(c); }
+      bodyG.add(pose);
+      m0 = measure();
+    }
+    let R = 0;
+    for (let i = 0; i < m0.pts.length; i += 3) R = Math.max(R, Math.hypot(m0.pts[i] - m0.c.x, m0.pts[i + 1] - m0.c.y, m0.pts[i + 2] - m0.c.z));
+    const r = Math.max(spec.bubble.r || 0, R * 1.05 + 0.025);   // pad: babies get a 10 % bigger head
+    const shift = V3(-m0.c.x, r - m0.c.y, -m0.c.z);
+    const pose = bodyG.getObjectByName('pose');
+    if (pose) pose.position.add(shift); else for (const c of bodyG.children) c.position.add(shift);
+    const bub = new T.Mesh(geo(T, 'bubble'), bubbleMat(T));
+    bub.name = 'bubble';
+    bub.userData.keep = true;
+    bub.scale.setScalar(r);
+    bub.position.set(0, r, 0);
+    bub.renderOrder = 2;
+    bodyG.add(bub);
+  }
   if (S !== 1) {
     // Keep `body` free for B's squash: move the species scale onto an inner wrapper instead.
     const inner = new T.Group();
@@ -993,6 +1141,8 @@ function assemble(T, spec, shiny, seed, grad) {
     while (bodyG.children.length) inner.add(bodyG.children[0]);
     bodyG.add(inner);
   }
+  root.updateMatrixWorld(true);
+  const size = new T.Box3().setFromObject(root).getSize(V3());
   return { root, baseHeight: size.y * S, baseRadius: Math.max(size.x, size.z) * 0.5 * S, crownY: (hy + hry * 1.02) * S + (spec.crownLift || 0), crownLift: spec.crownLift || 0 };
 }
 

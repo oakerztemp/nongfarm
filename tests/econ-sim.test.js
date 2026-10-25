@@ -15,10 +15,11 @@ import { CROPS, getCrop } from '../js/data/crops.js';
 import { EGGS } from '../js/data/eggs.js';
 import { ITEMS, getItem } from '../js/data/items.js';
 import { DECOR } from '../js/data/decor.js';
+import { ACCESSORIES, shopAccessories, getAccessory } from '../js/data/accessories.js';
 import {
   tickFarm, plantSeed, waterPlot, assignPet, unassignPet, stationPet, unstationPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
   buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, barnUpgradeCost, barnUpgradeStatus, upgradeIncubator, incubatorUpgradePrice,
-  buildDecor, placeDecor, removeDecor, decorSpotList, decorBuildStatus, TIER_ENTRY_ITEMS, YARD_TIERS, yardTierOf,
+  buildDecor, placeDecor, removeDecor, decorSpotList, buyAccessory, decorBuildStatus, TIER_ENTRY_ITEMS, YARD_TIERS, yardTierOf,
   completeOrder, ensureOrders, nextMidnight, fertilize, harvestPlot, replantPlot, ZONES, effectivePower, plotTeam, slotPowerPreview,
 } from '../js/farm.js';
 
@@ -204,6 +205,17 @@ function buildDecorWhenRich(s, bot) {
   }
 }
 
+// V9 §1: accessories are a pure coin sink. The bot buys the cheapest one it does not own yet, only when it is rich
+// (coins >= 8x the price), never more than one per session and at most 2 copies of each.
+function buyAccessoryWhenRich(s, bot) {
+  const owned = id => (s.wardrobe && s.wardrobe[id]) || 0;
+  const want = shopAccessories().sort((a, b) => (owned(a.id) - owned(b.id)) || (a.price - b.price))
+    .find(a => owned(a.id) < 2 && s.player.coins >= a.price * 8);   // a collector, not a hoarder: 2 copies each
+  if (!want) return;
+  const before = s.player.coins;
+  if (buyAccessory(s, want.id).ok) { bot.accSpent += before - s.player.coins; bot.accBought++; }
+}
+
 const canWorkAfterRecall = p => p.stats.energy >= 20 && p.stats.hunger >= 15 && !p.sick;
 
 function session(s, bot, cadence) {
@@ -386,6 +398,7 @@ function session(s, bot, cadence) {
     break;
   }
   buildDecorWhenRich(s, bot);
+  if (!bot.noAcc) buyAccessoryWhenRich(s, bot);
 }
 
 function claimDaily(s) {
@@ -413,14 +426,14 @@ const PROFILES = {
 };
 
 // ── one full run ────────────────────────────────────────────────────────────
-function runSim(profile, seed) {
+function runSim(profile, seed, opts = {}) {
   const next = PROFILES[profile];
   return withFakeNow(START, clock => {
     const realRandom = Math.random;
     Math.random = mulberry32(seed);
     try {
       const s = createNewState();
-      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
+      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
       let last = START;
       let lastRowAt = START;
@@ -460,10 +473,16 @@ async function result(name) {
   return results[name];
 }
 
+const resultsOff = {};
+async function resultOff(name) {   // same bot + seed, accessory buying switched off
+  if (!resultsOff[name]) resultsOff[name] = await runSim(name, 20260302, { noAcc: true });
+  return resultsOff[name];
+}
+
 function table(name, r) {
   const share = k => Math.round((100 * r.by[k]) / Math.max(1, r.earned));
   const lines = [`[econ-sim] ${name}: ${Math.round(r.perHour)} coins/h earned on average (${r.ms} ms); income mix crops ${share('crop')}% / forage ${share('forage')}% / orders ${share('orders')}% / yard ${share('yard')}%; plot-helper assignments ${r.assigns}, full-team combos ${r.combos}`,
-    `yard tiers reached (virtual days) M ${r.tierDay.M} / L ${r.tierDay.L} / XL ${r.tierDay.XL}; ${r.bot.upgrades} upgrades, ${r.bot.gathers} gathering trips; decor built ${r.bot.decorBuilt}, placed ${r.bot.decorPlaced}, ${r.bot.decorSpent} coins`,
+    `yard tiers reached (virtual days) M ${r.tierDay.M} / L ${r.tierDay.L} / XL ${r.tierDay.XL}; ${r.bot.upgrades} upgrades, ${r.bot.gathers} gathering trips; decor built ${r.bot.decorBuilt}, placed ${r.bot.decorPlaced}, ${r.bot.decorSpent} coins; accessories bought ${r.bot.accBought} for ${r.bot.accSpent} coins`,
     'day  lvl  plots pets inc barn orders  coins/h(day)  yard%   coins'];
   for (const x of r.rows) {
     lines.push(`${String(x.day).padStart(3)}  ${String(x.level).padStart(3)}  ${String(x.plots).padStart(5)} ${String(x.pets).padStart(4)} ${String(x.inc).padStart(3)} ${String(x.barn).padStart(4)} ${String(x.orders).padStart(6)}  ${String(Math.round(x.perHour)).padStart(12)}  ${String(Math.round(100 * x.yardShare)).padStart(4)}%  ${String(x.coins).padStart(7)}`);
@@ -781,4 +800,101 @@ test('econ: every yard material is obtainable by the level a player reaches that
     }
   }
   for (const d of DECOR) for (const id of Object.keys(d.items)) assert(Number.isFinite(firstZoneLevel(id)), `${id} for ${d.id} drops nowhere`);
+});
+
+
+// ── V9 §1: accessories ──────────────────────────────────────────────────────
+test('econ: accessories are a coin sink the rich bot uses, and no accessory can be sold or bought as an item (no buy->sell loop)', async () => {
+  for (const name of ['3h', 'realistic']) {
+    const r = await result(name);
+    console.log(`[econ-sim] ${name}: accessories bought ${r.bot.accBought} for ${r.bot.accSpent} coins; wardrobe ${JSON.stringify(r.state.wardrobe)}`);
+    assert(r.bot.accSpent >= 0, 'sink never negative');
+  }
+  assertEq(ACCESSORIES.length, 10);
+  const s = createNewState();
+  s.player.coins = 99999;
+  for (const a of ACCESSORIES) {
+    assert(!getItem(a.id), a.id + ' is not an item');
+    assert(!sellItem(s, a.id, 1).ok && !buyItem(s, a.id, 1).ok, a.id + ' cannot go through buy/sell');
+  }
+  const before = s.player.coins;
+  for (const a of shopAccessories()) assert(buyAccessory(s, a.id).ok, 'buy ' + a.id);
+  assert(s.player.coins < before, 'buying costs coins');
+  assertEq(s.player.coins + shopAccessories().reduce((t, a) => t + a.price, 0), before, 'exact price paid, nothing back');
+});
+
+test('econ: expedition accessory drops (1% in a matching zone) change the expedition drop value by at most 2% (measured against the same trips with the drops switched off)', () => withFakeNow(START, clock => {
+  const realRandom = Math.random;
+  const trips = 20000;
+  const measure = (zone, seed) => {
+    let val = 0, drops = 0;
+    Math.random = mulberry32(seed);
+    for (let i = 0; i < trips; i++) {
+      const s = createNewState();
+      s.player.level = 20;
+      s.pets.push({ id: 'p', speciesId: 'hamster', nickname: 'p', shiny: false, personality: 'cheerful', stage: 2, xp: 0, stats: { hunger: 100, happy: 100, energy: 100, clean: 100 }, poop: 0, sick: false, zeroSince: null, zeroMs: 0, poopTimer: null, lastFedAt: 0, bond: 0, status: 'idle', task: null, bornAt: START, station: null });
+      clock.set(START);
+      assert(startExpedition(s, 'p', zone.id).ok, 'start');
+      clock.set(START + zone.durationMs + 1);
+      tickFarm(s, START + zone.durationMs + 1);
+      const ex = s.expeditions[0];
+      for (const [id, n] of Object.entries(ex.rewards)) {
+        if (getAccessory(id)) { drops += n; continue; }
+        val += n * (getItem(id).sell || 0);
+      }
+      assert(claimExpedition(s, ex.id).ok, 'claim');
+    }
+    return { val: val / trips, drops: drops / trips };
+  };
+  const lines = [];
+  try {
+    for (const z of ZONES) {
+      const seed = 777 + z.id.length;
+      const on = measure(z, seed);
+      const saved = ACCESSORIES.map(a => a.zone);
+      ACCESSORIES.forEach(a => { a.zone = null; });            // switch the drops off
+      const off = measure(z, seed);
+      ACCESSORIES.forEach((a, i) => { a.zone = saved[i]; });
+      const exp = ACCESSORIES.filter(a => a.zone === z.id).length;
+      const diff = Math.abs(on.val - off.val) / off.val;
+      lines.push(`${z.id}: drops ${(100 * on.drops).toFixed(2)}%/trip, loot ${on.val.toFixed(1)} vs ${off.val.toFixed(1)} coins/trip (${(100 * diff).toFixed(2)}% apart)`);
+      assertEq(off.drops, 0, z.id + ' drops nothing when switched off');
+      if (exp) assert(on.drops > 0.004 && on.drops < 0.02, `${z.id}: drop rate ${on.drops}`); else assertEq(on.drops, 0, z.id + ' has no accessory drops');
+      assert(diff <= 0.02, `${z.id}: drop value changed by ${(100 * diff).toFixed(2)}% (> 2%)`);
+      assert(off.val > 0, z.id + ' yields value');
+    }
+  } finally { Math.random = realRandom; }
+  console.log('[econ-sim] accessory drops vs none: ' + lines.join(' | '));
+}));
+
+test('econ: with accessory buying ON the bot really buys, income and the day-14 gate hold versus buying OFF, and the yard tiers stay within +-25% of the V6 baseline', async () => {
+  const out = [];
+  for (const name of ['3h', 'realistic']) {
+    const on = await result(name), off = await resultOff(name);
+    assert(on.bot.accBought >= 7 && on.bot.accSpent >= 5000, `${name}: the rich bot bought ${on.bot.accBought} accessories for ${on.bot.accSpent} coins`);
+    assertEq(off.bot.accBought, 0, name + ' OFF run buys nothing');
+    const d14 = r => r.rows.find(x => x.day === 14) || r.rows[r.rows.length - 1];
+    assert(d14(on).perHour <= 4500, `${name}: day-14 ${Math.round(d14(on).perHour)} coins/h with accessories`);
+    assert(on.perHour >= 0.92 * off.perHour && on.perHour <= 1.08 * off.perHour, `${name}: ${Math.round(on.perHour)} coins/h ON vs ${Math.round(off.perHour)} OFF`);
+    for (const tier of ['M', 'L', 'XL']) {
+      const base = V6_BASELINE_TIER_DAYS[name][tier], got = on.tierDay[tier];
+      assert(got != null && got >= base * (1 - TIER_TOLERANCE) && got <= base * (1 + TIER_TOLERANCE), `${name} (accessory buying ON): tier ${tier} on day ${got}, baseline ${base}`);
+    }
+    out.push(`${name}: ${on.bot.accBought} bought for ${on.bot.accSpent}; ${Math.round(on.perHour)} coins/h ON vs ${Math.round(off.perHour)} OFF; day-14 ${Math.round(d14(on).perHour)}/h; tiers M ${on.tierDay.M} L ${on.tierDay.L} XL ${on.tierDay.XL} (OFF ${off.tierDay.M}/${off.tierDay.L}/${off.tierDay.XL})`);
+  }
+  console.log('[econ-sim] accessory buying ON vs OFF: ' + out.join(' | '));
+  globalThis.__econAcc = out;
+});
+
+test('econ: accessories cannot be sold or bought as items (no buy->sell loop)', () => {
+  assertEq(ACCESSORIES.length, 10);
+  const s = createNewState();
+  s.player.coins = 99999;
+  for (const a of ACCESSORIES) {
+    assert(!getItem(a.id), a.id + ' is not an item');
+    assert(!sellItem(s, a.id, 1).ok && !buyItem(s, a.id, 1).ok, a.id + ' cannot go through buy/sell');
+  }
+  const before = s.player.coins;
+  for (const a of shopAccessories()) assert(buyAccessory(s, a.id).ok, 'buy ' + a.id);
+  assertEq(s.player.coins + shopAccessories().reduce((t, a) => t + a.price, 0), before, 'exact price paid, nothing back');
 });

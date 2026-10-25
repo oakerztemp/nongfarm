@@ -10,6 +10,7 @@ import {
 import * as storage from './storage.js';
 import { initAuth, signInWithGoogle, signOutUser, isFirebaseConfigured } from './auth.js';
 import { advance, MAX_OFFLINE_MS } from './tick.js';
+import { syncJournal, journalAway } from './journal.js';
 import { AWAY_MIN_MS, snapshotForAway, buildAwayDigest, setAwayDigest, takeAwayDigest } from './away.js';
 import { CROPS } from './data/crops.js';
 import { initQuestBar } from './ui/questBar.js';
@@ -57,7 +58,11 @@ function advanceTo(state, toMs) {
   const before = !greeted && toMs - state.lastTick >= AWAY_MIN_MS ? snapshotForAway(state) : null;
   const { gap, replayed } = advance(state, toMs);
   if (before) {
-    try { setAwayDigest(buildAwayDigest(before, state, Math.min(gap, MAX_OFFLINE_MS)), Math.min(gap, MAX_OFFLINE_MS)); } catch (e) { console.error('away digest failed', e); }
+    try {
+      const digest = buildAwayDigest(before, state, Math.min(gap, MAX_OFFLINE_MS));
+      setAwayDigest(digest, Math.min(gap, MAX_OFFLINE_MS));
+      journalAway(state, digest); // the diary keeps the highlights of the time away
+    } catch (e) { console.error('away digest failed', e); }
   }
   if (replayed && gap > WELCOME_BACK_MS) {
     notify(`ยินดีต้อนรับกลับ! ผ่านไป ${formatDuration(Math.min(gap, MAX_OFFLINE_MS))}`, 'info');
@@ -292,6 +297,7 @@ function isEditingInActiveView() {
 
 function onStateEvent(ev) {
   if (ev === 'change') {
+    try { syncJournal(getState()); } catch (e) { console.error('syncJournal failed', e); } // hatches + postcards of today -> diary (no emit: lines only)
     if (renderQueued) return;
     renderQueued = true;
     queueMicrotask(() => {
@@ -300,6 +306,7 @@ function onStateEvent(ev) {
       renderActive();
     });
   } else if (ev === 'tick') {
+    try { syncJournal(getState()); } catch (e) { console.error('syncJournal failed', e); }
     updateHeader();
     const t = now();
     const readyChanged = readySignature(getState()) !== lastReadySig || countdownFinished(lastTickAt, t);

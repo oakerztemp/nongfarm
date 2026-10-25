@@ -7,6 +7,7 @@ import { getSpecies } from './data/species.js';
 import { YARD_CAP_MS } from './pets.js';
 import { HUNGER_LOW } from './notify.js';
 import { friendMatching } from './state.js';
+import { birthdayInfo } from './birthday.js';
 
 export const AWAY_MIN_MS = 30 * 60 * 1000;
 export const AWAY_MAX_LINES = 5;
@@ -42,6 +43,7 @@ export function snapshotForAway(state) {
       hunger: num(p.stats && p.stats.hunger, 100), energy: num(p.stats && p.stats.energy, 100),
       hungry: num(p.stats && p.stats.hunger, 100) < HUNGER_LOW, sick: !!p.sick,
       giftFull: !!(g && num(g.ms) >= YARD_CAP_MS - 1000),
+      months: p.bornAt > 0 ? birthdayInfo(p, num(st.lastTick, Date.now())).months : 0, // v9: completed 30-day blocks
     };
   }
   const bf = {};
@@ -72,6 +74,7 @@ function asSnap(x) {
 
 // kind -> [priority, icon, templates]; {n} is the pet's name, {m} the friend's name, {k} a count, {c} coins. Three variants each.
 const T = {
+  birthday: [0.5, '🎂', ['{n} ครบ {k} เดือนแล้ว สุขสันต์วันเกิด!', 'ระหว่างที่เธอไม่อยู่ {n} ครบ {k} เดือนพอดี', 'วันเกิด {n} ครบ {k} เดือน! น้องๆ รอฉลองกับเธอ']],
   friend: [0, '🤝', ['{n} กับ {m} เป็นเพื่อนซี้กันแล้ว!', '{n} กับ {m} สนิทกันมาก เป็นเพื่อนซี้แล้ว', 'ระหว่างที่เธอไม่อยู่ {n} กับ {m} ตัวติดกันเลย']],
   sick: [1, '🤒', ['{n} ไม่ค่อยสบาย อยากให้เธอดูแลหน่อย', '{n} ตัวร้อนนิดหน่อย คิดถึงเธอด้วย', '{n} ซึมๆ ไป ช่วยดูหน่อยนะ']],
   nursery: [2, '👶', ['มีน้องใหม่ในเปล: {n}!', '{n} ฟักแล้ว นอนหลับปุ๋ยในเปล', 'ต้อนรับ {n} น้องใหม่ในเปลอนุบาล']],
@@ -88,7 +91,7 @@ const T = {
   wake: [12, '🌞', ['{n} ตื่นแล้ว บิดขี้เกียจ', '{n} ตื่นนอนมายืดเส้นยืดสาย', '{n} งัวเงียตื่นมารอเธอ']],
   sleep: [13, '😴', ['{n} หลับไปแล้ว ฝันดีนะ', '{n} ม้วนตัวหลับปุ๋ย', '{n} งีบไปเงียบๆ']],
 };
-const MAX_PER_KIND = { friend: 2, sick: 2, nursery: 2, trip: 2, tripwait: 1, postcard: 1, gifts: 1, giftfull: 1, hungry: 2, hungriest: 1, crop: 1, work: 2, napped: 1, wake: 1, sleep: 1 };
+const MAX_PER_KIND = { birthday: 2, friend: 2, sick: 2, nursery: 2, trip: 2, tripwait: 1, postcard: 1, gifts: 1, giftfull: 1, hungry: 2, hungriest: 1, crop: 1, work: 2, napped: 1, wake: 1, sleep: 1 };
 
 const fillT = (tpl, vars) => tpl.replace(/\{(\w)\}/g, (_, k) => (vars[k] ?? ''));
 
@@ -118,6 +121,7 @@ function buildUnsafe(before, after, awayMs) {
     if (!isObj(now_)) continue;
     if (now_.status !== 'sleeping' && !now_.hungry && (!hungriest || now_.hunger < hungriest.hunger)) hungriest = now_;
     if (!isObj(was)) continue;
+    if (now_.months > was.months && was.months >= 0) add('birthday', [id], { n: now_.name, k: now_.months });
     if (now_.sick && !was.sick) add('sick', [id], { n: now_.name });
     if (was.status === 'expedition' && now_.status !== 'expedition') add('trip', [id], { n: now_.name });
     if (now_.hungry && !was.hungry) add('hungry', [id], { n: now_.name });

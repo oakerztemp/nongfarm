@@ -17,19 +17,31 @@ import { getItem } from '../data/items.js';
 import {
   getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop,
   hatchReady, foodEffect, petGift, yardPreview, collectPetGift, collectYard, nurseryPets, NURSERY_SLOTS,
-  strokePet,
+  strokePet, wearOf, wearAccessory, takeOffAccessory,
 } from '../pets.js';
+import { birthdayInfo, claimBirthday } from '../birthday.js';
+import { journalEvent } from '../journal.js';
+import { bindWeather } from '../weather.js';
+import { savePhoto, downloadPhoto, sharePhoto as shareBlob, photoFilename } from '../album.js';
+import { getAccessory } from '../data/accessories.js';
 import { bestFriendMap, onBestFriend } from '../friends.js';
 import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, beginAction, advanceActor, angDiff,
   signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony,
   configureYard, yardProps, yardTierOf, DECOR_USE,
   favoriteSpot, createStroke, handStroke, tickStroke, strokeMelt, finishActorStroke, clearStrokeState, pickGiftLabels, GIFT_LABEL_MAX,
-  pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots } from '../petBehaviour.js';
+  pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots,
+  locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot } from '../petBehaviour.js';
 import { createWorld, mergeStaticParts } from '../world3d/engine.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
 
+/** 🎂 today is the pet's N-month birthday: { isToday, months } (js/birthday.js). */
+const bdayOf = pet => birthdayInfo(pet);
+const birthdayToday = pet => { const i = bdayOf(pet); return i.isToday ? i.months : 0; };
+const birthdayPending = pet => { const i = bdayOf(pet); return !!pet && i.isToday && pet.lastBirthdayGift !== i.months; };
+
 const MAX_NESTS = 6;
+const FLOAT_HOVER = 0.2;     // how high a bubble-floating water pet hovers
 const HOLD_AFTER_TAP = 8;    // seconds a patted pet stays put even without the sheet
 const SELECT_HOLD = 1e9;     // while the bottom sheet is open
 const INITIAL_ZOOM = 0.85;
@@ -61,6 +73,7 @@ export function mountBarn3d(host, ctx) {
     '<div class="b3-stage"></div>' +
     '<div class="b3-top"><span class="b3-sign" hidden></span><div class="b3-top-r">' +
       '<button type="button" class="b3-chip b3-top-chip" data-b3="collect-all" hidden></button>' +
+      '<button type="button" class="b3-photo-btn btn btn-sm" data-b3="photo" aria-label="ถ่ายรูป" title="ถ่ายรูปน้องๆ">📸</button>' +
       '<button type="button" class="b3-decor-btn btn btn-sm" data-b3="decor-mode" aria-pressed="false" hidden>🎀 ตกแต่ง</button>' +
       '<button type="button" class="b3-egg-btn btn btn-sm" data-b3="put-egg" hidden>🥚 ใส่ไข่</button></div></div>' +
     '<div class="b3-labels" aria-hidden="true"></div>' +
@@ -352,9 +365,11 @@ export function mountBarn3d(host, ctx) {
       pinned: false,
       deco: [], trail: null, selTag: null, hidden: !!opts.hidden, scripted: false, partBase: null, puffAt: 8 + Math.random() * 8, waveAt: 5 + Math.random() * 6, sparkleAt: 4 + Math.random() * 8,
       gift: null, decorId: null,
+      loco: locomotionOf(pet.speciesId), sideDir: hashId(pet.id + 'side') % 2 ? 1 : -1, speedMod: 1, wearObjs: [], wearSig: '', partyHat: false, bday: 0,
       squint: 0, stroke: null, strokeMelt: 0, strokeSide: hashId(pet.id) % 2 ? 1 : -1, strokePoint: null, strokeAt: 0, strokeEnd: null, popAt: 0.3, feedLook: null, greeting: false,
     };
     A.partBase = partBases(model.parts);
+    applyWear(A);
     if (opts.spawn) A.spawn = { t: 0, dur: opts.spawn.dur || 0.7, arc: opts.spawn.arc ?? 0.5, drop: opts.spawn.drop || 0, from: opts.spawn.from || null };
     if (A.hidden) holder.visible = false;
     world.addActor(pet.id, holder, { radius: Math.max(0.35, model.radius), height: Math.max(0.5, model.height), stroke: strokeDims(model, holder) });
@@ -371,6 +386,7 @@ export function mountBarn3d(host, ctx) {
     A.headBase = A.model.head ? A.model.head.rotation.clone() : null;
     A.sig = modelSig(pet);
     A.partBase = partBases(A.model.parts);
+    applyWear(A);
     world.addActor(A.id, A.holder, { radius: Math.max(0.35, A.model.radius), height: Math.max(0.5, A.model.height), stroke: strokeDims(A.model, A.holder) });
     if (A.bubble) { const e = A.bubbleEmoji; A.bubble = null; A.bubbleEmoji = ''; setBubble(A, e); }
     if (!A.hidden) decorate(A);
@@ -415,6 +431,7 @@ export function mountBarn3d(host, ctx) {
   function removeActorRec(A) {
     clearStrokeState(A);
     releaseDecor(A);
+    clearWear(A);
     const ge = giftEls.get(A.id);
     if (ge) { ge.remove(); giftEls.delete(A.id); }
     undecorate(A);
@@ -450,17 +467,20 @@ export function mountBarn3d(host, ctx) {
     if (A.greeting) { begin(A, { type: 'lookAtCamera', dur: 2 }); return; }
     if (A.hold > 0) { begin(A, { type: 'idle', dur: Math.min(1.5, A.hold), reason: 'hold' }); return; }
     const others = [];
-    let awake = 0, napping = 0;
+    let awake = 0, napping = 0, joiners = 0;
     for (const o of actors.values()) {
       if (o.hidden) continue;
       if (o.pet.status !== 'sleeping') { awake++; if (o !== A && o.act.nap) napping++; }
+      if (o !== A && o.act.type === 'party' && !o.act.host) joiners++;
       if (o === A) continue;
       const tg = (o.act.type === 'wander' || o.act.type === 'approach' || o.act.type === 'walkTo') ? o.act.target : null;
       others.push({ id: o.id, x: o.x, z: o.z, tx: tg ? tg.x : undefined, tz: tg ? tg.z : undefined });
     }
     const napRatio = awake > 0 ? napping / awake : 0;
     const fr = friendOf(A);
-    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio, decor: decorList(), size: A.model.radius, friend: fr, friendId: fr && fr.id }, Math.random, now());
+    const act = nextAction(A.pet, { x: A.x, z: A.z, others, last: A.last, napRatio, decor: decorList(), size: A.model.radius, friend: fr, friendId: fr && fr.id,
+      party: party && (A.id === party.petId || A.act.type === 'party' || joiners < 6) ? { x: party.x, z: party.z, hostId: party.petId } : null,
+      rain: rainSt ? { puddles: rainSt.puddles, shelters: rainSt.shelters } : null }, Math.random, now());
     if (act.type === 'approach') {
       const o = actors.get(act.otherId);
       if (o) act.target = clampToYard(o.x + (A.x - o.x) * 0.3, o.z + (A.z - o.z) * 0.3);
@@ -479,7 +499,7 @@ export function mountBarn3d(host, ctx) {
     const pet = A.pet;
     const P = A.pose || (A.pose = {});
     P.hop = 0; P.sy = 1; P.sx = 1; P.roll = 0; P.pitch = 0; P.yaw = 0; P.shake = 0;
-    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0;
+    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0; P.shell = 0; P.fluke = 0; P.lift = 0;
     if (A.hold > 0 && A.hold < SELECT_HOLD / 2) A.hold = Math.max(0, A.hold - dt);
     if (A.hidden) { if (A.stroke || A.strokeMelt) clearStrokeState(A); return P; } // a newborn waiting for its hatch ceremony
 
@@ -500,13 +520,14 @@ export function mountBarn3d(host, ctx) {
     const act = A.act;
     const sleeping = pet.status === 'sleeping';
     const held = A.hold > 0 && !A.greeting && act.type !== 'eat' && act.type !== 'no' && act.type !== 'hop' && act.type !== 'play' && act.type !== 'bathe';
-    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type) || act.type === 'decor')) begin(A, { type: 'idle', dur: 1 });
+    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type) || act.type === 'decor' || act.type === 'party' || act.type === 'puddle' || act.type === 'shelter')) begin(A, { type: 'idle', dur: 1 });
     if (!TRAIL_TYPES.has(A.act.type) && A.trail) stopTrail(A);
     A.scripted = FLY_TYPES.has(A.act.type) || RUN_TYPES.has(A.act.type);
 
     let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) || (A.act.type === 'decor' && A.act.use === 'nap' && A.act.arrived) || (A.act.type === 'buddy' && A.act.mode === 'nap' && A.act.arrived) ? 1 : 0;
     if (!sleeping && pet.sick) curlTarget = 0;
     // timers, walking and "action finished -> decide()" live in petBehaviour.advanceActor (unit-tested)
+    A.speedMod = A.loco.kind === 'hop' ? Math.max(0.08, 3 * Math.max(0, Math.sin(A.phase * 0.7))) : 1;   // a frog moves in hops
     const moving = stroking ? false : advanceActor(A, dt, decide).moving;
 
     if (stroking) strokePose(A, P, t, dt);
@@ -542,6 +563,9 @@ export function mountBarn3d(host, ctx) {
         break;
       }
       case 'decor': decorPose(A, P, t, dt); break;
+      case 'party': partyPose(A, P, t, dt); break;
+      case 'puddle': puddlePose(A, P, t, dt); break;
+      case 'shelter': shelterPose(A, P, t, dt); break;
       case 'sick': {
         P.shake = Math.sin(t * 52) * 0.016;
         P.pitch = 0.1; P.sy = 0.95;
@@ -615,6 +639,25 @@ export function mountBarn3d(host, ctx) {
       P.sy = 0.93 + 0.13 * w; P.sx = 1.05 - 0.07 * w;
       P.roll = Math.sin(A.phase) * 0.07;
       P.tail = Math.sin(A.phase * 2) * 0.45;
+    }
+    // water critters (CONTRACT_V9 §6): sideways scuttle, frog hops, slow turtle, bubble float, shells that open and close
+    const lo = A.loco;
+    if (lo.kind !== 'walk') {
+      if (moving) {
+        if (lo.kind === 'hop') { const s = Math.max(0, Math.sin(A.phase * 0.7)); P.hop = s * 0.3; P.sy = 0.9 + 0.22 * s; P.sx = 1.06 - 0.08 * s; P.roll = 0; }
+        else if (lo.kind === 'side') { P.hop = Math.abs(Math.sin(A.phase * 2)) * 0.04; P.roll = Math.sin(A.phase * 2) * 0.05; P.sy = 1; P.sx = 1; }
+        else if (lo.kind === 'slow') { P.hop = Math.abs(Math.sin(A.phase)) * 0.025; P.sy = 0.99; P.roll = Math.sin(A.phase) * 0.04; }
+      }
+      if (lo.kind === 'float') { // fully aquatic: hovers and bobs inside its bubble, never squashes or hops on the ground
+        P.lift = FLOAT_HOVER + Math.sin(t * 1.7 + A.seed) * 0.07 + P.hop * 0.4; P.hop = 0;
+        P.sy = 1 + (P.sy - 1) * 0.3; P.sx = 1 + (P.sx - 1) * 0.3;
+        P.roll = Math.sin(t * 1.2 + A.seed) * 0.07 + P.roll * 0.3;
+        P.pitch = (moving ? -0.12 : Math.sin(t * 0.8 + A.seed) * 0.05) + P.pitch * 0.4;
+        P.tail = Math.sin(t * 3 + A.seed) * 0.35;
+      } else if (lo.kind === 'shell') {
+        P.shell = smooth(Math.sin(t * 0.45 + A.seed) * 1.7 + 0.4);
+        if (!(A.model.parts && (A.model.parts.lid || A.model.parts.shell))) P.sy *= 0.97 + 0.04 * P.shell;
+      }
     }
     // part flavour (only has an effect on models that own the part)
     P.tailTip = moving ? Math.sin(A.phase * 2.2) * 0.55 : Math.sin(t * 1.6 + A.seed) * 0.16;
@@ -788,6 +831,7 @@ export function mountBarn3d(host, ctx) {
     m.body.scale.set(P.sx * s, P.sy * s, P.sx * s);
     m.body.rotation.set(P.pitch, P.yaw, P.roll);
     m.body.position.x = P.shake;
+    m.body.position.y = P.lift || 0;   // bubble swimmers float by lifting the body (root, shadow and picking stay on the ground)
     if (m.head && A.headBase) m.head.rotation.set(A.headBase.x + P.hPitch, A.headBase.y + P.hYaw, A.headBase.z + P.hRoll);
     applyPartPose(m.parts, A.partBase, P); // wings, tail, tailTip, trunk, mane (each optional)
     // blink / closed eyes
@@ -820,8 +864,8 @@ export function mountBarn3d(host, ctx) {
         if (d >= min) continue;
         const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
         const push = d < hard ? (hard - d) : (soft - d) * Math.min(1, dt * 1.6);
-        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || ((a.act.type === 'decor' || a.act.type === 'buddy') && a.act.arrived);
-        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || ((b.act.type === 'decor' || b.act.type === 'buddy') && b.act.arrived);
+        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || ((a.act.type === 'decor' || a.act.type === 'buddy' || a.act.type === 'shelter' || (a.act.type === 'party' && a.act.host)) && a.act.arrived);
+        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || ((b.act.type === 'decor' || b.act.type === 'buddy' || b.act.type === 'shelter' || (b.act.type === 'party' && b.act.host)) && b.act.arrived);
         if (aFixed && bFixed) continue;
         const wa = aFixed ? 0 : bFixed ? 1 : 0.5, wb = bFixed ? 0 : aFixed ? 1 : 0.5;
         a.x -= nx * push * wa; a.z -= nz * push * wa;
@@ -899,7 +943,7 @@ export function mountBarn3d(host, ctx) {
       }
       n.ready = !!slot && t >= slot.readyAt;
       n.slot = slot || null;
-      const wantBubble = n.ready && !ceremonyOwnsNest(n.i);
+      const wantBubble = !photo && n.ready && !ceremonyOwnsNest(n.i);
       if (wantBubble) fx.bubble(world, n.id, '🐣'); else fx.clearBubble(world, n.id);
     }
   }
@@ -1037,6 +1081,7 @@ export function mountBarn3d(host, ctx) {
       }
       A.pet = pet;
       if (A.hidden) continue;
+      if (A.wearSig !== wearSigOf(A)) applyWear(A);
       // a new poop while in the yard -> squat animation
       const np = pet.poop | 0;
       if (np > A.poop && synced && pet.status !== 'sleeping' && !A.spawn && A.hold <= 0 && !A.feeding) begin(A, { type: 'poop', dur: 1.1 });
@@ -1050,7 +1095,7 @@ export function mountBarn3d(host, ctx) {
       // thought bubbles
       const b = bubbleFor(pet);
       const napping = !!A.act.nap && (A.act.type === 'sleep' || !!A.act.arrived);
-      setBubble(A, b ? b.emoji : napping ? '💤' : '');
+      setBubble(A, photo ? '' : b ? b.emoji : napping ? '💤' : birthdayPending(pet) ? '🎂' : '');   // no thought bubbles in a photo
     }
     for (const A of [...actors.values()]) {
       if (!present.has(A.id)) {
@@ -1063,6 +1108,7 @@ export function mountBarn3d(host, ctx) {
     if (wantTier !== yardTier) applyYardTier(wantTier, synced);
     if (lanternMat) lanternMat.color.set(hourIsNight() ? 0xffd966 : 0xfff1c9);
     syncFriends(state);
+    syncBirthday(state);
     syncPoops(state);
     syncNests(state);
     syncCribs(state);
@@ -1137,11 +1183,13 @@ export function mountBarn3d(host, ctx) {
 
   // ── interactions ───────────────────────────────────────────────────────
   function onTapGround() {
+    if (photo) return;
     if (selected || selectedCrib) closeSheet();
   }
 
   function onTap(id) {
-    if (disposed) return;
+    if (disposed || photo) return;
+    if (id.startsWith('cake-')) { onPetTap(id.slice(5)); return; }
     if (id === 'bowl') { notify('🍽️ ถาดอาหาร — เลือกอาหารจากถาดด้านล่าง แล้วแตะน้องที่อยากให้กิน', 'info'); return; }
     if (id.startsWith('nest-')) { onNestTap(Number(id.slice(5))); return; }
     if (id.startsWith('poop-')) { onPoopTap(id); return; }
@@ -1180,6 +1228,7 @@ export function mountBarn3d(host, ctx) {
     if (!pet || !A) return;
     if (armedFood) { feedWith(petId, armedFood); return; }
     if (hatching && hatching.petId === petId && hatching.phase === 'burst') { revealId = petId; hatching.revealShown = true; endHatch(); }
+    if (!A.hidden && birthdayPending(pet)) celebrateBirthday(petId);   // the first tap of the day on a birthday pet
     // a pet holding a gift: the tap collects it (hop + coins fly to the counter); the sheet opens on the next tap
     if (!A.hidden && petGift(state, petId).has) {
       const g = ctx.run(s => collectPetGift(s, petId));
@@ -2040,7 +2089,7 @@ export function mountBarn3d(host, ctx) {
   // ── ลูบหัว / เกาคาง (CONTRACT_V8 §1): a stroke session = one pat ─────────────────────────────────────────
   /** Engine stroke events: start / move / end on a pet. The reward comes once, at the end (strokePet -> patPet once). */
   function onStroke(ev) {
-    if (disposed || !isOn) return;
+    if (disposed || !isOn || photo) return;
     const A = actors.get(ev.id);
     if (!A) return;
     if (A.hidden || A.spawn) { // a stroke that ends on a pet that hid / is spawning must not stay behind (stuck melt pose)
@@ -2072,6 +2121,7 @@ export function mountBarn3d(host, ctx) {
 
   function finishStroke(A, durationMs) {
     if (!A.stroke) return;
+    const melted = !!A.stroke.meltPop;
     const res = finishActorStroke(A, durationMs, { canReward: alive(A.id) });
     A.strokeEnd = { melt: A.strokeMelt };
     A.hold = Math.max(A.hold, 2);
@@ -2082,7 +2132,8 @@ export function mountBarn3d(host, ctx) {
     const h = headPos(A);
     if (r.rewarded) fx.heart(world, h); else fxo('emojiPop', world, h, '😌');
     if (r.favorite) { fxo('sparkle', world, A.id); fxo('emojiPop', world, { x: h.x + 0.3, y: h.y + 0.1, z: h.z }, '💞'); }
-    if (r.discovered) { fx.confetti(world, h, 18); fxo('sparkleAt', world, h); }
+    if (r.discovered) { fx.confetti(world, h, 18); fxo('sparkleAt', world, h); journal('favSpot', A.id, { spot: region }); }
+    if (melted) journal('melt', A.id);
     syncGifts(getState());
   }
 
@@ -2256,7 +2307,7 @@ export function mountBarn3d(host, ctx) {
   const speechT = speechEl.querySelector('.b3-speech-t');
   const speechHint = speechEl.querySelector('small');
 
-  function greetBusy() { return !!hatching || !!selectedCrib || !!selected || decorMode || !!revealId || !synced; }
+  function greetBusy() { return !!photo || !!party || !!hatching || !!selectedCrib || !!selected || decorMode || !!revealId || !synced; }
 
   function maybeGreet(dt) {
     if (greet || greetDigest === null || disposed || !isOn) return;
@@ -2377,6 +2428,688 @@ export function mountBarn3d(host, ctx) {
     if (at(act, 'n1', 0.2)) { popAt(A, '💕', 0, 0.1); if (F.pet.status !== 'sleeping' && F.act.type === 'idle') react(F, 'hop', { dur: 0.7, hops: 1, height: 0.25 }); }
   }
 
+  // ── แต่งตัวน้อง 👗 (CONTRACT_V9 §1): small merged meshes on the head / neck, emoji sprites on billboards ────────────────
+  const accMat = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: world.toonGradient }));
+  const accGeos = new Map();
+  const accSprites = new Map();
+  const PARTY_HAT = { id: 'party', slot: 'head', emoji: '🎉' };
+
+  /** Parts of one accessory in "head radius = 1" units: the head centre is the origin, the top of the head is y ~ 1, +z is the face. */
+  function accParts(id, keep) {
+    const cyl = (rt, rb, h, seg = 14) => keep(new THREE.CylinderGeometry(rt, rb, h, seg));
+    const sph = (r, ws = 10, hs = 8) => keep(new THREE.SphereGeometry(r, ws, hs));
+    const box = (w, h, d) => keep(new THREE.BoxGeometry(w, h, d));
+    const cone = (r, h, seg = 12) => keep(new THREE.ConeGeometry(r, h, seg));
+    const tor = (R, t, ts = 6, rs = 22) => keep(new THREE.TorusGeometry(R, t, ts, rs));
+    const flat = [Math.PI / 2, 0, 0];
+    const ring = (n, R, y, size, cols) => Array.from({ length: n }, (_, i) => {
+      const a = (i / n) * TAU;
+      return { geometry: sph(size, 8, 6), color: cols[i % cols.length], position: [Math.cos(a) * R, y, Math.sin(a) * R] };
+    });
+    switch (id) {
+      case 'acc_bow': return [
+        { geometry: sph(0.3), color: '#ff7eb3', position: [0.07, 0.99, 0.28], scale: [1.2, 0.8, 0.7], rotation: [0, 0, 0.4] },
+        { geometry: sph(0.3), color: '#ff7eb3', position: [0.7, 0.86, 0.22], scale: [1.2, 0.8, 0.7], rotation: [0, 0, -0.4] },
+        { geometry: sph(0.15), color: '#ff4f93', position: [0.38, 0.95, 0.27] },
+      ];
+      case 'acc_cap': return [
+        { geometry: keep(new THREE.SphereGeometry(1.07, 14, 8, 0, TAU, 0, Math.PI * 0.4)), color: '#e8453c', position: [0, 0.02, 0] },
+        { geometry: cyl(0.6, 0.6, 0.06, 14), color: '#c93a32', position: [0, 0.5, 0.85], scale: [1, 1, 0.8] },
+        { geometry: sph(0.09), color: '#ffd84a', position: [0, 1.08, 0] },
+      ];
+      case 'acc_widehat': return [
+        { geometry: cyl(1.55, 1.55, 0.06, 20), color: '#ecc977', position: [0, 0.85, 0] },
+        { geometry: cyl(0.62, 0.7, 0.5, 14), color: '#ecc977', position: [0, 1.12, 0] },
+        { geometry: cyl(0.71, 0.71, 0.12, 14), color: '#ff7a8a', position: [0, 0.97, 0] },
+        { geometry: sph(0.13), color: '#ffffff', position: [0.5, 1.0, 0.5] },
+      ];
+      case 'acc_tophat': return [
+        { geometry: cyl(0.95, 0.95, 0.07, 18), color: '#2b2b36', position: [0, 0.88, 0] },
+        { geometry: cyl(0.62, 0.62, 0.95, 16), color: '#2b2b36', position: [0, 1.35, 0] },
+        { geometry: cyl(0.64, 0.64, 0.17, 16), color: '#e0384f', position: [0, 1.02, 0] },
+      ];
+      case 'acc_crown': return [
+        { geometry: tor(0.86, 0.05), color: '#4fae56', position: [0, 0.55, 0], rotation: flat },
+        ...ring(9, 0.88, 0.58, 0.19, ['#ff6b8b', '#ffd84a', '#ffffff', '#b79bff']),
+      ];
+      case 'acc_grad': return [
+        { geometry: cyl(0.6, 0.68, 0.3, 14), color: '#2b2b3a', position: [0, 0.93, 0] },
+        { geometry: box(1.75, 0.07, 1.75), color: '#3a3a4c', position: [0, 1.13, 0], rotation: [0, 0.785, 0] },
+        { geometry: sph(0.09), color: '#ffd84a', position: [0, 1.2, 0] },
+        { geometry: cyl(0.02, 0.02, 0.62, 5), color: '#ffd84a', position: [0.55, 0.9, 0.05], rotation: [0, 0, 0.12] },
+        { geometry: sph(0.1), color: '#ffd84a', position: [0.6, 0.55, 0.05], scale: [1, 1.5, 1] },
+      ];
+      case 'acc_bell': return [
+        { geometry: tor(0.74, 0.07), color: '#e0384f', position: [0, -0.9, 0], rotation: flat },
+        { geometry: sph(0.18), color: '#ffcf3d', position: [0, -1.06, 0.74] },
+        { geometry: cyl(0.04, 0.04, 0.06, 6), color: '#8a6a10', position: [0, -1.16, 0.88] },
+      ];
+      case 'acc_scarf': return [
+        { geometry: tor(0.78, 0.18, 7, 20), color: '#e0384f', position: [0, -0.88, 0], rotation: flat },
+        { geometry: tor(0.78, 0.045, 5, 20), color: '#ffffff', position: [0, -0.8, 0], rotation: flat },
+        { geometry: box(0.3, 0.8, 0.14), color: '#e0384f', position: [0.46, -1.32, 0.66], rotation: [0, 0, -0.18] },
+        { geometry: box(0.3, 0.12, 0.15), color: '#ffffff', position: [0.43, -1.45, 0.67], rotation: [0, 0, -0.18] },
+      ];
+      case 'acc_lei': return [
+        { geometry: tor(0.8, 0.02, 4, 22), color: '#4fae56', position: [0, -0.85, 0], rotation: flat },
+        ...ring(11, 0.82, -0.85, 0.15, ['#ff8fb1', '#ffd84a', '#ffffff', '#ff8fb1']),
+      ];
+      case 'acc_butterfly': return [
+        { geometry: sph(0.33), color: '#6ea8ff', position: [-0.44, -0.86, 0.76], scale: [1.1, 0.85, 0.25], rotation: [0, 0, 0.3] },
+        { geometry: sph(0.33), color: '#6ea8ff', position: [0.44, -0.86, 0.76], scale: [1.1, 0.85, 0.25], rotation: [0, 0, -0.3] },
+        { geometry: sph(0.22), color: '#a98bff', position: [-0.34, -1.1, 0.75], scale: [1, 0.9, 0.25] },
+        { geometry: sph(0.22), color: '#a98bff', position: [0.34, -1.1, 0.75], scale: [1, 0.9, 0.25] },
+        { geometry: sph(0.11), color: '#3b3b55', position: [0, -0.92, 0.82], scale: [0.8, 1.4, 0.8] },
+      ];
+      case 'party': return [
+        { geometry: cone(0.54, 1.1), color: '#ff5fa2', position: [0, 1.5, 0] },
+        { geometry: tor(0.4, 0.05), color: '#ffffff', position: [0, 1.3, 0], rotation: flat },
+        { geometry: tor(0.2, 0.05), color: '#4d96ff', position: [0, 1.7, 0], rotation: flat },
+        { geometry: sph(0.15), color: '#ffd84a', position: [0, 2.07, 0] },
+      ];
+      default: return null;
+    }
+  }
+
+  function accGeometry(id) {
+    if (accGeos.has(id)) return accGeos.get(id);
+    const tmp = [];
+    const parts = accParts(id, o => { tmp.push(o); return o; });
+    const g = parts ? own(mergeStaticParts(THREE, parts)) : null;
+    for (const o of tmp) o.dispose();
+    accGeos.set(id, g);
+    return g;
+  }
+
+  function accSpriteMat(emoji) {
+    let m = accSprites.get(emoji);
+    if (!m) { m = own(new THREE.SpriteMaterial({ map: fx.emojiTexture(world, emoji), transparent: true, depthWrite: false })); accSprites.set(emoji, m); }
+    return m;
+  }
+
+  function clearWear(A) {
+    for (const o of A.wearObjs) if (o.parent) o.parent.remove(o);
+    A.wearObjs.length = 0;
+    A.wearSig = '';
+  }
+  const wearSigOf = A => { const w = wearOf(A.pet); return `${w.head || ''}|${w.neck || ''}|${A.partyHat ? 1 : 0}|${A.model.stage}`; };
+
+  /** One mesh (<= 1 draw call) per worn item on a model, one emoji sprite on a billboard. A party hat replaces the head item for the day. */
+  function applyWear(A) {
+    clearWear(A);
+    const m = A.model, w = wearOf(A.pet);
+    const items = [A.partyHat ? PARTY_HAT : getAccessory(w.head), getAccessory(w.neck)];
+    for (const acc of items) {
+      if (!acc) continue;
+      let obj = null;
+      if (m.kind === 'model' && m.head && m.anchor) {
+        const geo = accGeometry(acc.id);
+        if (!geo) continue;
+        obj = new THREE.Mesh(geo, accMat);
+        const r = Math.max(0.12, m.anchor.position.y / 1.02);
+        obj.scale.setScalar(r);
+        // a stage-3 pet already wears the 👑 sprite: head items sit on top of it
+        if (acc.slot === 'head' && m.stage === 3) obj.position.y = 0.4 + (m.crownLift || 0);
+        if (acc.id === 'party') obj.rotation.z = -0.14;
+        m.head.add(obj);
+      } else {
+        obj = new THREE.Sprite(accSpriteMat(acc.emoji));
+        obj.renderOrder = 6;
+        if (acc.slot === 'head') { obj.center.set(0.5, 0); obj.scale.set(0.4, 0.4, 1); obj.position.set(0.06, m.stage === 3 ? m.baseHeight + 0.4 : m.baseHeight - 0.14, 0); }
+        else { obj.center.set(0.5, 0.5); obj.scale.set(0.32, 0.32, 1); obj.position.set(0, 0.2, 0); }
+        (m.kind === 'billboard' ? m.body : m.root).add(obj);
+      }
+      obj.userData.noPick = true;
+      A.wearObjs.push(obj);
+    }
+    A.wearSig = wearSigOf(A);
+  }
+
+  /** Writes a diary line through A's js/journal.js (deduped per pet and day there); a failing call never breaks the barn. */
+  function journal(kind, petId, ctx2 = {}) {
+    try { update(s2 => { journalEvent(s2, kind, { petId, ...ctx2 }); }); } catch (err) { console.warn('journal failed', err); }
+  }
+
+  function wearPick(petId, accId) {
+    if (!alive(petId)) return;
+    const A = actors.get(petId);
+    const r = ctx.run(s => wearAccessory(s, petId, accId));
+    if (!r || !r.ok || !A) return;
+    A.hold = Math.max(A.hold, 4);
+    fxo('sparkle', world, A.id);
+    popAt(A, r.acc.emoji, 0, 0.25);
+    react(A, 'hop', { dur: 0.9, hops: 2, height: 0.34 });
+    if (r.firstToday) later(500, () => alive(petId) && fx.heart(world, headPos(A)));
+    journal('firstWear', petId, { acc: r.acc.nameTh });
+  }
+
+  function wearOff(petId, slot) {
+    if (!alive(petId)) return;
+    const A = actors.get(petId);
+    const r = ctx.run(s => takeOffAccessory(s, petId, slot));
+    if (r && r.ok && A) { A.hold = Math.max(A.hold, 3); popAt(A, '😌', 0, 0.2); }
+  }
+
+  // ── อากาศ 🌦️ (CONTRACT_V9 §4): puddle jumping, sheltering, the sun (and a rainbow) after the rain ──────────────────────
+  let wxKind = 'sunny';           // sunny | cloudy | rain (A's weather.js; hourly, deterministic)
+  let wxCheckAt = 0;
+  let wxDebug = false;            // ?debug=1 hook: always show the rainbow
+  let rainSt = null;              // while it rains: { puddles: [{x,z}], shelters: [{id,x,z,busy}] }
+  let rainbow = null;             // { mesh, mat, geo, t }
+
+  function startRain(w) {
+    const eng = Array.isArray(world.puddles) && world.puddles.length ? world.puddles : null;   // the engine draws the decals
+    const puddles = (eng || puddleSpots('rain:' + Math.floor(now() / 3600000), 4)).map(p => ({ x: p.x, z: p.z }));
+    const spots = shelterSpots(yardProps(yardTier));
+    rainSt = { puddles: puddles.slice(0, 6), shelters: spots, kind: w.kind };
+  }
+
+  function stopRain() {
+    const had = rainSt;
+    rainSt = null;
+    for (const A of actors.values()) if (A.act.type === 'puddle' || A.act.type === 'shelter') begin(A, { type: 'hop', dur: 1.2, hops: 2, height: 0.3 });
+    if (!had || !synced) return;
+    // the sun comes out: sparkles over the yard, a few happy pets, and (about every other time) a rainbow
+    world.boost(5000);
+    for (let k = 0; k < 7; k++) later(150 + k * 260, () => fxo('sparkleAt', world, { x: Math.cos(k * 2.3) * 3.2, y: 0.5 + (k % 3) * 0.5, z: Math.sin(k * 2.3) * 2.6 }));
+    const some = [...actors.values()].filter(A => !A.hidden && A.pet.status !== 'sleeping').slice(0, 3);
+    some.forEach((A, k) => later(300 + k * 350, () => alive(A.id) && popAt(A, '☀️', 0, 0.1)));
+    if (hashId('rainbow:' + Math.floor(now() / 3600000)) % 100 < 55 || wxDebug) later(1200, spawnRainbow);
+  }
+
+  function spawnRainbow() {
+    if (rainbow || disposed) return;
+    const cols = ['#ff5a5a', '#ff9f43', '#ffd84a', '#5bd36b', '#4d96ff', '#9b6bff'];
+    const tmp = [];
+    const parts = cols.map((c, i) => { const g = new THREE.TorusGeometry(4.6 - i * 0.2, 0.1, 5, 40, Math.PI); tmp.push(g); return { geometry: g, color: c }; });
+    const geo = mergeStaticParts(THREE, parts);
+    for (const g of tmp) g.dispose();
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.noPick = true;
+    mesh.position.set(-5.4, -0.2, 0.6);   // the camera never sees the far sky: the arc stands over the open grass at the side of the yard
+    mesh.rotation.y = Math.PI / 2;
+    mesh.scale.setScalar(0.8);
+    world.scene.add(mesh);
+    rainbow = { mesh, mat, geo, t: 0 };
+  }
+
+  function stepRainbow(dt) {
+    if (!rainbow) return;
+    const R = rainbow;
+    R.t += dt;
+    R.mat.opacity = 0.75 * Math.min(1, R.t / 2.5) * Math.min(1, Math.max(0, (24 - R.t) / 4));
+    if (R.t > 24) clearRainbow();
+  }
+
+  function clearRainbow() {
+    if (!rainbow) return;
+    world.scene.remove(rainbow.mesh); rainbow.geo.dispose(); rainbow.mat.dispose(); rainbow = null;
+  }
+
+  /** Called by bindWeather (js/weather.js) when the sky changes kind: rain starts / stops. */
+  function onWeather(w) {
+    const wasRain = isRainKind(wxKind);
+    wxKind = w.kind;
+    if (isRainKind(w.kind)) { if (!rainSt) startRain(w); } else if (wasRain) stopRain();
+  }
+
+  function stepWeather(dt) {
+    wxCheckAt -= dt;
+    if (wxCheckAt > 0 || !rainSt) return;
+    wxCheckAt = 2;
+    const taken = new Set(); // shelter spots a pet already stands on are taken
+    for (const A of actors.values()) if (A.act.type === 'shelter' && A.act.shelterId) taken.add(A.act.shelterId);
+    for (const sp of rainSt.shelters) sp.busy = taken.has(sp.id);
+  }
+
+  /** Pose of a pet jumping in a puddle (act.arrived) and of one waiting out the rain under cover. */
+  function puddlePose(A, P, t, dt) {
+    const act = A.act;
+    if (!act.arrived) return;
+    A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 3);
+    const per = 0.62, u = (act.t % per) / per, h = Math.sin(u * Math.PI);
+    P.hop = h * 0.4; P.sy = 1 + 0.15 * h - (1 - h) ** 6 * 0.17; P.sx = 1 - 0.06 * h + (1 - h) ** 6 * 0.1; P.tail = Math.sin(t * 20) * 0.5;
+    const n = Math.floor(act.t / per);
+    if (n !== act.jumps && u < 0.25) { act.jumps = n; fxo('emojiPop', world, { x: A.x + (n % 2 ? 0.28 : -0.28), y: 0.18, z: A.z + 0.1 }, '💦'); }
+  }
+
+  function shelterPose(A, P, t, dt) {
+    const act = A.act;
+    if (!act.arrived) return;
+    A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 2.5);
+    P.sy = 0.95 + Math.sin(t * 1.6 + A.seed) * 0.015; P.hPitch = 0.12; P.hRoll = Math.sin(t * 1.1 + A.seed) * 0.1;
+    if (at(act, 'sh1', 0.6)) popAt(A, '☔', 0.15, 0.1);
+    if (act.t > 5 && at(act, 'sh2', 5)) popAt(A, '😌', 0, 0.1);
+  }
+
+  // ── วันเกิดน้อง 🎂 (CONTRACT_V9 §5): party hat, a cake, the others gather and hop, confetti ─────────────────────────────
+  const cakeMat = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: world.toonGradient }));
+  let cakeGeo = null;
+  let party = null;                  // { petId, months, x, z, group, born, confettiAt }
+  function cakeGeometry() {
+    if (cakeGeo) return cakeGeo;
+    const tmp = [];
+    const cyl = (rt, rb, h, seg = 18) => { const g = new THREE.CylinderGeometry(rt, rb, h, seg); tmp.push(g); return g; };
+    const sph = r => { const g = new THREE.SphereGeometry(r, 8, 6); tmp.push(g); return g; };
+    const parts = [
+      { geometry: cyl(0.7, 0.72, 0.05), color: '#f4f0ea', position: [0, 0.025, 0] },
+      { geometry: cyl(0.5, 0.5, 0.3), color: '#ffb3c7', position: [0, 0.2, 0] },
+      { geometry: cyl(0.51, 0.51, 0.06), color: '#ffffff', position: [0, 0.33, 0] },
+      { geometry: cyl(0.34, 0.34, 0.24), color: '#fff2d6', position: [0, 0.48, 0] },
+      { geometry: cyl(0.35, 0.35, 0.05), color: '#ff8fb1', position: [0, 0.62, 0] },
+      { geometry: cyl(0.03, 0.03, 0.22, 6), color: '#4d96ff', position: [0, 0.76, 0] },
+      { geometry: sph(0.06), color: '#ffcf3d', position: [0, 0.91, 0], scale: [0.8, 1.4, 0.8] },
+      ...[0, 1, 2, 3, 4].map(i => ({ geometry: sph(0.06), color: '#e0384f', position: [Math.cos((i / 5) * TAU) * 0.22, 0.67, Math.sin((i / 5) * TAU) * 0.22] })),
+      ...[0, 1, 2, 3, 4, 5, 6].map(i => ({ geometry: sph(0.05), color: i % 2 ? '#ffd84a' : '#ffffff', position: [Math.cos((i / 7) * TAU) * 0.5, 0.31, Math.sin((i / 7) * TAU) * 0.5] })),
+    ];
+    cakeGeo = own(mergeStaticParts(THREE, parts));
+    for (const g of tmp) g.dispose();
+    return cakeGeo;
+  }
+
+  /** A free patch near the middle of the yard for the cake (clear of props, the bowl and the nest row). */
+  function partySpotFor() {
+    const cands = [[-0.7, 1.2], [0.9, 1.0], [-1.4, 0.2], [0.2, 2.0], [-2.0, 1.6], [1.6, -0.2]];
+    for (const [x, z] of cands) {
+      if (z < YARD.backLimit + 0.8 || dist2(x, z, YARD.bowl.x, YARD.bowl.z) < 1.4) continue;
+      if (YARD.obstacles.some(o => dist2(x, z, o.x, o.z) < o.r + 1.2)) continue;
+      return clampToYard(x, z);
+    }
+    return { x: -0.7, z: 1.2 };
+  }
+
+  function removeParty() {
+    if (!party) return;
+    world.removeActor(`cake-${party.petId}`);
+    const A = actors.get(party.petId);
+    if (A) { A.partyHat = false; A.bday = 0; if (A.wearSig !== wearSigOf(A)) applyWear(A); }
+    for (const o of actors.values()) if (o.act.type === 'party') begin(o, { type: 'idle', dur: 0.6 });
+    party = null;
+  }
+
+  function syncBirthday(state) {
+    let host = null;
+    for (const pet of state.pets) {
+      const A = actors.get(pet.id);
+      if (!A || A.hidden || isBusyStatus(pet.status) || !birthdayToday(pet)) continue;
+      if (!host || (birthdayPending(pet) && !birthdayPending(host.pet))) host = A;
+    }
+    if (party && (!host || host.id !== party.petId)) removeParty();
+    if (!host) return;
+    host.bday = birthdayToday(host.pet);
+    if (!party) {
+      const at = partySpotFor();
+      const group = new THREE.Group();
+      group.add(new THREE.Mesh(cakeGeometry(), cakeMat));
+      group.position.set(at.x, 0, at.z);
+      group.scale.setScalar(synced ? 0.01 : 1);
+      world.addActor(`cake-${host.id}`, group, { radius: 0.6, height: 0.9, shadowScale: 0.9, stroke: false });
+      party = { petId: host.id, months: host.bday, x: at.x, z: at.z, group, born: synced ? 0 : 1, confettiAt: 3 };
+      if (synced) { fx.confetti(world, { x: at.x, y: 0.9, z: at.z }, 30); fxo('sparkleAt', world, { x: at.x, y: 0.7, z: at.z }); world.boost(3000); }
+    }
+    host.partyHat = true;
+    if (host.wearSig !== wearSigOf(host)) applyWear(host);
+  }
+
+  function stepParty(dt) {
+    if (!party) return;
+    if (party.born < 1) { party.born = Math.min(1, party.born + dt / 0.6); party.group.scale.setScalar(Math.max(0.01, ease.outBack(party.born))); }
+    party.confettiAt -= dt;
+    if (party.confettiAt < 0) {
+      party.confettiAt = 7 + Math.random() * 3;
+      if (!lowTier()) fx.confetti(world, { x: party.x, y: 1.1, z: party.z }, 14);
+      fxo('emojiPop', world, { x: party.x, y: 1.25, z: party.z }, '🎶');
+    }
+  }
+
+  /** Pose at the party: the birthday pet bounces beside its cake, the guests hop around it. */
+  function partyPose(A, P, t, dt) {
+    const act = A.act;
+    if (!act.arrived || !party) return;
+    const host = !!act.host;
+    A.heading += angDiff(A.heading, host ? faceCam(A) : Math.atan2(party.x - A.x, party.z - A.z)) * Math.min(1, dt * 5);
+    const per = host ? 0.7 : 0.9, u = ((act.t + A.seed) % per) / per, h = Math.sin(u * Math.PI);
+    P.hop = h * (host ? 0.38 : 0.3); P.sy = 1 + 0.14 * h - (1 - h) ** 6 * 0.14; P.sx = 1 - 0.06 * h + (1 - h) ** 6 * 0.08;
+    P.tail = Math.sin(t * 18) * 0.6; P.wing = Math.sin(t * 14) * 0.4;
+    if (at(act, 'p1', 0.4 + (A.seed % 1) * 0.6)) popAt(A, host ? '🥳' : (hashId(A.id) % 2 ? '🎉' : '🎈'), 0.2, 0.1);
+    if (host && act.t > 2.5 && at(act, 'p2', 2.5)) fx.confetti(world, headPos(A), 10);
+  }
+
+  /** The birthday gift: the first tap that day (CONTRACT_V9 §5). */
+  function celebrateBirthday(petId) {
+    const A = actors.get(petId);
+    const r = ctx.run(s2 => claimBirthday(s2, petId));   // +1 bond via addBond, a diary line and the toast live in js/birthday.js
+    if (!r || !r.ok || !A) return;
+    const p = party ? { x: party.x, y: 1.0, z: party.z } : headPos(A);
+    fx.confetti(world, p, 46);
+    fxo('sparkleAt', world, p);
+    fx.heart(world, headPos(A));
+    world.boost(3500);
+    for (const o of actors.values()) if (o.act.type === 'party' && o.act.arrived && o.id !== petId) react(o, 'hop', { dur: 1.1, hops: 2, height: 0.34 });
+  }
+
+  // ── โหมดถ่ายรูป 📸 (CONTRACT_V9 §2): hide the UI, free camera, shutter, then a frame + up to 3 stickers ────────────────────
+  const PHOTO_FRAMES = [
+    { id: 'polaroid', icon: '🖼️', name: 'โพลารอยด์' },
+    { id: 'hearts', icon: '💗', name: 'หัวใจ' },
+    { id: 'flowers', icon: '🌸', name: 'ดอกไม้' },
+    { id: 'film', icon: '🎞️', name: 'ฟิล์ม' },
+    { id: 'stars', icon: '⭐', name: 'ดาว' },
+  ];
+  const PHOTO_STICKERS = ['💖', '✨', '🌸', '⭐', '🎀', '🐾', '🌈', '😋'];
+  const MAX_STICKERS = 3;
+  const EMOJI_FONT = '"Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif';
+  let photo = null;                 // null | { phase: 'aim' | 'edit', frame, stickers: [{ e, x, y }], img, w, h, petIds }
+  const photoEl = document.createElement('div');
+  photoEl.className = 'b3-photo';
+  photoEl.hidden = true;
+  host.appendChild(photoEl);
+  let photoRO = null;
+
+  const farmNameNow = () => (getState().player && getState().player.farmName) || 'ฟาร์มของฉัน';
+  const dateTextNow = () => { try { return new Date(now()).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }); } catch { return todayStr(); } };
+  const todayStr = () => new Date(now()).toISOString().slice(0, 10);
+
+  function enterPhoto() {
+    if (photo || hatching) return;
+    if (selected || selectedCrib) closeSheet();
+    armedFood = null;
+    decorMode = false;
+    decorBtn.classList.remove('is-on');
+    photo = { phase: 'aim', frame: 0, stickers: [], img: null, w: 0, h: 0, petIds: [] };
+    host.classList.add('is-photo');
+    hidePhotoBubbles();
+    renderPhoto();
+  }
+
+  function leavePhoto() {
+    if (!photo) return;
+    photo = null;
+    host.classList.remove('is-photo');
+    photoEl.hidden = true;
+    photoEl.innerHTML = '';
+    if (photoRO) { photoRO.disconnect(); photoRO = null; }
+    for (const c of cribs.values()) if (!c.hidden) fx.bubble(world, c.id, '💤');
+    sync(getState());   // thought bubbles, nest bubbles and gift labels come back
+    refreshUi();
+  }
+
+  /** Photos stay clean: need / nest / crib bubbles are 3D sprites, so they are removed while photo mode is open. */
+  function hidePhotoBubbles() {
+    for (const A of actors.values()) setBubble(A, '');
+    for (const n of nests) fx.clearBubble(world, n.id);
+    for (const c of cribs.values()) fx.clearBubble(world, c.id);
+  }
+
+  function renderPhoto() {
+    if (!photo) return;
+    photoEl.hidden = false;
+    if (photo.phase === 'aim') {
+      photoEl.className = 'b3-photo is-aim';
+      photoEl.innerHTML = '<p class="b3-ph-tip">📸 ลากเพื่อหมุนมุมกล้อง · บีบหรือเลื่อนล้อเพื่อซูม</p>' +
+        '<div class="b3-ph-bar"><button type="button" class="b3-ph-x" data-b3="photo-close" aria-label="ปิดโหมดถ่ายรูป">✕</button>' +
+        '<button type="button" class="b3-ph-shutter" data-b3="photo-shot" aria-label="ถ่ายรูป"><span></span></button><span class="b3-ph-spacer"></span></div>';
+      return;
+    }
+    photoEl.className = 'b3-photo is-edit';
+    const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+    photoEl.innerHTML =
+      '<div class="b3-ph-stage"><div class="b3-ph-wrap"><canvas class="b3-ph-cv"></canvas><div class="b3-ph-stk"></div></div></div>' +
+      '<div class="b3-ph-tools">' +
+        `<div class="b3-ph-row" role="group" aria-label="กรอบรูป">${PHOTO_FRAMES.map((f, i) =>
+          `<button type="button" class="b3-ph-chip${i === photo.frame ? ' is-on' : ''}" data-b3="ph-frame" data-i="${i}" aria-pressed="${i === photo.frame}"><span>${f.icon}</span><small>${f.name}</small></button>`).join('')}</div>` +
+        `<div class="b3-ph-row b3-ph-stickers" role="group" aria-label="สติกเกอร์ (สูงสุด ${MAX_STICKERS})">${PHOTO_STICKERS.map(e => `<button type="button" class="b3-ph-stk-btn" data-b3="ph-sticker" data-e="${e}" aria-label="เพิ่มสติกเกอร์ ${e}">${e}</button>`).join('')}</div>` +
+        '<p class="b3-ph-hint">ลากสติกเกอร์ไปวาง · แตะสติกเกอร์เพื่อเอาออก</p>' +
+        '<div class="b3-ph-row b3-ph-acts">' +
+          '<button type="button" class="btn btn-sm btn-primary" data-b3="ph-save">💾 เก็บลงอัลบั้ม</button>' +
+          '<button type="button" class="btn btn-sm" data-b3="ph-download">⬇️ ดาวน์โหลด</button>' +
+          (canShare ? '<button type="button" class="btn btn-sm" data-b3="ph-share">📤 แชร์</button>' : '') +
+          '<button type="button" class="btn btn-sm btn-ghost" data-b3="ph-retake">🔁 ถ่ายใหม่</button>' +
+          '<button type="button" class="btn btn-sm btn-ghost" data-b3="photo-close" aria-label="ปิด">✕</button></div></div>';
+    paintPhoto();
+    fitPhoto();
+    if (typeof ResizeObserver === 'function' && !photoRO) { photoRO = new ResizeObserver(() => fitPhoto()); photoRO.observe(photoEl); }
+  }
+
+  /** Sizes the preview to the room left above the tools (keeps the photo's aspect). */
+  function fitPhoto() {
+    if (!photo || photo.phase !== 'edit') return;
+    const stageBox = photoEl.querySelector('.b3-ph-stage');
+    const wrap = photoEl.querySelector('.b3-ph-wrap');
+    if (!stageBox || !wrap || !photo.w) return;
+    const bw = stageBox.clientWidth - 8, bh = stageBox.clientHeight - 8;
+    if (bw <= 0 || bh <= 0) return;
+    const k = Math.min(bw / photo.w, bh / photo.h);
+    wrap.style.width = Math.floor(photo.w * k) + 'px';
+    wrap.style.height = Math.floor(photo.h * k) + 'px';
+    wrap.style.setProperty('--sw', Math.floor(Math.min(photo.w, photo.h) * k) + 'px');
+  }
+
+  function paintPhoto() {
+    if (!photo || photo.phase !== 'edit') return;
+    const cv = photoEl.querySelector('.b3-ph-cv');
+    if (!cv) return;
+    cv.width = photo.w; cv.height = photo.h;
+    drawFrameOnto(cv.getContext('2d'), photo.img, photo.w, photo.h, photo.frame);
+    const box = photoEl.querySelector('.b3-ph-stk');
+    box.innerHTML = '';
+    photo.stickers.forEach((s, i) => {
+      const el = document.createElement('span');
+      el.className = 'b3-sticker';
+      el.textContent = s.e;
+      el.dataset.i = String(i);
+      el.style.left = (s.x * 100).toFixed(2) + '%';
+      el.style.top = (s.y * 100).toFixed(2) + '%';
+      box.appendChild(el);
+    });
+  }
+
+  /** Paints photo + frame + farm name + date; stickers are drawn by the caller (they are DOM while editing). */
+  function drawFrameOnto(c2, img, w, h, frameIdx) {
+    c2.clearRect(0, 0, w, h);
+    c2.drawImage(img, 0, 0, w, h);
+    const u = Math.min(w, h) / 100;
+    const f = PHOTO_FRAMES[frameIdx] || PHOTO_FRAMES[0];
+    const name = farmNameNow(), date = dateTextNow();
+    const emoji = (txt, x, y, size) => { c2.font = `${size}px ${EMOJI_FONT}`; c2.textAlign = 'center'; c2.textBaseline = 'middle'; c2.fillText(txt, x, y); };
+    const text = (txt, x, y, size, color, weight = 'bold') => {
+      c2.font = `${weight} ${size}px "Prompt","Segoe UI",sans-serif`; c2.textAlign = 'center'; c2.textBaseline = 'middle';
+      c2.fillStyle = color; c2.fillText(txt, x, y);
+    };
+    const pill = (cx, cy, pw, ph, fill, stroke) => {
+      c2.beginPath();
+      const r = ph / 2;
+      c2.moveTo(cx - pw / 2 + r, cy - ph / 2); c2.arcTo(cx + pw / 2, cy - ph / 2, cx + pw / 2, cy + ph / 2, r); c2.arcTo(cx + pw / 2, cy + ph / 2, cx - pw / 2, cy + ph / 2, r);
+      c2.arcTo(cx - pw / 2, cy + ph / 2, cx - pw / 2, cy - ph / 2, r); c2.arcTo(cx - pw / 2, cy - ph / 2, cx + pw / 2, cy - ph / 2, r); c2.closePath();
+      c2.fillStyle = fill; c2.fill();
+      if (stroke) { c2.lineWidth = u * 0.5; c2.strokeStyle = stroke; c2.stroke(); }
+    };
+    const caption = (cy, fill, ink, stroke) => {
+      c2.font = `bold ${u * 4.2}px "Prompt","Segoe UI",sans-serif`;
+      const tw = Math.min(w * 0.9, Math.max(c2.measureText(name).width + u * 9, u * 30));
+      pill(w / 2, cy, tw, u * 10.4, fill, stroke);
+      let size = u * 4.2;
+      c2.font = `bold ${size}px "Prompt","Segoe UI",sans-serif`;
+      while (c2.measureText(name).width > tw - u * 6 && size > u * 2) { size -= u * 0.3; c2.font = `bold ${size}px "Prompt","Segoe UI",sans-serif`; }
+      text(name, w / 2, cy - u * 1.5, size, ink);
+      text(date, w / 2, cy + u * 2.8, u * 2.6, ink, 'normal');
+    };
+    c2.save();
+    switch (f.id) {
+      case 'polaroid': {
+        const b = u * 4.2, bb = u * 15;
+        c2.fillStyle = '#fffdf6';
+        c2.fillRect(0, 0, w, b); c2.fillRect(0, 0, b, h); c2.fillRect(w - b, 0, b, h); c2.fillRect(0, h - bb, w, bb);
+        c2.strokeStyle = 'rgba(90,70,54,.25)'; c2.lineWidth = u * 0.35; c2.strokeRect(b, b, w - 2 * b, h - b - bb);
+        text(name, w / 2, h - bb * 0.62, Math.min(u * 5, (w - 2 * b) / Math.max(6, name.length) * 1.5), '#5a4636');
+        text(`${date} 🐾`, w / 2, h - bb * 0.26, u * 3, '#8d7a66', 'normal');
+        break;
+      }
+      case 'hearts': {
+        const b = u * 5.5;
+        c2.fillStyle = '#ffc7da';
+        c2.fillRect(0, 0, w, b); c2.fillRect(0, h - b, w, b); c2.fillRect(0, 0, b, h); c2.fillRect(w - b, 0, b, h);
+        c2.strokeStyle = '#ffffff'; c2.lineWidth = u * 0.8; c2.strokeRect(b, b, w - 2 * b, h - 2 * b);
+        const step = u * 9;
+        for (let x = step / 2; x < w; x += step) { emoji('💗', x, b / 2, u * 4); emoji('💗', x, h - b / 2, u * 4); }
+        for (let y = step / 2 + b; y < h - b; y += step) { emoji('💗', b / 2, y, u * 4); emoji('💗', w - b / 2, y, u * 4); }
+        caption(h - b - u * 8, '#fff6f9', '#c2476f', '#ff9fbd');
+        break;
+      }
+      case 'flowers': {
+        const b = u * 6;
+        c2.fillStyle = '#dff3cf';
+        c2.fillRect(0, 0, w, b); c2.fillRect(0, h - b, w, b); c2.fillRect(0, 0, b, h); c2.fillRect(w - b, 0, b, h);
+        c2.strokeStyle = '#7bbf6a'; c2.lineWidth = u * 0.6; c2.strokeRect(b, b, w - 2 * b, h - 2 * b);
+        const step = u * 8, fl = ['🌸', '🌼', '🌷'];
+        let i = 0;
+        for (let x = step / 2; x < w; x += step, i++) { emoji(fl[i % 3], x, b / 2, u * 4.6); emoji(fl[(i + 1) % 3], x, h - b / 2, u * 4.6); }
+        for (let y = step / 2 + b, j = 0; y < h - b; y += step, j++) { emoji(fl[j % 3], b / 2, y, u * 4.6); emoji(fl[(j + 2) % 3], w - b / 2, y, u * 4.6); }
+        caption(h - b - u * 8, '#fffef2', '#3f7d36', '#9ccf8a');
+        break;
+      }
+      case 'film': {
+        const bar = u * 9;
+        c2.fillStyle = '#16161c';
+        c2.fillRect(0, 0, w, bar); c2.fillRect(0, h - bar, w, bar);
+        c2.fillRect(0, 0, u * 2.2, h); c2.fillRect(w - u * 2.2, 0, u * 2.2, h);
+        c2.fillStyle = '#f0ead8';
+        const step = u * 6.4;
+        for (let x = step / 2; x < w - u * 3; x += step) {
+          c2.fillRect(x - u * 1.2, u * 2.6, u * 2.4, u * 3.2);
+          c2.fillRect(x - u * 1.2, h - bar + u * 3.2, u * 2.4, u * 3.2);
+        }
+        text(`${name} · ${date}`, w / 2, h - bar - u * 3.2, Math.min(u * 3.4, w / Math.max(10, name.length + date.length) * 1.6), '#fff3c4');
+        break;
+      }
+      default: { // stars
+        const g = c2.createLinearGradient(0, 0, w, h);
+        g.addColorStop(0, '#2c2f7a'); g.addColorStop(1, '#7a3fa3');
+        const b = u * 5.5;
+        c2.fillStyle = g;
+        c2.fillRect(0, 0, w, b); c2.fillRect(0, h - b, w, b); c2.fillRect(0, 0, b, h); c2.fillRect(w - b, 0, b, h);
+        c2.strokeStyle = '#ffd84a'; c2.lineWidth = u * 0.6; c2.strokeRect(b, b, w - 2 * b, h - 2 * b);
+        const step = u * 10, st = ['✨', '⭐', '✨'];
+        let i = 0;
+        for (let x = step / 2; x < w; x += step, i++) { emoji(st[i % 3], x, b / 2, u * 3.8); emoji(st[(i + 1) % 3], x, h - b / 2, u * 3.8); }
+        for (let y = step / 2 + b, j = 0; y < h - b; y += step, j++) { emoji(st[j % 3], b / 2, y, u * 3.8); emoji(st[(j + 1) % 3], w - b / 2, y, u * 3.8); }
+        caption(h - b - u * 8, '#fff9d8', '#3b2f7a', '#ffd84a');
+      }
+    }
+    c2.restore();
+  }
+
+  /** The finished picture: photo + frame + stickers at the snapshot's resolution. */
+  function composePhoto() {
+    const cv = document.createElement('canvas');
+    cv.width = photo.w; cv.height = photo.h;
+    const c2 = cv.getContext('2d');
+    drawFrameOnto(c2, photo.img, photo.w, photo.h, photo.frame);
+    const size = Math.min(photo.w, photo.h) * 0.2;
+    c2.font = `${size}px ${EMOJI_FONT}`; c2.textAlign = 'center'; c2.textBaseline = 'middle';
+    for (const s of photo.stickers) c2.fillText(s.e, s.x * photo.w, s.y * photo.h);
+    return cv;
+  }
+
+  async function takeShot() {
+    const W = stage.clientWidth || 360, H = stage.clientHeight || 480;
+    const k = 960 / Math.max(W, H);
+    const width = Math.max(240, Math.round(W * k)), height = Math.max(240, Math.round(H * k));
+    if (typeof world.snapshot === 'function') return world.snapshot({ width, height, hideUi: true });
+    world.renderer.render(world.scene, world.camera);          // fallback: the canvas as it is, right after a render
+    return world.canvas.toDataURL('image/jpeg', 0.9);
+  }
+
+  const loadImage = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image failed')); im.src = src; });
+
+  async function shutter() {
+    if (!photo || photo.phase !== 'aim' || photo.busy) return;
+    photo.busy = true;
+    const flash = document.createElement('div');
+    flash.className = 'b3-flash';
+    host.appendChild(flash);
+    later(420, () => flash.remove());
+    try {
+      const url = await takeShot();
+      const img = await loadImage(url);
+      if (!photo || disposed) return;
+      photo.img = img; photo.w = img.naturalWidth || img.width; photo.h = img.naturalHeight || img.height;
+      photo.petIds = [];
+      for (const A of actors.values()) {
+        if (A.hidden) continue;
+        const p = world.worldToScreen({ x: A.x, y: A.model.height * 0.5, z: A.z });
+        if (p.visible && p.x > 0 && p.y > 0 && p.x < stage.clientWidth && p.y < stage.clientHeight) photo.petIds.push(A.id);
+      }
+      photo.phase = 'edit';
+      photo.busy = false;
+      renderPhoto();
+    } catch (err) {
+      console.warn('photo failed', err);
+      if (photo) photo.busy = false;
+      notify('ถ่ายรูปไม่สำเร็จ ลองใหม่อีกครั้งนะ', 'warn');
+    }
+  }
+
+  const photoFileName = () => photoFilename({ at: now() });
+
+  async function savePhotoToAlbum() {
+    if (!photo || photo.phase !== 'edit' || photo.saving) return;   // a double tap saves once
+    photo.saving = true;
+    const saveBtn = photoEl.querySelector('[data-b3="ph-save"]');
+    if (saveBtn) saveBtn.disabled = true;
+    const url = composePhoto().toDataURL('image/jpeg', 0.86);
+    const ids = photo.petIds.slice(0, 12);
+    const res = await savePhoto(url, { petIds: ids, frame: photo.frame });   // IndexedDB; falls back to a download by itself
+    if (res && res.stored) notify('📸 เก็บรูปลงอัลบั้มแล้ว — ดูได้ที่ 🖼️ อัลบั้ม', 'success');
+    else if (res && res.ok) notify('เก็บในอัลบั้มไม่ได้ เลยโหลดรูปเป็นไฟล์ให้แทนนะ 📥', 'info');
+    else notify('เก็บรูปไม่สำเร็จ ลองใหม่อีกครั้งนะ', 'warn');
+    if (res && res.ok) journal('photo', ids[0] || undefined);
+    leavePhoto();
+  }
+
+  async function sharePhoto() {
+    if (!photo || photo.phase !== 'edit' || typeof navigator.share !== 'function') return;
+    const url = composePhoto().toDataURL('image/jpeg', 0.86);
+    try {
+      const blob = await (await fetch(url)).blob();
+      const text = `${farmNameNow()} — รูปน้องๆ จาก NongFarm 🐾`;
+      if (!(await shareBlob(blob, text))) await navigator.share({ title: farmNameNow(), text });
+    } catch (err) { if (err && err.name !== 'AbortError') console.warn('share failed', err); }
+  }
+
+  // sticker dragging: pointer events on the sticker layer (tap without moving = remove)
+  let stk = null;
+  photoEl.addEventListener('pointerdown', ev => {
+    const el = ev.target.closest && ev.target.closest('.b3-sticker');
+    if (!el || !photo) return;
+    const wrap = photoEl.querySelector('.b3-ph-wrap');
+    if (!wrap) return;
+    ev.preventDefault();
+    try { el.setPointerCapture(ev.pointerId); } catch { /* not capturable */ }
+    stk = { el, i: Number(el.dataset.i), id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, moved: false, wrap };
+  });
+  photoEl.addEventListener('pointermove', ev => {
+    if (!stk || ev.pointerId !== stk.id || !photo) return;
+    if (!stk.moved && Math.hypot(ev.clientX - stk.x0, ev.clientY - stk.y0) < 6) return;
+    stk.moved = true;
+    const r = stk.wrap.getBoundingClientRect();
+    const s = photo.stickers[stk.i];
+    if (!s || !r.width) return;
+    s.x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+    s.y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+    stk.el.style.left = (s.x * 100).toFixed(2) + '%';
+    stk.el.style.top = (s.y * 100).toFixed(2) + '%';
+  });
+  const stkEnd = ev => {
+    if (!stk || ev.pointerId !== stk.id) return;
+    const was = stk;
+    stk = null;
+    if (!was.moved && photo && ev.type === 'pointerup') { photo.stickers.splice(was.i, 1); paintPhoto(); }
+  };
+  photoEl.addEventListener('pointerup', stkEnd);
+  photoEl.addEventListener('pointercancel', stkEnd);
+
   // ── DOM events ─────────────────────────────────────────────────────────
   const handlers = {
     close: () => closeSheet(),
@@ -2387,6 +3120,24 @@ export function mountBarn3d(host, ctx) {
       closeSheet();
       feedWith(petId, btn.dataset.itemId);
     },
+    wear: btn => { if (btn.dataset.petId) { sheetMode = 'wear'; refreshUi(); } },
+    'wear-pick': btn => wearPick(btn.dataset.petId, btn.dataset.accId),
+    'wear-off': btn => wearOff(btn.dataset.petId, btn.dataset.slot),
+    photo: () => enterPhoto(),
+    'photo-close': () => leavePhoto(),
+    'photo-shot': () => { shutter(); },
+    'ph-frame': btn => { if (photo) { photo.frame = Number(btn.dataset.i) || 0; renderPhoto(); } },
+    'ph-sticker': btn => {
+      if (!photo) return;
+      if (photo.stickers.length >= MAX_STICKERS) { notify(`ใส่สติกเกอร์ได้สูงสุด ${MAX_STICKERS} ชิ้นนะ`, 'info'); return; }
+      const n = photo.stickers.length;
+      photo.stickers.push({ e: btn.dataset.e, x: 0.3 + n * 0.2, y: 0.28 + (n % 2) * 0.14 });
+      paintPhoto();
+    },
+    'ph-save': () => { savePhotoToAlbum(); },
+    'ph-download': () => { if (photo && photo.phase === 'edit') downloadPhoto(composePhoto().toDataURL('image/jpeg', 0.9), photoFileName()); },
+    'ph-share': () => { sharePhoto(); },
+    'ph-retake': () => { if (photo) { photo.phase = 'aim'; photo.stickers = []; photo.img = null; renderPhoto(); } },
     'greet-next': () => advanceGreet(),
     'greet-skip': () => endGreet(),
     'tray-food': btn => {
@@ -2513,6 +3264,9 @@ export function mountBarn3d(host, ctx) {
         if ((A.pet.shiny || epic) && A.pet.status !== 'sleeping' && !lowTier()) fxo('sparkle', world, A.id);
       }
     }
+    stepWeather(dt);
+    stepRainbow(dt);
+    stepParty(dt);
     animateNests(t, dt);
     animateCribs(t, dt);
     stepDecor(dt, t);
@@ -2542,7 +3296,9 @@ export function mountBarn3d(host, ctx) {
 
   buildYardProps(yardTier);
   sync(getState());
-  if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), stroke: (id, phase, region, point, ms) => onStroke({ id, phase, region, point: point || { x: 0, y: 0.5, z: 0 }, durationMs: ms }), greet: d => { greetDigest = d; greetWait = 0; }, kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); } };
+  const unWeather = bindWeather(world, { onChange: onWeather });   // real-hour weather (js/weather.js); ?weather=rain forces it
+  if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), stroke: (id, phase, region, point, ms) => onStroke({ id, phase, region, point: point || { x: 0, y: 0.5, z: 0 }, durationMs: ms }), greet: d => { greetDigest = d; greetWait = 0; }, kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); },
+    weather: k => { wxDebug = true; world.setWeather(k, 1); onWeather({ kind: k, intensity: 1 }); }, photo: () => enterPhoto(), info: () => ({ party, rainSt, wxKind, photo, stats: world.getStats() }), applyWear: id => applyWear(actors.get(id)) };
 
   return {
     setActive(on) {
@@ -2579,6 +3335,9 @@ export function mountBarn3d(host, ctx) {
       try { world.dispose(); } catch (e) { console.error(e); }
       for (const o of owned) { try { o.dispose(); } catch { /* already disposed */ } }
       if (lanternMat) lanternMat.dispose();
+      unWeather();
+      clearRainbow();
+      if (photoRO) photoRO.disconnect();
       for (const el of flyCoins) el.remove();
       host.innerHTML = '';
     },

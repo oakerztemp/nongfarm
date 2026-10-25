@@ -1,7 +1,7 @@
 // Core/platform tests: state, migration (v1 fixtures), util, quests, storage merge (mock Firestore).
 import { test, assert, assertEq, withFakeNow, freshState } from './harness.js';
 import {
-  STATE_VERSION, NURSERY_SLOTS, POSTCARDS_MAX, FRIEND_PAIRS_MAX, FRIENDS_MET_MAX, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
+  STATE_VERSION, JOURNAL_DAYS_MAX, JOURNAL_LINES_MAX, NURSERY_SLOTS, POSTCARDS_MAX, FRIEND_PAIRS_MAX, FRIENDS_MET_MAX, createNewState, migrate, isNewerSave, isPristine, bumpStat, replaceState, getState,
   addItem, removeItem, countItem, addCoins, spendCoins, addPlayerXp, xpForLevel,
 } from '../js/state.js';
 import { QUESTS, currentQuest, claimQuest } from '../js/quests.js';
@@ -1038,7 +1038,7 @@ test('migrate v4 -> v5: yard gifts split onto the pets at home, nothing lost', a
   const T = 1790100000000;
   const s = await withFakeNow(T, () => migrate(raw));
   assertEq(s.version, STATE_VERSION, 'version');
-  assertEq(STATE_VERSION, 6, 'STATE_VERSION');
+  assertEq(STATE_VERSION, 7, 'STATE_VERSION');
   // pet5 (cow, sleeping) and pet7 (pig, idle) are the only pets at home; pet5 is first -> gets the remainder + the coin fraction
   assertEq(Object.keys(s.yard.byPet).sort(), ['pet5', 'pet7'], 'only pets at home receive gifts');
   const a = s.yard.byPet.pet5, b = s.yard.byPet.pet7;
@@ -1107,12 +1107,13 @@ test('v5 sanitising: dangling byPet keys, bad nursery / decor / postcards entrie
 });
 
 test('migrate v1..v5 fixtures all the way to the current version; every fixture loads and a second migrate changes nothing', async () => {
-  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame', 'save_v3_midgame', 'save_v4_midgame', 'save_v5_midgame']) {
+  for (const name of ['save_v1_typical', 'save_v1_midgame', 'save_v1_corrupt', 'save_v2_midgame', 'save_v3_midgame', 'save_v4_midgame', 'save_v5_midgame', 'save_v6_midgame']) {
     const raw = await loadFixture(name);
     const once = await withFakeNow(1790100000000, () => migrate(raw));
     assertEq(once.version, STATE_VERSION, `${name}: version`);
-    assert(once.friends && typeof once.friends === 'object' && once.lastGreetAt === 0 && once.pets.every(p => p.favKnown === false), `${name}: v6 fields`);
+    assert(once.friends && typeof once.friends === 'object' && Number.isFinite(once.lastGreetAt) && once.pets.every(p => typeof p.favKnown === 'boolean'), `${name}: v6 fields`);
     assert(Array.isArray(once.nursery) && Array.isArray(once.decor) && Array.isArray(once.postcards) && once.inventoryDecor && once.yard.byPet, `${name}: v5 fields`);
+    assert(once.wardrobe && Array.isArray(once.journal) && once.pets.every(p => p.wear && p.wear.head === null && p.lastBirthdayGift === null), `${name}: v7 fields`);
     const ids = new Set(once.pets.map(p => p.id));
     assert(Object.keys(once.yard.byPet).every(id => ids.has(id)), `${name}: byPet keys are real pets`);
     assertEq(findBad(once), null, `${name}: no NaN/undefined`);
@@ -1362,7 +1363,7 @@ test('adopting a v2-shaped cache from another tab goes through migrate()', () =>
 test('migrate v5 -> v6: nothing lost, new fields default, nursery pets get favKnown too', async () => {
   const raw = await loadFixture('save_v5_midgame');
   const s = await withFakeNow(1790200000000, () => migrate(raw));
-  assertEq([s.version, STATE_VERSION], [6, 6]);
+  assertEq([s.version, STATE_VERSION], [7, 7]);
   assertEq([s.friends, s.lastGreetAt], [{}, 0]);
   assert(s.pets.length === 7 && s.pets.every(p => p.favKnown === false), 'every pet has favKnown');
   assertEq(s.nursery.length, 1);
@@ -1392,4 +1393,72 @@ test('v6 sanitising: friends keeps valid pairs of yard pets, each pet its top 4;
   const many = Array.from({ length: 60 }, (_, i) => `a${i}|b${i}`);
   assertEq(migrate({ version: 6, friendsMet: many }).friendsMet.length, FRIENDS_MET_MAX, 'friendsMet capped');
   assertEq(migrate({ version: 5, friends: 'junk', lastGreetAt: 'x' }).friends, {}, 'junk fields repaired');
+});
+
+// ---- v6 -> v7 migration (wardrobe, pet.wear, journal, lastBirthdayGift) ----
+
+test('migrate v6 -> v7: nothing lost, new fields default (nursery pets too)', async () => {
+  const raw = await loadFixture('save_v6_midgame');
+  const s = await withFakeNow(1790100000000, () => migrate(raw));
+  assertEq(s.version, 7);
+  assertEq([s.wardrobe, s.journal], [{}, []]);
+  assert(s.pets.every(p => p.wear.head === null && p.wear.neck === null && p.lastBirthdayGift === null), 'pets');
+  assert(s.nursery.length && s.nursery.every(e => e.pet.wear.head === null && e.pet.lastBirthdayGift === null), 'nursery pets');
+  assertEq(s.pets.length, raw.pets.length, 'no pet lost');
+  assertEq(Object.keys(s.friends).length, 2, 'friends kept');
+  assertEq(s.player.coins, raw.player.coins);
+  assertEq(findBad(s), null);
+});
+
+test('v7 sanitising: unknown accessories dropped, wear needs the wardrobe, nursery pets bare, one worn copy per copy', () => {
+  const pets = [
+    { id: 'a', speciesId: 'hamster', wear: { head: 'acc_bow', neck: 'acc_bell' } },
+    { id: 'b', speciesId: 'cat', wear: { head: 'acc_bow', neck: 'acc_bow' } },   // only one bow owned; bow is not a neck item
+    { id: 'c', speciesId: 'dog', wear: { head: 'acc_crown', neck: 'nope' } },    // crown not owned, unknown id
+    { id: 'd', speciesId: 'cow', wear: 'junk', lastBirthdayGift: 'x' },
+    { id: 'e', speciesId: 'pig', lastBirthdayGift: 3.5 },
+    { id: 'f', speciesId: 'pig', lastBirthdayGift: 4 },
+  ];
+  const nursery = [{ pet: { id: 'n', speciesId: 'hamster', wear: { head: 'acc_bow' } }, hatchedAt: 1 }];
+  const s = migrate({ version: 6, pets, nursery, wardrobe: { acc_bow: 1, acc_bell: 2, ghost_hat: 3, acc_cap: 0, acc_tophat: 'x', acc_lei: -2 } });
+  assertEq(s.wardrobe, { acc_bow: 1, acc_bell: 2 }, 'wardrobe keeps valid owned counts only');
+  assertEq(s.pets[0].wear, { head: 'acc_bow', neck: 'acc_bell' });
+  assertEq(s.pets[1].wear, { head: null, neck: null }, 'second bow does not exist; bow in the neck slot is wrong');
+  assertEq(s.pets[2].wear, { head: null, neck: null });
+  assertEq([s.pets[3].wear, s.pets[3].lastBirthdayGift], [{ head: null, neck: null }, null]);
+  assertEq([s.pets[4].lastBirthdayGift, s.pets[5].lastBirthdayGift], [null, 4]);
+  assertEq(s.nursery[0].pet.wear, { head: null, neck: null }, 'nursery pets wear nothing');
+  assertEq(migrate(JSON.parse(JSON.stringify(s))), s, 'idempotent');
+});
+
+test('v7 sanitising: journal cleaned, merged by day, capped at 14 days x 6 lines', () => {
+  const day = i => `2026-09-${String(i + 1).padStart(2, '0')}`;
+  const journal = [
+    ...Array.from({ length: 20 }, (_, i) => ({ day: day(i), lines: Array.from({ length: 9 }, (__, j) => ({ emoji: '🐣', text: `line ${i}.${j}`, petId: 'p' })) })),
+    { day: 'bad', lines: [{ text: 'x' }] }, { day: day(3), lines: [] }, 'junk', { day: day(25), lines: [{ text: '   ' }, 7] },
+  ];
+  const s = migrate({ version: 6, journal: journal.reverse() });
+  assertEq(s.journal.length, JOURNAL_DAYS_MAX);
+  assertEq([s.journal[0].day, s.journal[13].day], [day(6), day(19)], 'oldest dropped, oldest day first');
+  assert(s.journal.every(d => d.lines.length === JOURNAL_LINES_MAX), 'six lines per day');
+  assertEq(s.journal[13].lines[5].text, 'line 19.8', 'newest lines of a day kept');
+  assertEq(migrate({ version: 6, journal: 'x', wardrobe: [] }).journal, []);
+  assertEq(migrate(JSON.parse(JSON.stringify(s))).journal, s.journal, 'idempotent');
+});
+
+test('save size: a maximal v7 save (20 pets, full wardrobe, 14 days of diary, 120 friend pairs) is < 120 KB', () => {
+  const s = createNewState();
+  s.pets = Array.from({ length: 20 }, (_, i) => ({
+    id: `pet${String(i).padStart(4, '0')}abcd`, speciesId: 'hamster', nickname: 'ชื่อน้องยาวๆ ' + i, shiny: i % 2 === 0, personality: 'cheerful', stage: 3, xp: 1234.5678, status: 'idle',
+    stats: { hunger: 80.123456789, happy: 70.123456789, energy: 90.123456789, clean: 60.123456789 }, bond: 360, bondDay: '2026-10-25', bondToday: 12, giftDay: '2026-10-25',
+    bornAt: 1790000000000 + i, lastFedAt: 1790000000000, favKnown: true, wear: { head: 'acc_tophat', neck: 'acc_scarf' }, lastBirthdayGift: 12,
+  }));
+  s.wardrobe = { acc_bow: 99, acc_cap: 99, acc_widehat: 99, acc_tophat: 99, acc_crown: 99, acc_grad: 99, acc_bell: 99, acc_scarf: 99, acc_lei: 99, acc_butterfly: 99 };
+  s.journal = Array.from({ length: 14 }, (_, d) => ({ day: `2026-10-${String(d + 1).padStart(2, '0')}`, lines: Array.from({ length: 6 }, (__, j) => ({ emoji: '🎂', text: 'น้องหมูอ้วนครบ 12 เดือนแล้ว วันนี้วันเกิดของน้อง ' + j, petId: `pet${String(j).padStart(4, '0')}abcd` })) }));
+  for (let i = 0, k = 0; i < 20 && k < 120; i++) for (let j = i + 1; j < 20 && k < 120; j++, k++) s.friends[`pet${String(i).padStart(4, '0')}abcd|pet${String(j).padStart(4, '0')}abcd`] = 12.123456789;
+  s.postcards = Array.from({ length: POSTCARDS_MAX }, (_, i) => ({ id: `pc${i}`, petName: 'น้องหมู', speciesId: 'pig', text: 'สวัสดีจากบ้านใหม่ ที่นี่สบายมากเลย ขอบคุณที่เลี้ยงเรานะ', at: 1790000000000 + i, read: false }));
+  s.friendsMet = Array.from({ length: FRIENDS_MET_MAX }, (_, i) => `pet${String(i % 20).padStart(4, '0')}abcd|pet${String((i + 1) % 20).padStart(4, '0')}abce`);
+  const kb = JSON.stringify(s).length / 1024;
+  assert(kb < 120, `maximal v7 save is ${kb.toFixed(1)} KB`);
+  assert(JSON.stringify(migrate(JSON.parse(JSON.stringify(s)))).length / 1024 < 120, 'still small after migrate');
 });

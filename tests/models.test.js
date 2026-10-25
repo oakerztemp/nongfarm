@@ -33,10 +33,10 @@ function vertexColors(m, eyes = false) {
 const drawCalls = m => { let n = 0; m.root.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; };
 const build = (id, over = {}) => buildPetModel(THREE, { speciesId: id, stage: 2, shiny: false, ...over }, getSpecies(id));
 
-test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries and the 15 forest friends', () => {
+test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends and the 15 water friends', () => {
   assertEq(FARM.length, 21, 'farm species count');
   for (const sp of FARM) assert(hasModel(sp.id), 'no model for ' + sp.id);
-  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest', 'unexpected spec for ' + id);
+  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water', 'unexpected spec for ' + id);
   for (const id of LEGEND_IDS) assert(hasModel(id), 'no model for ' + id);
 });
 
@@ -122,21 +122,21 @@ test('models: shiny shifts the palette and exposes an anchor for sparkles', () =
 });
 
 test('models: billboard fallback for species without a spec; billboard shape matches', () => {
-  const dolphin = getSpecies('dolphin');
-  assertEq(hasModel('dolphin'), false, 'dolphin has no model');
-  const m = buildPetModel(THREE, { speciesId: 'dolphin', stage: 2 }, dolphin);
+  const penguin = getSpecies('penguin');
+  assertEq(hasModel('penguin'), false, 'penguin has no model');
+  const m = buildPetModel(THREE, { speciesId: 'penguin', stage: 2 }, penguin);
   assertEq(m.kind, 'billboard', 'kind');
   assert(m.root.isGroup && m.body.isGroup, 'root/body groups');
   assert(m.height > 0 && m.radius > 0, 'size');
   let sprites = 0;
   m.root.traverse(o => { if (o.isSprite) sprites++; });
   assertEq(sprites, 1, 'one sprite');
-  const m2 = buildPetModel(THREE, { speciesId: 'dolphin', stage: 3, shiny: true }, dolphin);
+  const m2 = buildPetModel(THREE, { speciesId: 'penguin', stage: 3, shiny: true }, penguin);
   assertEq(m2.root.scale.x, 1.15, 'billboard stage scale');
   assert(!!m2.parts.crown, 'billboard crown');
   const t1 = kitStats(THREE).textures;
-  buildBillboard(THREE, dolphin.emoji);
-  buildBillboard(THREE, dolphin.emoji);
+  buildBillboard(THREE, penguin.emoji);
+  buildBillboard(THREE, penguin.emoji);
   assertEq(kitStats(THREE).textures, t1 + 0, 'emoji textures cached');
 });
 
@@ -292,7 +292,7 @@ test('models V5: billboards never apply a colour filter; shiny just sets shinySt
   assertEq([plain.shinyStyle, shiny.shinyStyle, shiny.shiny], [null, 'halo', true], 'shinyStyle');
   assertEq([shiny.legendary, shiny.rarity], [true, 'legendary'], 'legendary billboard');
   assertEq(+shiny.root.scale.x.toFixed(6), 1.25, 'legendary billboard scale');
-  const epic = buildPetModel(THREE, { stage: 2 }, getSpecies('dolphin'));
+  const epic = buildPetModel(THREE, { stage: 2 }, getSpecies('flamingo'));
   assertEq([epic.legendary, epic.rarity], [false, 'epic'], 'epic billboard');
   assertEq(build('cow', { shiny: true }).shinyStyle, 'palette', 'model shinyStyle');
 });
@@ -317,7 +317,7 @@ test('models: the stage-3 crown rides on the head, just above the head-top ancho
       assert(Math.hypot(c2.x - a2.x, c2.z - a2.z) / k < 0.3, `${id} crown stays on the rotated head`);
     }
   }
-  for (const sid of ['shark', 'dolphin', 'deer']) {   // billboards: centred above the sprite
+  for (const sid of ['flamingo', 'beluga', 'deer']) {   // billboards: centred above the sprite
     const m = buildPetModel(THREE, { stage: 3 }, getSpecies(sid));
     assertEq([m.parts.crown.position.x, m.parts.crown.position.z], [0, 0], sid + ' billboard crown centred');
     const dy = m.parts.crown.position.y - m.anchor.position.y;
@@ -537,4 +537,221 @@ test('forest: 20 forest pets in one yard stay inside the scene budget (<= 14 cal
   for (let i = 0; i < 20; i++) calls += drawCalls(buildL(FOREST_IDS[i % FOREST_IDS.length]));
   assert(calls <= 20 * 7, 'forest yard of 20 pets: ' + calls + ' calls');
   console.log('[models] 20 forest pets = ' + calls + ' model draw calls');
+});
+
+// ── V9 §6: the 15 water friends ─────────────────────────────────────────────
+const WATER = {
+  fish: 'common', tropicalfish: 'common', frog: 'common', turtle: 'common', crab: 'common', shrimp: 'common', conch: 'common',
+  blowfish: 'uncommon', squid: 'uncommon', otter: 'uncommon', oyster: 'uncommon',
+  octopus: 'rare', lobster: 'rare', dolphin: 'epic', shark: 'epic',
+};
+const WATER_IDS = Object.keys(WATER);
+const AQUATIC = ['fish', 'tropicalfish', 'blowfish', 'squid', 'octopus', 'dolphin', 'shark'];   // live inside a floating bubble
+const waterBudget = id => (WATER[id] === 'common' || WATER[id] === 'uncommon' ? { tris: 1200, calls: 6 } : { tris: 1600, calls: 7 });
+const bubbleOf = m => m.root.getObjectByName('bubble') || null;
+
+test('water: every habitat-water species except the humpback has a spec; the rarity table matches species.js', () => {
+  const water = SPECIES.filter(s => s.habitat === 'water' && s.id !== 'humpback');
+  assertEq(water.map(s => s.id).sort(), WATER_IDS.slice().sort(), 'the 15 water friends');
+  for (const id of WATER_IDS) {
+    assert(hasModel(id), 'no model for ' + id);
+    assertEq(getSpecies(id).rarity, WATER[id], id + ' rarity');
+  }
+  assert(hasModel('humpback'), 'humpback was already there');
+});
+
+test('water: 15 models build; budgets incl. the bubble (common/uncommon <= 1.2k tris + 6 calls, rare/epic <= 1.6k + 7; the bubble is the only extra call), finite, resting on the ground', () => {
+  const rows = [];
+  for (const id of WATER_IDS) {
+    const aq = AQUATIC.includes(id);
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assertEq(m.kind, 'model', id);
+      assert(m.root.isGroup && m.body.isGroup && m.head && m.head.isGroup && m.body.parent === m.root, id + ' groups');
+      const t = tris(m.root), total = drawCalls(m) - (stage === 3 ? 1 : 0);   // the crown sprite is an extra call for masters only
+      const calls = total - (aq ? 1 : 0), b = waterBudget(id);
+      assert(t <= b.tris, `${id} has ${t} triangles incl. the bubble (budget ${b.tris})`);
+      assert(calls <= b.calls, `${id} uses ${calls} draw calls (+ bubble) (budget ${b.calls})`);
+      assert(Number.isFinite(m.height) && m.height > 0.25 && m.height < 2.4, `${id} height ${m.height}`);
+      assert(Number.isFinite(m.radius) && m.radius > 0.15 && m.radius < 1.3, `${id} radius ${m.radius}`);
+      m.root.updateMatrixWorld(true);
+      let bad = 0;
+      m.root.traverse(o => {
+        for (const v of [o.position, o.scale, o.quaternion]) for (const k of ['x', 'y', 'z']) if (!Number.isFinite(v[k])) bad++;
+        if (o.isMesh) for (const x of o.matrixWorld.elements) if (!Number.isFinite(x)) bad++;
+      });
+      assertEq(bad, 0, id + ' NaN transforms');
+      const box = new THREE.Box3().setFromObject(m.root);
+      assert(Math.abs(box.min.y) < 0.05, `${id} stage ${stage}: feet / bubble bottom at y=${box.min.y}`);
+      if (stage === 2) rows.push(`${id} ${t}t/${total}c`);
+    }
+    assertEq(buildL(id).legendary, false, id + ' is not legendary');
+  }
+  console.log('[models] water: ' + rows.join(', '));
+});
+
+test('water: the shared toon material + one eye material (+ ONE shared bubble material / geometry for the 7 swimmers); merged geometry cached per species and shiny', () => {
+  const mats = new Set();
+  for (const id of WATER_IDS) {
+    materials(buildL(id).root, mats);
+    const a = buildL(id), b = buildL(id, { stage: 0 });
+    for (const n of ['bodyMesh', 'headMesh']) assert(geoOf(a, n) === geoOf(b, n), `${id} ${n} not shared`);
+    assert(geoOf(buildL(id, { shiny: true }), 'bodyMesh') !== geoOf(a, 'bodyMesh'), id + ' shiny has its own buffers');
+    assertEq(tris(buildL(id).root), tris(buildL(id, { shiny: true }).root), id + ' shiny keeps the geometry');
+  }
+  const toon = [...mats].filter(x => x.isMeshToonMaterial);
+  assertEq(toon.length, 1, 'one shared toon material for all 15');
+  assertEq(toon[0].vertexColors, true, 'vertex coloured');
+  assertEq([...mats].filter(x => !x.isMeshToonMaterial).length, 2, 'the eye material + the bubble material');
+  const bubbles = AQUATIC.map(id => bubbleOf(buildL(id)));
+  assert(bubbles.every(b => b && b.material === bubbles[0].material), 'one shared bubble material');
+  assert(bubbles.every(b => b.geometry === bubbles[0].geometry), 'one shared (unit) bubble geometry');
+  assert(bubbles[0].material.transparent && !bubbles[0].material.depthWrite, 'translucent, no depth write');
+  for (const id of WATER_IDS.filter(i => !AQUATIC.includes(i))) assertEq(bubbleOf(buildL(id)), null, id + ' walks / sits: no bubble');
+});
+
+test('water: swimmers float in a bubble that rests on the ground, is centred under the root and contains the whole pet', () => {
+  for (const id of AQUATIC) {
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assert(m.parts.bubble && m.parts.bubble === bubbleOf(m) && m.parts.bubble.parent === m.body, id + ' parts.bubble is a child of the body');
+      m.root.updateMatrixWorld(true);
+      const b = m.parts.bubble, c = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
+      const k = m.root.scale.x, r = b.scale.x * k;
+      assert(Math.abs(c.y - r) < 0.01 && Math.abs(c.x) < 0.01 && Math.abs(c.z) < 0.01, `${id}: bubble centre (${c.x.toFixed(2)}, ${c.y.toFixed(2)}, ${c.z.toFixed(2)}) vs radius ${r.toFixed(2)}`);
+      let far = 0;
+      const p = new THREE.Vector3();
+      m.root.traverse(o => {
+        if (!o.isMesh || o === b) return;
+        const a = o.geometry.attributes.position;
+        for (let i = 0; i < a.count; i++) far = Math.max(far, p.fromBufferAttribute(a, i).applyMatrix4(o.matrixWorld).distanceTo(c));
+      });
+      assert(far <= r + 1e-3, `${id} stage ${stage}: the pet pokes ${(far - r).toFixed(3)} out of its bubble`);
+      assert(far > r * 0.8, `${id}: the bubble is not much bigger than the pet (${far.toFixed(2)} of ${r.toFixed(2)})`);
+      assert(m.height >= 2 * r - 0.02, `${id}: height covers the bubble`);
+    }
+  }
+  // squash / float must not break it: the bubble moves with the body
+  const f = buildL('fish');
+  f.body.scale.set(1.1, 0.9, 1.1); f.body.position.y = 0.2;
+  f.root.updateMatrixWorld(true);
+  assert(new THREE.Box3().setFromObject(f.root).min.y > 0.1, 'floating the body lifts the bubble too');
+});
+
+test('water: standard animated parts (head, eyes, anchor, tail fin, pectoral fins / claws / feelers as earL/earR, shell pivots) can be driven', () => {
+  const NO_TAIL = ['oyster', 'conch', 'frog', 'octopus'], NO_EARS = ['oyster', 'frog', 'turtle'];
+  for (const id of WATER_IDS) {
+    const m = buildL(id);
+    assertEq(m.parts.eyes.length, 1, id + ' merged eyes');
+    assert(m.parts.eyes[0].parent === m.head, id + ' eyes on head');
+    assert(m.anchor && m.anchor.parent === m.head && m.parts.breath && m.parts.breath.parent === m.head, id + ' anchors on head');
+    assert(m.anchor.position.y > 0.1, id + ' head-top anchor above the head centre');
+    if (!NO_TAIL.includes(id)) {
+      assert(m.parts.tail && m.parts.tail.isGroup && m.parts.tail.children.some(c => c.isMesh), id + ' tail pivot with geometry');
+      assert(build(id).parts.tail !== m.parts.tail, id + ' tail is per pet (clone)');
+      m.parts.tail.rotation.y = 0.5; m.parts.tail.rotation.z = 0.3;
+    } else assertEq(m.parts.tail, null, id + ' has no tail pivot');
+    if (!NO_EARS.includes(id)) {
+      assert(m.parts.earL && m.parts.earR && m.parts.earL !== m.parts.earR && m.parts.ears.length === 2, id + ' ears (fins / claws / feelers)');
+      assert(m.parts.earL.children.some(c => c.isMesh) && m.parts.earR.children.some(c => c.isMesh), id + ' ear geometry');
+      m.parts.earL.rotation.z = 0.4; m.parts.earR.rotation.z = -0.4;
+    }
+    m.head.rotation.y = 0.5; m.parts.eyes[0].scale.y = 0.1;
+    m.root.updateMatrixWorld(true);
+    assert(Number.isFinite(new THREE.Box3().setFromObject(m.root).max.y), id + ' still finite when driven');
+    assertEq(m.parts.wingL, null, id + ' has no wings');
+  }
+  // oyster + conch: a `shell` pivot (the oyster's upper half / the conch's spiral) that opens / tilts; nobody else has one
+  for (const id of ['oyster', 'conch']) {
+    const m = buildL(id);
+    assert(m.parts.shell && m.parts.shell.isGroup && m.parts.shell.children.some(c => c.isMesh), id + ' shell pivot with geometry');
+    assert(build(id).parts.shell !== m.parts.shell, id + ' shell is per pet');
+    m.parts.shell.rotation.x = -1.0;
+    m.root.updateMatrixWorld(true);
+    assert(Number.isFinite(new THREE.Box3().setFromObject(m.root).max.y), id + ' shell rotates');
+  }
+  for (const id of WATER_IDS.filter(i => i !== 'oyster' && i !== 'conch')) assertEq(buildL(id).parts.shell, null, id + ' has no shell pivot');
+});
+
+test('water: signature parts are really there (fins, claws, tentacles, shell + sand, hop legs, teeth, spikes, fan tail)', () => {
+  const has = (m, mesh, hex) => { const want = hexKey(hex); const a = geoOf(m, mesh).attributes.color; for (let i = 0; i < a.count; i++) if ([a.getX(i), a.getY(i), a.getZ(i)].map(v => v.toFixed(3)).join(',') === want) return true; return false; };
+  const sp = id => MODEL_SPECS[id];
+  const size = (m, n) => bboxOf(m, n).getSize(new THREE.Vector3());
+  for (const id of ['fish', 'tropicalfish', 'blowfish', 'dolphin', 'shark']) assertEq(sp(id).ears.type, 'fin', id + ' pectoral fins');
+  for (const id of ['fish', 'tropicalfish', 'blowfish', 'shark']) {
+    const tb = size(buildL(id), 'tailMesh');
+    assert(tb.y > tb.x * 3, `${id}: the tail fin is a thin vertical fan (${tb.x.toFixed(2)} x ${tb.y.toFixed(2)})`);
+  }
+  const dt = size(buildL('dolphin'), 'tailMesh');
+  assert(dt.x > dt.y * 2, 'dolphin: a horizontal fluke');
+  assert(has(buildL('tropicalfish'), 'bodyMesh', '#fffdf6'), 'clownfish white stripes');
+  assert(geoOf(buildL('blowfish'), 'bodyMesh').attributes.position.count > 300 && has(buildL('blowfish'), 'bodyMesh', '#f0a732'), 'blowfish spikes');
+  const oct = buildL('octopus');
+  assert(geoOf(oct, 'bodyMesh').attributes.position.count > 500, 'octopus: tentacle chains in the body mesh');
+  assert(sp('octopus').ears.type === 'arm' && sp('squid').ears.type === 'arm' && oct.parts.earL && buildL('squid').parts.earR, 'octopus / squid: two waving arms as earL/earR');
+  assert(has(buildL('squid'), 'bodyMesh', '#ff7a96'), 'squid spots');
+  for (const id of ['oyster', 'conch']) {
+    const m = buildL(id);
+    assert(has(m, 'bodyMesh', '#f2dca0'), id + ' sand tuft');
+    assert(size(m, 'bodyMesh').x > 0.4, id + ' sand tuft is wider than the animal');
+  }
+  assert(buildL('conch').height > 0.7, 'conch spiral tower is tall');
+  assertEq(sp('crab').legs.type, 'crab', 'crab splayed legs');
+  assert(size(buildL('crab'), 'bodyMesh').x > 0.9, 'crab: wide stance (8 legs)');
+  for (const id of ['crab', 'lobster']) assertEq(sp(id).ears.type, 'claw', id + ' claws are the ear pivots');
+  assert(size(buildL('lobster'), 'earLMesh').length() > 0.35, 'lobster claws are big');
+  assert(sp('lobster').tail.fan && sp('lobster').tail.n >= 4 && sp('shrimp').tail.fan, 'lobster / shrimp: segmented tail with a fan');
+  assert(size(buildL('frog'), 'bodyMesh').x > 0.65, 'frog: folded hind legs stick out at the sides');
+  assert(buildL('frog').head.position.y > 0.4 && sp('frog').eyes.el > 0.3, 'frog: big eyes high on a wide head');
+  assert(has(buildL('turtle'), 'bodyMesh', '#a2dd8e') && has(buildL('turtle'), 'bodyMesh', '#f0e2a8'), 'turtle: shell plates + cream rim');
+  assert(has(buildL('otter'), 'headMesh', '#f3dec3') && size(buildL('otter'), 'tailMesh').length() > 0.5, 'otter: cream muzzle + thick long tail');
+  const shark = buildL('shark');
+  assert(has(shark, 'headMesh', '#ffffff'), 'shark teeth (white on the head)');
+  assert(size(shark, 'bodyMesh').y > 0.6, 'shark: tall dorsal fin');
+  assert(shark.height > buildL('dolphin').height * 0.9 && buildL('dolphin').height > buildL('fish').height, 'epics are bigger than the commons');
+});
+
+test('water: shiny = gentle curated palettes (each palette really hits the model; eyes + bubble never shift; no hue-rotated fallback)', () => {
+  for (const id of WATER_IDS) {
+    const spec = MODEL_SPECS[id], pal = spec.shinyPalette;
+    assert(pal && Object.keys(pal).length >= 3, id + ' has a curated palette');
+    for (const k of Object.keys(pal)) assert(k === k.toLowerCase() && /^#[0-9a-f]{6}$/.test(k) && /^#[0-9a-f]{6}$/.test(pal[k]), `${id}: palette key ${k}`);
+    const normal = buildL(id), shiny = buildL(id, { shiny: true });
+    assertEq([shiny.shiny, shiny.shinyStyle], [true, 'palette'], id + ' flag');
+    const cn = vertexColors(normal), cs = vertexColors(shiny);
+    const hit = Object.keys(pal).filter(k => cn.has(hexKey(k)));
+    assert(hit.length >= 3, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
+    for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
+    assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
+    // the cheek blush is a 60 % blend of the (shifted) head colour with pink, so it follows the head: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush));
+    const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
+    for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
+    if (AQUATIC.includes(id)) assert(bubbleOf(shiny).material === bubbleOf(normal).material && bubbleOf(shiny).geometry === bubbleOf(normal).geometry, id + ' bubble is not recoloured');
+  }
+});
+
+test('water: stage scale + crown still work (master crown rides the head); masters stay inside the call budget + 1 (+ bubble)', () => {
+  for (const id of WATER_IDS) {
+    const aq = AQUATIC.includes(id) ? 1 : 0;
+    for (let st = 0; st < 4; st++) {
+      const m = buildL(id, { stage: st });
+      assertEq(m.root.scale.x, STAGE_SCALE[st], `${id} scale at stage ${st}`);
+      assertEq(!!m.parts.crown, st === 3, `${id} crown at stage ${st}`);
+    }
+    const master = buildL(id, { stage: 3 });
+    assert(master.parts.crown.parent === master.head, id + ' crown on the head');
+    assert(drawCalls(master) <= waterBudget(id).calls + 1 + aq, `${id} master calls ${drawCalls(master)}`);
+    assert(master.height > buildL(id, { stage: 2 }).height, id + ' master is bigger');
+  }
+});
+
+test('water: 20 water pets in one yard stay inside the scene budget (counting the bubbles): sum <= 20 x 8', () => {
+  let calls = 0, trisSum = 0;
+  for (let i = 0; i < 20; i++) { const m = buildL(WATER_IDS[i % WATER_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
+  assert(calls <= 20 * 8, 'water yard of 20 pets: ' + calls + ' calls');
+  const xl = Array.from({ length: 20 }, (_, i) => drawCalls(buildL(AQUATIC[i % AQUATIC.length], { stage: 3 }))).reduce((a, b) => a + b, 0);
+  assert(xl <= 20 * 9, 'worst case: 20 master swimmers = ' + xl + ' calls');
+  console.log(`[models] 20 water pets = ${calls} model draw calls, ${trisSum} tris (20 master swimmers: ${xl} calls)`);
 });

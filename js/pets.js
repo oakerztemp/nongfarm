@@ -9,6 +9,7 @@ import { SPECIES, HABITATS, RARITIES, getSpecies } from './data/species.js';
 import { getTraitDef, TRAIT_SCALE } from './data/traits.js';
 import { CROPS } from './data/crops.js';
 import { hashId, favoriteSpot, FAV_LABEL, STROKE_MIN_MS } from './petBehaviour.js';
+import { getAccessory } from './data/accessories.js';
 
 import { tickFriends, bestFriendMap, bestFriendOf as bestFriendId, friendDecayMult, removePetFriends } from './friends.js';
 
@@ -831,6 +832,72 @@ export function strokePet(state, petId, { durationMs = 0, region = null } = {}) 
   return out;
 }
 
+// ── แต่งตัวน้อง 👗 (CONTRACT_V9 §1) ─────────────────────────────────────────────────────────────────────────
+// state.wardrobe { accId: count } = copies OWNED (worn ones included, state v7); pet.wear = { head, neck } names the worn ids and
+// each owned copy is worn by one pet at a time. A pet that leaves (rehome) simply stops wearing: its copies are free again.
+// Purely cosmetic; the only effect is a tiny happy bump the first time a pet is dressed each day (normal happy stat, no bond).
+export const WEAR_HAPPY = 5;
+export const WEAR_SLOTS = ['head', 'neck'];
+
+export function wearOf(pet) {
+  return (pet && pet.wear && typeof pet.wear === 'object') ? pet.wear : {};
+}
+
+/** Copies of an accessory worn right now by yard pets and nursery babies. */
+export function wornCount(state, accId) {
+  let n = 0;
+  const all = [...(state.pets || []), ...((state.nursery || []).map(e => e && e.pet))];
+  for (const p of all) for (const slot of WEAR_SLOTS) if (wearOf(p)[slot] === accId) n++;
+  return n;
+}
+
+/** Copies owned and free (not worn by anybody). */
+export function wardrobeCount(state, accId) {
+  const owned = Math.max(0, Math.floor(Number(state && state.wardrobe && state.wardrobe[accId]) || 0));
+  return Math.max(0, owned - wornCount(state, accId));
+}
+
+/** [{ acc, n }] of every accessory with a free copy, head items first. */
+export function wardrobeList(state) {
+  const out = [];
+  for (const id of Object.keys((state && state.wardrobe) || {})) {
+    const acc = getAccessory(id), n = wardrobeCount(state, id);
+    if (acc && n > 0) out.push({ acc, n });
+  }
+  return out.sort((a, b) => (a.acc.slot === b.acc.slot ? 0 : a.acc.slot === 'head' ? -1 : 1) || a.acc.nameTh.localeCompare(b.acc.nameTh, 'th'));
+}
+
+/** A pet that leaves for a new home hands its accessories back (they were never removed from the wardrobe, so this only clears the pet). */
+export function returnWear(state, pet) {
+  if (pet) pet.wear = { head: null, neck: null };
+}
+
+/** Dresses a pet. A worn item of the same slot goes back to the wardrobe. { ok, msg, acc, firstToday } */
+export function wearAccessory(state, petId, accId) {
+  const pet = getPet(state, petId);
+  const acc = getAccessory(accId);
+  if (!pet) return fail('ไม่พบน้องตัวนี้');
+  if (!acc) return fail('ไม่รู้จักของชิ้นนี้');
+  if (wearOf(pet)[acc.slot] === accId) return fail(`${nong(pet)}ใส่${acc.nameTh}อยู่แล้ว`);
+  if (wardrobeCount(state, accId) <= 0) return fail(`ไม่มี${acc.nameTh}ว่างในตู้เสื้อผ้า`);
+  pet.wear = { head: null, neck: null, ...wearOf(pet), [acc.slot]: accId };
+  const day = todayKey();
+  const firstToday = pet.wearHappyDay !== day;
+  if (firstToday) { pet.wearHappyDay = day; pet.stats.happy = clamp(pet.stats.happy + WEAR_HAPPY, 0, 100); }
+  return { ok: true, msg: `${acc.emoji} ${nong(pet)}ใส่${acc.nameTh}แล้ว น่ารักจัง!`, acc, firstToday };
+}
+
+/** Takes the item of one slot off (back to the wardrobe). */
+export function takeOffAccessory(state, petId, slot) {
+  const pet = getPet(state, petId);
+  if (!pet) return fail('ไม่พบน้องตัวนี้');
+  const accId = wearOf(pet)[slot];
+  if (!accId) return fail('ไม่ได้ใส่อะไรอยู่');
+  pet.wear = { head: null, neck: null, ...wearOf(pet), [slot]: null };
+  const acc = getAccessory(accId);
+  return { ok: true, msg: acc ? `${acc.emoji} ถอด${acc.nameTh}ของ${nong(pet)}แล้ว` : '', acc };
+}
+
 /** "ชอบ: เกาคาง" for the pet sheet once the favourite spot has been discovered, else ''. */
 export function favoriteLine(pet) {
   return pet && pet.favKnown ? `ชอบ: ${FAV_LABEL[favoriteSpot(pet.id)]}` : '';
@@ -980,6 +1047,7 @@ export function swapWithNursery(state, nurseryPetId, yardPetId) {
   removePetFriends(state, out.id);
   clearStationOf(state, out);
   state.pets.splice(state.pets.indexOf(out), 1);
+  returnWear(state, out);                        // a sleeping baby wears nothing: its accessories are free again
   out.status = 'nursery';
   out.task = null;
   n[i] = { pet: out, hatchedAt: now() };
@@ -1008,6 +1076,7 @@ export function rehomePet(state, petId) {
   if (isBusy(pet)) return fail('น้องกำลังทำงานอยู่ ส่งไปบ้านใหม่ไม่ได้');
   const dust = rehomeDust(pet);
   const label = nong(pet);
+  returnWear(state, pet);                       // dressed-up accessories go back to the wardrobe (CONTRACT_V9 §1)
   let gift = { coins: 0, items: {} };
   if (where === 'yard') {
     const y = ensureYard(state);

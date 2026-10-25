@@ -4,10 +4,23 @@ import { fastForwardQuests } from './quests.js'; // circular on purpose: only ca
 import { getCrop } from './data/crops.js';
 import { getSpecies } from './data/species.js';
 
+// v7: accessory ids are validated against js/data/accessories.js (owned by the data author). It is loaded with a tolerant
+// top-level await so a missing/renamed file never breaks the game: without it only the id's shape is checked.
+//   Understood exports: getAccessory(id) -> { slot } | undefined, or ACCESSORIES (array of { id, slot } or object keyed by id).
+const accMod = await import('./data/accessories.js').catch(() => null);
+function accessoryOf(id) {
+  if (!accMod) return typeof id === 'string' && /^[a-z0-9_]{1,40}$/i.test(id) ? { slot: null } : null;
+  if (typeof accMod.getAccessory === 'function') return accMod.getAccessory(id) || null;
+  const all = accMod.ACCESSORIES;
+  if (Array.isArray(all)) return all.find(a => a && a.id === id) || null;
+  if (all && typeof all === 'object') return all[id] ? { slot: all[id].slot } : null;
+  return typeof id === 'string' && /^[a-z0-9_]{1,40}$/i.test(id) ? { slot: null } : null;
+}
+
 // v5 constants other modules rely on (CONTRACT_V7 §1):
 //   NURSERY_SLOTS  max babies waiting in state.nursery        POSTCARDS_MAX  postcards kept (oldest dropped)
 //   YARD_CAP_MS    pets.js owns the live 6 h gift cap; the migration only clamps credited ms to the same value
-export const STATE_VERSION = 6;
+export const STATE_VERSION = 7;
 export const NURSERY_SLOTS = 3;
 export const POSTCARDS_MAX = 30;
 export const FRIEND_PAIRS_PER_PET = 4;  // v6: every pet keeps its 4 strongest pairs (plus its best-friend pair)...
@@ -16,6 +29,9 @@ export const FRIEND_BEST_POINTS = 72;   // a pair needs this many points to be b
 export const FRIENDS_MET_MAX = 40;      // pairKeys already announced as best friends (no second toast)
 /** Key of a friend pair in state.friends: the two pet ids sorted and joined by '|'. */
 export const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+export const JOURNAL_DAYS_MAX = 14;     // v7: days of diary kept (oldest dropped)
+export const JOURNAL_LINES_MAX = 6;     // v7: lines per day (oldest of that day dropped)
+export const WEAR_SLOTS = ['head', 'neck'];
 const V4_YARD_CAP_MS = 6 * 3600 * 1000;
 export const DEFAULT_FARM_NAME = 'ฟาร์มของฉัน';
 const PLOT_COUNT = 4;
@@ -70,6 +86,8 @@ export function createNewState() {
     friends: {},          // v6: pairKey(a, b) -> points (fractional); each pet keeps its top FRIEND_PAIRS_PER_PET pairs; js/friends.js owns the rules
     friendsMet: [],       // v6: pairKeys already announced as best friends, <= FRIENDS_MET_MAX (newest last)
     lastGreetAt: 0,       // v6: ms of the last "pets greet you" scene (barn3d), so it plays once per away spell
+    wardrobe: {},         // v7: accessoryId -> copies owned (worn copies included; a copy is worn by one pet at a time)
+    journal: [],          // v7: [{ day: 'YYYY-MM-DD', lines: [{ emoji, text, petId? }] }] oldest day first, <= JOURNAL_DAYS_MAX x JOURNAL_LINES_MAX (js/journal.js)
   };
 }
 
@@ -78,7 +96,7 @@ export function createNewState() {
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 // Keys whose contents are player data, not structure: never back-fill their entries.
-const DATA_MAPS = new Set(['inventory', 'collection', 'byPet', 'inventoryDecor']);
+const DATA_MAPS = new Set(['inventory', 'collection', 'byPet', 'inventoryDecor', 'wardrobe']);
 
 function fill(raw, def, key) {
   if (Array.isArray(def)) return Array.isArray(raw) ? raw : def;
@@ -104,6 +122,8 @@ function petDefaults(t) {
     bond: 0, bondDay: null, bondToday: 0, giftDay: null,
     station: null,
     favKnown: false,   // v6: the player has discovered this pet's favourite stroking spot
+    wear: { head: null, neck: null },  // v7: accessory ids worn (must be in state.wardrobe)
+    lastBirthdayGift: null,            // v7: months number of the last birthday gift taken (js/birthday.js), null = never
   };
 }
 
@@ -279,6 +299,21 @@ export const MIGRATIONS = {
     s.version = 6;
     return s;
   },
+
+  // v6 -> v7: wardrobe, pet.wear, journal, pet.lastBirthdayGift (photos live in IndexedDB, never in the save).
+  6(s) {
+    if (!isObj(s.wardrobe)) s.wardrobe = {};
+    if (!Array.isArray(s.journal)) s.journal = [];
+    const fix = p => {
+      if (!isObj(p)) return;
+      if (!isObj(p.wear)) p.wear = { head: null, neck: null };
+      if (p.lastBirthdayGift === undefined) p.lastBirthdayGift = null;
+    };
+    for (const p of Array.isArray(s.pets) ? s.pets : []) fix(p);
+    for (const e of Array.isArray(s.nursery) ? s.nursery : []) if (isObj(e)) fix(e.pet);
+    s.version = 7;
+    return s;
+  },
 };
 
 /**
@@ -412,6 +447,55 @@ function sanitiseV6(s) {
   s.friendsMet = met.slice(-FRIENDS_MET_MAX);
 }
 
+/** One diary day -> { day, lines } or null. Pure; shared with journal.js. */
+export function cleanJournalDay(d) {
+  if (!isObj(d) || typeof d.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d.day) || !Array.isArray(d.lines)) return null;
+  const lines = d.lines.filter(l => isObj(l) && typeof l.text === 'string' && l.text.trim()).map(l => {
+    const out = { emoji: typeof l.emoji === 'string' ? l.emoji.slice(0, 8) : '', text: l.text.slice(0, 120) };
+    if (typeof l.petId === 'string' && l.petId) out.petId = l.petId.slice(0, 40);
+    if (typeof l.kind === 'string' && l.kind) out.kind = l.kind.slice(0, 40);
+    return out;
+  });
+  return lines.length ? { day: d.day, lines } : null;
+}
+
+/** v7: wardrobe counts valid, wear only references owned accessories in the right slot (one worn copy per owned copy), journal cleaned and capped. Idempotent. */
+function sanitiseV7(s) {
+  const wardrobe = {};
+  for (const [id, n] of Object.entries(s.wardrobe)) {
+    if (Number.isFinite(n) && n >= 1 && accessoryOf(id)) wardrobe[id] = Math.min(Math.floor(n), 99);
+  }
+  s.wardrobe = wardrobe;
+
+  const used = {};
+  const pets = [...s.pets, ...s.nursery.map(e => e.pet)];
+  const nurseryPets = new Set(s.nursery.map(e => e.pet));
+  for (const p of pets) {
+    const src = isObj(p.wear) ? p.wear : {};
+    const wear = { head: null, neck: null };
+    if (!nurseryPets.has(p)) {
+      for (const slot of WEAR_SLOTS) {
+        const id = src[slot];
+        const acc = typeof id === 'string' ? accessoryOf(id) : null;
+        if (!acc || !wardrobe[id] || (acc.slot && acc.slot !== slot) || (used[id] || 0) >= wardrobe[id]) continue;
+        used[id] = (used[id] || 0) + 1;
+        wear[slot] = id;
+      }
+    }
+    p.wear = wear;
+    p.lastBirthdayGift = Number.isInteger(p.lastBirthdayGift) && p.lastBirthdayGift >= 1 ? p.lastBirthdayGift : null;
+  }
+
+  const byDay = new Map();
+  for (const d of s.journal) {
+    const c = cleanJournalDay(d);
+    if (!c) continue;
+    if (byDay.has(c.day)) byDay.get(c.day).lines.push(...c.lines); else byDay.set(c.day, c);
+  }
+  s.journal = [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0))
+    .slice(-JOURNAL_DAYS_MAX).map(d => ({ ...d, lines: d.lines.slice(-JOURNAL_LINES_MAX) }));
+}
+
 let warnedNewer = false;
 
 /** True for a save written by a newer client than this one understands (must never be uploaded). */
@@ -459,6 +543,7 @@ function migrateUnsafe(raw) {
   repairStations(s);
   sanitiseV5(s);
   sanitiseV6(s);
+  sanitiseV7(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

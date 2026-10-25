@@ -16,6 +16,12 @@ import sys
 import tempfile
 import threading
 
+for _s in (sys.stdout, sys.stderr):  # Thai test names must not crash a cp874 console
+    try:
+        _s.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EDGE_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",

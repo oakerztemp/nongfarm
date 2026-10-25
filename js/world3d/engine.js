@@ -81,6 +81,10 @@
 
 import * as THREE from '../../vendor/three.module.min.js';
 import { getQualityPref } from '../prefs.js';
+import { prefersReducedMotion as reducedMotion } from './support.js';
+import { createRain, weatherTargets, weatherLight } from './rain.js';
+
+export { weatherTargets, weatherLight, puddleLayout } from './rain.js';
 
 // ---------------------------------------------------------------- constants
 
@@ -852,14 +856,43 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     const darkMq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
     let lightScale = 1;            // fx.dimScene tweens this (1 = normal, lower = dimmer scene)
     const shakeOffset = { x: 0, y: 0, z: 0 }; // fx.shake jitters the camera by this much (world units)
+    // weather (CONTRACT_V9 §4): cloud / rain ease towards the targets set by world.setWeather; lights and the CSS sky follow
+    const weather = { kind: 'sunny', intensity: 1, cloud: 0, rain: 0, tCloud: 0, tRain: 0, skyKey: '' };
+    const hemiBase = hemi.color.clone(), groundBase = hemi.groundColor.clone(), sunBase = sun.color.clone();
+    const stormGrey = new THREE.Color(0xc4ccd6);
+    const skyColor = new THREE.Color();
+    const skyGrey = new THREE.Color();
     const applyMood = () => {
       const dark = !!(darkMq && darkMq.matches);
-      hemi.intensity = (dark ? 1.35 : 1.9) * lightScale;
-      sun.intensity = (dark ? 1.3 : 1.9) * lightScale;
+      const wl = weatherLight(weather.cloud, weather.rain);
+      hemi.intensity = (dark ? 1.35 : 1.9) * lightScale * wl.hemi;
+      sun.intensity = (dark ? 1.3 : 1.9) * lightScale * wl.sun;
+      hemi.color.copy(hemiBase).lerp(stormGrey, wl.grey);
+      hemi.groundColor.copy(groundBase).lerp(stormGrey, wl.grey * 0.4);
+      sun.color.copy(sunBase).lerp(stormGrey, wl.grey);
     };
+    // The CSS sky gradient lives behind the (transparent) canvas: tint it through inline custom properties on the host.
+    const applySky = () => {
+      const key = weather.cloud.toFixed(2);
+      if (key === weather.skyKey) return;
+      weather.skyKey = key;
+      if (weather.cloud < 0.01) { hostEl.style.removeProperty('--world-sky-top'); hostEl.style.removeProperty('--world-sky-bottom'); return; }
+      try {
+        const cs = getComputedStyle(document.documentElement);
+        skyGrey.set(darkMq && darkMq.matches ? 0x3b4653 : 0xb9c3cd);
+        for (const [prop, fallback] of [['--world-sky-top', '#bfe6ff'], ['--world-sky-bottom', '#e9f7d8']]) {
+          skyColor.set(cs.getPropertyValue(prop).trim() || fallback).lerp(skyGrey, 0.62 * weather.cloud);
+          hostEl.style.setProperty(prop, `#${skyColor.getHexString()}`);
+        }
+      } catch { /* style access not available */ }
+    };
+    const onScheme = () => { weather.skyKey = ''; applyMood(); applySky(); };
     applyMood();
-    if (darkMq && darkMq.addEventListener) darkMq.addEventListener('change', applyMood);
-    undo.push(() => { if (darkMq && darkMq.removeEventListener) darkMq.removeEventListener('change', applyMood); });
+    if (darkMq && darkMq.addEventListener) darkMq.addEventListener('change', onScheme);
+    undo.push(() => {
+      if (darkMq && darkMq.removeEventListener) darkMq.removeEventListener('change', onScheme);
+      hostEl.style.removeProperty('--world-sky-top'); hostEl.style.removeProperty('--world-sky-bottom');
+    });
 
     undo.push(() => { blobGeo.dispose(); blobMat.dispose(); blobTexture.dispose(); toonGradient.dispose(); });
     // ---- yard (grows with barnCapacity), static props
@@ -872,6 +905,25 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     scene.add(wild.group);
     let decorSpots = decorSpotsForTier(yardCfg.name);
     const obstacles = env.obstacles.map(o => ({ ...o })); // mutable list shared with scenes (world.obstacles)
+    const rainFx = createRain(THREE, { quality: tier.name, reduced: reducedMotion() }); // 2 draw calls while it rains, 0 otherwise
+    scene.add(rainFx.group);
+    rainFx.setArea(yardCfg.walk, obstacles);
+    undo.push(() => rainFx.dispose());
+    let weatherBusy = false;
+    function updateWeather(dt) {
+      weatherBusy = Math.abs(weather.tCloud - weather.cloud) > 0.002 || Math.abs(weather.tRain - weather.rain) > 0.002;
+      if (weatherBusy) {
+        const k = 1 - Math.exp(-dt * 0.9);
+        weather.cloud += (weather.tCloud - weather.cloud) * k;
+        weather.rain += (weather.tRain - weather.rain) * k;
+        if (Math.abs(weather.tCloud - weather.cloud) <= 0.002) weather.cloud = weather.tCloud;
+        if (Math.abs(weather.tRain - weather.rain) <= 0.002) weather.rain = weather.tRain;
+        applyMood();
+        applySky();
+        rainFx.setRain(weather.rain);
+      }
+      rainFx.update(dt);
+    }
     const props = new Map();   // id -> { object, obstacle, ownGeometry }
     const yardListeners = new Set();
     let yardAnim = null;       // { age, from, barnFrom, barnTo }
@@ -945,6 +997,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       env = buildEnvironment(tier, toonGradient, next);
       scene.add(env.group, env.barn);
       syncObstacles();
+      rainFx.setArea(next.walk, obstacles);
       decorSpots = decorSpotsForTier(next.name);
       wild.setClearance(wildClearance(next.name), animate);
       const keep = clampPan(panT.x, panT.z, next.island);
@@ -1090,7 +1143,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     function isEasing() {
       return Math.abs(view.yaw - view.yawT) > 0.0005 || Math.abs(view.pitch - view.pitchT) > 0.0005 ||
         Math.abs(view.zoom - view.zoomT) > 0.0005 || Math.abs(baseDist - baseDistT) > 0.005 || !!yardAnim || wild.animating ||
-        Math.abs(pan.x - panT.x) > 0.001 || Math.abs(pan.z - panT.z) > 0.001;
+        Math.abs(pan.x - panT.x) > 0.001 || Math.abs(pan.z - panT.z) > 0.001 || weatherBusy;
     }
 
     function downgrade() {
@@ -1134,6 +1187,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (!isEasing()) { view.yaw = view.yawT; view.pitch = view.pitchT; view.zoom = view.zoomT; baseDist = baseDistT; pan.x = panT.x; pan.z = panT.z; }
       updateYardAnim(dt);
       wild.update(dt);
+      updateWeather(dt);
       updateCamera();
 
       for (const fn of [...frameFns]) {
@@ -1151,6 +1205,59 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         fpsCount.fps = Math.round((fpsCount.frames * 1000) / (ts - fpsCount.since));
         fpsCount.frames = 0; fpsCount.since = ts;
       }
+    }
+
+    // ---- photo: one frame at an arbitrary size (CONTRACT_V9 §2)
+    function snapshot({ width: sw = 960, height: sh = 540, hideUi = true, type = 'image/jpeg', quality = 0.88 } = {}) {
+      return new Promise((resolve, reject) => {
+        if (disposed || contextLost) { reject(new Error('world unavailable')); return; }
+        const W = Math.min(2048, Math.max(16, Math.round(Number(sw) || 960)));
+        const H = Math.min(2048, Math.max(16, Math.round(Number(sh) || 540)));
+        const hiddenObjs = [];
+        const prevBase = baseDist;
+        const prevAspect = camera.aspect;
+        const wasHost = hostEl.classList.contains('world3d-snapshot');
+        try {
+          if (hideUi) {
+            hostEl.classList.add('world3d-snapshot'); // lets CSS hide DOM overlays (labels, bubbles) if a frame is ever composited
+            scene.traverse(o => { if (o.visible && (o.userData.ui === true || (o.name && o.name.startsWith('ui-')))) { o.visible = false; hiddenObjs.push(o); } });
+          }
+          renderer.setPixelRatio(1);
+          renderer.setSize(W, H, false);
+          camera.aspect = W / H;
+          baseDist = fixedCameraDistance(camera.aspect);
+          camera.updateProjectionMatrix();
+          updateCamera();
+          updateBlobs();
+          renderer.render(scene, camera);
+          // the canvas is transparent (the sky is CSS behind it), so paint sky + dim + scene onto a 2D canvas
+          const out = document.createElement('canvas');
+          out.width = W; out.height = H;
+          const ctx = out.getContext('2d');
+          const cs = getComputedStyle(hostEl);
+          const grad = ctx.createLinearGradient(0, 0, 0, H);
+          grad.addColorStop(0, cs.getPropertyValue('--world-sky-top').trim() || '#bfe6ff');
+          grad.addColorStop(1, cs.getPropertyValue('--world-sky-bottom').trim() || '#e9f7d8');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, W, H);
+          const dim = parseFloat(cs.getPropertyValue('--world-dim')) || 0;
+          if (dim > 0) { ctx.fillStyle = `rgba(0,0,0,${dim})`; ctx.fillRect(0, 0, W, H); }
+          ctx.drawImage(canvas, 0, 0, W, H);
+          resolve(out.toDataURL(type, quality));
+        } catch (e) {
+          reject(e);
+        } finally {
+          for (const o of hiddenObjs) o.visible = true;
+          if (!wasHost) hostEl.classList.remove('world3d-snapshot');
+          renderer.setPixelRatio(tier.pixelRatio);
+          renderer.setSize(width, height, false);
+          camera.aspect = prevAspect;
+          baseDist = prevBase;
+          camera.updateProjectionMatrix();
+          updateCamera();
+          lastRenderTs = -Infinity; // redraw the live frame at the real size
+        }
+      });
     }
 
     // ---- picking
@@ -1429,6 +1536,29 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       wildInfo: () => wild.info(),
       /** The wilderness group (meadow + instanced props + stream), e.g. to hide it in a screenshot. */
       wildGroup: wild.group,
+      /**
+       * Weather (CONTRACT_V9 §4): kind 'sunny' | 'cloudy' | 'rain', intensity 0..1 (rain amount / cloud density). Eased over ~2.5 s.
+       * Rain = ONE instanced streak mesh + ONE instanced puddle mesh (<= 2 draw calls, 0 when dry); lights and the CSS sky go greyer.
+       */
+      setWeather(kind = 'sunny', intensity = 1) {
+        const k = kind === 'rain' || kind === 'cloudy' ? kind : 'sunny';
+        const t = weatherTargets(k, intensity);
+        weather.kind = k; weather.intensity = Math.min(1, Math.max(0, Number(intensity) || 0));
+        weather.tCloud = t.cloud; weather.tRain = t.rain;
+        weatherBusy = true;
+        boostUntil = Math.max(boostUntil, performance.now() + 400);
+      },
+      getWeather: () => ({ kind: weather.kind, intensity: weather.intensity }),
+      /** Weather as drawn right now: { kind, intensity, cloud, rain (0..1 eased), drops, puddles, meshes (draw calls spent) }. */
+      weatherInfo: () => ({ kind: weather.kind, intensity: weather.intensity, cloud: weather.cloud, ...rainFx.info() }),
+      /** Puddle decals of the yard: [{ x, z, r }]. Always the same places for a tier; they are only visible while raining (weatherInfo().puddles > 0). */
+      get puddles() { return rainFx.puddles(); },
+      /**
+       * One frame at width x height (default 960 x 540, max 2048) as a dataURL (JPEG by default), using the current camera, sky and
+       * weather. hideUi hides scene helpers named 'ui-*' / userData.ui and tags the host with .world3d-snapshot; DOM overlays are
+       * never part of the canvas anyway. The live size / aspect / pixel ratio are restored. Rejects if the world is gone.
+       */
+      snapshot,
       /** Walkable obstacles [{x,z,r}] (barn + props with an obstacle). The array is updated in place on tier changes. */
       obstacles,
       /** Switch yard size by tier name or barnCapacity. Rebuilds ground/fence/flowers; { animate:true } grows the fence ring. Returns the tier. */
@@ -1501,7 +1631,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         disposeFns.clear();
         frameFns.clear();
         document.removeEventListener('visibilitychange', onVisibility);
-        if (darkMq && darkMq.removeEventListener) darkMq.removeEventListener('change', applyMood);
+        if (darkMq && darkMq.removeEventListener) darkMq.removeEventListener('change', onScheme);
         window.removeEventListener('resize', resize);
         if (resizeObserver) resizeObserver.disconnect();
         if (intersectionObserver) intersectionObserver.disconnect();
@@ -1519,6 +1649,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         propMaterial.dispose(); instMaterial.dispose();
         env.dispose();
         wild.dispose();
+        rainFx.dispose();
         scene.remove(blobMesh); blobMesh.dispose(); blobGeo.dispose(); blobMat.dispose(); blobTexture.dispose(); toonGradient.dispose();
         renderer.dispose();
         try { renderer.forceContextLoss(); } catch { /* already lost */ }

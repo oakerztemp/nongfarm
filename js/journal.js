@@ -3,7 +3,7 @@
 // Each kind of event for one pet is written at most once per day (a diary, not a log). Other modules call journalEvent();
 // main.js also runs syncJournal() on every state change for the events nobody "calls" (hatch, postcard arrived).
 //
-//   journalEvent(state, 'hatch'|'bestFriend'|'favSpot'|'birthday'|'firstWear'|'photo'|'postcard'|'melt'|'away', ctx)
+//   journalEvent(state, 'hatch'|'bestFriend'|'favSpot'|'birthday'|'firstWear'|'photo'|'postcard'|'melt'|'away'|'familyEgg'|'familyHatch', ctx)
 //   addJournal(state, { kind, petId, emoji, text, day? })    low level: returns true when a line was written
 //   journalDays(state)                                        newest day first (what the sheet shows)
 //   journalAway(state, digest)                                the away-digest lines as diary lines
@@ -47,6 +47,8 @@ const T = {
   photo: ['📸', ['วันนี้ถ่ายรูปกับ {n} เก็บไว้ในอัลบั้ม', 'ถ่ายรูป {n} ไว้แล้ว ยิ้มสวยเลย', 'ได้รูปน่ารักของ {n} มาหนึ่งใบ']],
   postcard: ['💌', ['มีโปสการ์ดจาก {n} ส่งมาจากบ้านใหม่', '{n} ส่งข่าวมาจากบ้านใหม่ สบายดีนะ', 'ไปรษณีย์มาส่งโปสการ์ดของ {n}']],
   melt: ['🥰', ['{n} ละลายเลย เพราะโดนลูบนานๆ', 'ลูบ {n} จน {n} นอนแผ่ ใจละลายทั้งคู่', '{n} หลับตาพริ้ม ชอบมากเลย']],
+  familyEgg: ['💞', ['{n} กับ {m} มีไข่ครอบครัวแล้ว']],
+  familyHatch: ['🐣', ['ลูกของ {n} กับ {m} ฟักออกมาแล้ว']],
   away: ['🏡', ['{text}']],
 };
 export const JOURNAL_KINDS = Object.keys(T);

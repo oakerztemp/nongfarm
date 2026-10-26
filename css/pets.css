@@ -623,3 +623,39 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
   .b3-ph-acts .btn { padding: 0 8px; font-size: 0.78rem; min-height: 36px; }
   .b3-ph-tools { gap: 3px; padding: 4px 6px 6px; }
 }
+
+/* ── ครอบครัวน้อง 💞 (CONTRACT_V10 §3): breeding row, partner picker, family eggs, coats ── */
+.b3-breed-row { margin-top: 6px; border-color: #ff7eb3; background: color-mix(in srgb, #ff7eb3 12%, var(--surface)); }
+.b3-breed-row.is-off { border-style: solid; border-color: var(--border); background: var(--surface-2); cursor: default; }
+.b3-breed-row:disabled { color: var(--text-dim); }
+.b3-breed-row .b3-wear-now { justify-content: flex-end; text-align: right; }
+.b3-family { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.b3-reveal-family, .pet-reveal-family { font-weight: 700; color: #d6457f; }
+.pet-detail-breed { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+
+.coat-chip { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 0.74rem; font-weight: 700; background: var(--surface-2); border: 1px solid var(--border); white-space: nowrap; }
+.coat-chip b { font-weight: 800; }
+.coat-chip.coat-cream { background: #fff3dc; color: #7a5a1e; border-color: #ecd29b; }
+.coat-chip.coat-cocoa { background: #ead9cc; color: #5a3a24; border-color: #c9a98f; }
+.coat-chip.coat-mint { background: #dff6e8; color: #25704a; border-color: #9fd9b8; }
+.coat-chip.coat-rose { background: #ffe0ec; color: #a8335f; border-color: #f4a6c4; }
+.coat-chip.coat-midnight { background: #2b2f55; color: #dfe3ff; border-color: #5b63a8; }
+.coat-chip.is-unseen { opacity: 0.55; border-style: dashed; }
+.coat-book { display: grid; gap: 6px; margin-top: 6px; }
+.coat-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.coat-chips .coat-chip { font-size: 0.85rem; padding: 3px 10px; }
+
+.breed-picker { display: grid; gap: 8px; }
+.breed-note { margin: 0; padding: 6px 10px; border-radius: 10px; background: var(--surface-2); font-weight: 700; }
+.breed-row { align-items: start; }
+.breed-row.is-best { border-color: #ff7eb3; background: color-mix(in srgb, #ff7eb3 10%, var(--surface)); }
+.breed-row.is-armed { border-color: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 30%, transparent); }
+.breed-odds { display: block; font-size: 0.82rem; }
+.breed-price { font-weight: 800; }
+.breed-save { color: #d6457f; font-weight: 700; }
+.breed-confirm { display: block; margin-top: 2px; padding: 4px 8px; border-radius: 8px; background: var(--success); color: #fff; font-weight: 800; font-size: 0.85rem; }
+.cmp-chip.is-best { background: #ffe0ec; border-color: #ff7eb3; color: #a8335f; }
+
+.fam-section .incu-slot, .incu-slot.is-family { border-color: #ff9fc4; background: linear-gradient(135deg, #fff1f6, var(--surface)); }
+.incu-slot.is-family .incu-egg { filter: drop-shadow(0 0 4px #ff9fc4); }
+.incu-parents { font-size: 0.85rem; font-weight: 700; }

@@ -24,9 +24,12 @@
       <select id="stage"><option value="0">0 baby</option><option value="1">1 child</option><option value="2" selected>2 adult</option><option value="3">3 master</option></select>
     </label>
     <label>set
-      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="water">water (15)</option><option value="legendary">legendary row</option></select>
+      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="water">water (15)</option><option value="sky">sky (11)</option><option value="legendary">legendary row</option></select>
     </label>
     <label><input type="checkbox" id="shiny"> shiny</label>
+    <label>coat
+      <select id="coat"><option value="base">base</option><option value="cream">cream</option><option value="cocoa">cocoa</option><option value="mint">mint</option><option value="rose">rose</option><option value="midnight">midnight</option></select>
+    </label>
     <label><input type="checkbox" id="spin" checked> turntable</label>
     <label><input type="checkbox" id="bob" checked> squash demo</label>
     <label>angle <input type="range" id="yaw" min="-180" max="180" value="0" style="width:110px"></label>
@@ -48,6 +51,7 @@
     $('set').value = setName;
     $('set').addEventListener('change', () => { q.set('set', $('set').value); location.search = q.toString(); });
     if (q.get('shiny')) $('shiny').checked = true;
+    if (q.get('coat')) $('coat').value = q.get('coat');
     if (q.get('spin') === '0') $('spin').checked = false;
     if (q.get('bob') === '0') $('bob').checked = false;
     if (q.get('yaw')) $('yaw').value = q.get('yaw');
@@ -68,7 +72,8 @@
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
     // farm = the 21 farm habitat species; forest = the 15 forest friends (V8 §5, panda stays with the legendaries); legendary = the rest
     // water = the 15 water friends (V9 §6, the humpback stays with the legendaries)
-    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : s.habitat === 'water' && s.rarity !== 'legendary' ? 'water' : 'legendary'; };
+    // sky = the 11 sky friends (V10 §4, the eagle stays with the legendaries)
+    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : s.habitat === 'water' && s.rarity !== 'legendary' ? 'water' : s.habitat === 'sky' && s.rarity !== 'legendary' ? 'sky' : 'legendary'; };
     const ids = q.get('only') ? q.get('only').split(',')
       : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || setOf(id) === setName);
     const extras = [];
@@ -100,15 +105,15 @@
     }
     function drawCalls(obj) { let n = 0; obj.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; }
     function rebuild() {
-      const stage = +$('stage').value, shiny = $('shiny').checked;
+      const stage = +$('stage').value, shiny = $('shiny').checked, coat = $('coat').value;
       let totalTris = 0;
       for (const h of holders) {
         if (h.model) h.holder.remove(h.model.root);
         const { c } = h;
         let m;
         if (c.emoji) m = buildBillboard(THREE, c.emoji, { stage, shiny });
-        else if (c.species) m = buildPetModel(THREE, { stage, shiny, speciesId: c.species }, getSpecies(c.species));
-        else m = buildPetModel(THREE, { stage, shiny, speciesId: c.id }, getSpecies(c.id));
+        else if (c.species) m = buildPetModel(THREE, { stage, shiny, coat, speciesId: c.species }, getSpecies(c.species));
+        else m = buildPetModel(THREE, { stage, shiny, coat, speciesId: c.id }, getSpecies(c.id));
         h.model = m;
         h.tris = triCount(m.root);
         h.calls = drawCalls(m.root);
@@ -118,7 +123,7 @@
       }
       window.__gallery = { cells: holders.map(h => ({ id: h.c.id, tris: h.tris, calls: h.calls, kind: h.model.kind, height: h.model.height, radius: h.model.radius })), totalTris };
     }
-    for (const id of ['stage', 'shiny']) $(id).addEventListener('change', rebuild);
+    for (const id of ['stage', 'shiny', 'coat']) $(id).addEventListener('change', rebuild);
     rebuild();
 
     function resize() {
@@ -131,8 +136,9 @@
       const halfV = (spanZ * Math.sin(tilt) + 2.0) / 2;
       const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
       const dist = Math.max(spanX / 2 / (tanV * camera.aspect), halfV / tanV) / zoom * 1.25 + 1;
-      camera.position.set(0, Math.sin(tilt) * dist + 0.9, Math.cos(tilt) * dist);
-      camera.lookAt(0, 0.7, 0);
+      const ly = q.get('ly') !== null ? +q.get('ly') : 0.7;   // ?ly= look-at height, for close-ups of small pets
+      camera.position.set(0, Math.sin(tilt) * dist + ly + 0.2, Math.cos(tilt) * dist);
+      camera.lookAt(0, ly, 0);
       camera.updateProjectionMatrix();
     }
     addEventListener('resize', resize);

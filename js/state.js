@@ -2,7 +2,8 @@
 import { now, notify } from './util.js';
 import { fastForwardQuests } from './quests.js'; // circular on purpose: only called at migration time
 import { getCrop } from './data/crops.js';
-import { getSpecies } from './data/species.js';
+import { getSpecies, HABITATS } from './data/species.js';
+import { COAT_IDS } from './data/coats.js';
 
 // v7: accessory ids are validated against js/data/accessories.js (owned by the data author). It is loaded with a tolerant
 // top-level await so a missing/renamed file never breaks the game: without it only the id's shape is checked.
@@ -20,7 +21,7 @@ function accessoryOf(id) {
 // v5 constants other modules rely on (CONTRACT_V7 §1):
 //   NURSERY_SLOTS  max babies waiting in state.nursery        POSTCARDS_MAX  postcards kept (oldest dropped)
 //   YARD_CAP_MS    pets.js owns the live 6 h gift cap; the migration only clamps credited ms to the same value
-export const STATE_VERSION = 7;
+export const STATE_VERSION = 8;
 export const NURSERY_SLOTS = 3;
 export const POSTCARDS_MAX = 30;
 export const FRIEND_PAIRS_PER_PET = 4;  // v6: every pet keeps its 4 strongest pairs (plus its best-friend pair)...
@@ -32,6 +33,8 @@ export const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 export const JOURNAL_DAYS_MAX = 14;     // v7: days of diary kept (oldest dropped)
 export const JOURNAL_LINES_MAX = 6;     // v7: lines per day (oldest of that day dropped)
 export const WEAR_SLOTS = ['head', 'neck'];
+export const FAMILY_EGG_MAX = 2;       // v8: family eggs waiting in state.familyEggs (breeding refuses when full)
+const BREED_COOLDOWN_CAP_MS = 72 * 3600 * 1000;   // = breeding.js BREED_COOLDOWN_MS (no import: breeding.js imports pets.js -> state.js)
 const V4_YARD_CAP_MS = 6 * 3600 * 1000;
 export const DEFAULT_FARM_NAME = 'ฟาร์มของฉัน';
 const PLOT_COUNT = 4;
@@ -40,7 +43,7 @@ const STAT_KEYS = [
   'hatched', 'fed', 'played', 'cleaned', 'released',
   'planted', 'harvested', 'helped',
   'expeditionsStarted', 'expeditionsClaimed',
-  'ordersDone', 'sold', 'bought', 'yardCollected',
+  'ordersDone', 'sold', 'bought', 'yardCollected', 'bred',
 ];
 const newStats = () => Object.fromEntries(STAT_KEYS.map(k => [k, 0]));
 
@@ -87,6 +90,8 @@ export function createNewState() {
     friendsMet: [],       // v6: pairKeys already announced as best friends, <= FRIENDS_MET_MAX (newest last)
     lastGreetAt: 0,       // v6: ms of the last "pets greet you" scene (barn3d), so it plays once per away spell
     wardrobe: {},         // v7: accessoryId -> copies owned (worn copies included; a copy is worn by one pet at a time)
+    familyEggs: [],       // v8: laid family eggs not yet in the incubator, <= FAMILY_EGG_MAX: [{ id, laidAt, habitatA, habitatB, a: parent, b: parent }] (js/breeding.js)
+    coatsSeen: { base: true }, // v8: coatId -> true for every coat the player has had (the coats_all book goal)
     journal: [],          // v7: [{ day: 'YYYY-MM-DD', lines: [{ emoji, text, petId? }] }] oldest day first, <= JOURNAL_DAYS_MAX x JOURNAL_LINES_MAX (js/journal.js)
   };
 }
@@ -124,6 +129,9 @@ function petDefaults(t) {
     favKnown: false,   // v6: the player has discovered this pet's favourite stroking spot
     wear: { head: null, neck: null },  // v7: accessory ids worn (must be in state.wardrobe)
     lastBirthdayGift: null,            // v7: months number of the last birthday gift taken (js/birthday.js), null = never
+    coat: 'base',                      // v8: coat id (js/data/coats.js); a missing one is base
+    family: null,                      // v8: bred pets only: { gen, a: { name, speciesId }, b: { name, speciesId } }
+    breedReadyAt: 0,                   // v8: ms; this pet can breed again once now() >= breedReadyAt
   };
 }
 
@@ -314,6 +322,14 @@ export const MIGRATIONS = {
     s.version = 7;
     return s;
   },
+
+  // v7 -> v8: family eggs, coats seen, pet.coat / family / breedReadyAt (filled by the deep fill), incubator slot.family.
+  7(s) {
+    if (!Array.isArray(s.familyEggs)) s.familyEggs = [];
+    if (!isObj(s.coatsSeen)) s.coatsSeen = { base: true };
+    s.version = 8;
+    return s;
+  },
 };
 
 /**
@@ -496,6 +512,69 @@ function sanitiseV7(s) {
     .slice(-JOURNAL_DAYS_MAX).map(d => ({ ...d, lines: d.lines.slice(-JOURNAL_LINES_MAX) }));
 }
 
+const GEN_MAX = 99;
+const isHabitat = h => typeof h === 'string' && Object.prototype.hasOwnProperty.call(HABITATS, h);
+const cleanName = v => (typeof v === 'string' ? Array.from(v.replace(/[\u0000-\u001f\u007f]/g, '')).slice(0, 16).join('') : '');
+
+/** One parent snapshot of a family egg -> a clean copy, or null when it is malformed. */
+function cleanParent(p) {
+  if (!isObj(p) || typeof p.petId !== 'string' || !p.petId || typeof p.speciesId !== 'string' || !getSpecies(p.speciesId)) return null;
+  return {
+    petId: p.petId.slice(0, 40), name: cleanName(p.name), speciesId: p.speciesId,
+    personality: typeof p.personality === 'string' && p.personality ? p.personality.slice(0, 20) : 'cheerful',
+    shiny: p.shiny === true, coat: COAT_IDS.includes(p.coat) ? p.coat : 'base',
+    gen: Number.isInteger(p.gen) && p.gen >= 0 ? Math.min(p.gen, GEN_MAX) : 0,
+  };
+}
+
+/** A family egg -> a clean copy, or null when it is malformed (a hatch could not roll from it). Pure; shared with the incubator slot check. */
+export function cleanFamilyEgg(e) {
+  if (!isObj(e) || typeof e.id !== 'string' || !e.id || !Number.isFinite(e.laidAt)) return null;
+  if (!isHabitat(e.habitatA) || !isHabitat(e.habitatB)) return null;
+  const a = cleanParent(e.a), b = cleanParent(e.b);
+  return a && b ? { id: e.id.slice(0, 40), laidAt: e.laidAt, habitatA: e.habitatA, habitatB: e.habitatB, a, b } : null;
+}
+
+/** A pet's family field -> { gen, a: { name, speciesId }, b } or null. */
+function cleanFamily(f) {
+  if (!isObj(f) || !isObj(f.a) || !isObj(f.b)) return null;
+  const side = x => (typeof x.speciesId === 'string' && getSpecies(x.speciesId) ? { name: cleanName(x.name), speciesId: x.speciesId } : null);
+  const a = side(f.a), b = side(f.b);
+  return a && b ? { gen: Number.isInteger(f.gen) && f.gen >= 1 ? Math.min(f.gen, GEN_MAX) : 1, a, b } : null;
+}
+
+/**
+ * v8: familyEggs cleaned and capped, incubator slot.family kept only when well-formed (a family slot without a good egg is
+ * dropped: it could never hatch), pet.coat / family / breedReadyAt valid, coatsSeen = known coats (+ the ones pets wear now). Idempotent.
+ */
+function sanitiseV8(s) {
+  const seenId = new Set();
+  s.familyEggs = (Array.isArray(s.familyEggs) ? s.familyEggs : []).map(cleanFamilyEgg).filter(e => e && !seenId.has(e.id) && seenId.add(e.id)).slice(0, FAMILY_EGG_MAX);
+
+  s.incubator = s.incubator.filter(slot => {
+    if (slot.family === undefined && slot.eggId !== 'egg_family') return true;
+    const fam = cleanFamilyEgg(slot.family);
+    if (!fam || slot.eggId !== 'egg_family') {
+      if (slot.eggId === 'egg_family') return false;
+      delete slot.family; // a normal egg with a stray family field
+      return true;
+    }
+    slot.family = fam;
+    return true;
+  });
+
+  const seen = { base: true };
+  for (const [id, v] of Object.entries(isObj(s.coatsSeen) ? s.coatsSeen : {})) if (v === true && COAT_IDS.includes(id)) seen[id] = true;
+  for (const p of [...s.pets, ...s.nursery.map(e => e.pet)]) {
+    p.coat = COAT_IDS.includes(p.coat) ? p.coat : 'base';
+    p.family = cleanFamily(p.family);
+    // capped at one cooldown from now: a pet that bred while the device clock ran ahead is not stuck for longer
+  p.breedReadyAt = goodNum(p.breedReadyAt) ? Math.min(p.breedReadyAt, now() + BREED_COOLDOWN_CAP_MS) : 0;
+    seen[p.coat] = true;
+  }
+  s.coatsSeen = seen;
+}
+
 let warnedNewer = false;
 
 /** True for a save written by a newer client than this one understands (must never be uploaded). */
@@ -544,6 +623,7 @@ function migrateUnsafe(raw) {
   sanitiseV5(s);
   sanitiseV6(s);
   sanitiseV7(s);
+  sanitiseV8(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

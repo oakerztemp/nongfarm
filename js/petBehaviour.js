@@ -311,7 +311,7 @@ const pause = (rng, mult, lo = 3, hi = 8) => (lo + rng() * (hi - lo)) * mult;
  * barn3d plays them as reactions (feedPet result / a poop appearing).
  */
 export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) {
-  return applyLoco(pet, nextActionBase(pet, actorState, rng, now), rng);
+  return applyLoco(pet, nextActionBase(pet, actorState, rng, now), rng, now);
 }
 
 function nextActionBase(pet, actorState, rng, now) { // eslint-disable-line no-unused-vars
@@ -641,12 +641,13 @@ export function greetSpots(n) {
 export const WALK_BASE = 1.25;   // world units / second at pace 1
 export const TURN_RATE = 9;      // heading smoothing (1/s)
 const WALKS = new Set(['wander', 'approach', 'walkTo']);
-const ARRIVE_TYPES = new Set(['decor', 'buddy', 'party', 'puddle', 'shelter']);   // walk to the spot first, then the timer runs from arrival
+const ARRIVE_TYPES = new Set(['decor', 'buddy', 'party', 'puddle', 'shelter', 'breedMeet']);   // walk to the spot first, then the timer runs from arrival
 /** Fallback durations (s) for timed actions that do not carry one. */
 export const DEFAULT_DUR = {
   idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3,
   flyCircle: 9, soar: 8, gallop: 6, sprint: 5, breach: 2.2, roar: 2.6, munch: 5, snowPuff: 3, shimmer: 2.4, flourish: 1.4,
   wave: 1.7, decor: 5, buddy: 5, party: 6, puddle: 5, shelter: 10,
+  batLoop: 6, headTurn: 2.4, fan: 3.2,
 };
 
 /** Shortest signed angle from a to b. */
@@ -680,7 +681,7 @@ export function advanceActor(A, dt, decide) {
     if (!tgt || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.z)) { finish(); return { moving: false, decided: true }; }
     const dx = tgt.x - A.x, dz = tgt.z - A.z, d = Math.hypot(dx, dz);
     // (a pet walking to its friend is held off by the yard's personal-space push, so "there" is a little looser)
-    if (d < (act.type === 'buddy' ? 0.5 : act.type === 'party' ? 0.35 : 0.12) || act.t > 25) {
+    if (d < (act.type === 'buddy' ? 0.5 : act.type === 'breedMeet' ? 0.3 : act.type === 'party' ? 0.35 : 0.12) || act.t > 25) {
       if (walkingToDecor) {
         act.arrived = true;
         act.t = 0;
@@ -720,7 +721,8 @@ const rot = o => (o && o.rotation && Number.isFinite(o.rotation.x) ? { x: o.rota
 /** Remembers the resting rotation of the optional parts so animations are offsets from it. */
 export function partBases(parts) {
   const p = parts || {};
-  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke), lid: rot(p.lid), shell: rot(p.shell) };
+  const tailScale = p.tail && p.tail.scale && Number.isFinite(p.tail.scale.x) ? { x: p.tail.scale.x, y: p.tail.scale.y, z: p.tail.scale.z } : null;
+  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke), lid: rot(p.lid), shell: rot(p.shell), legR: rot(p.legR), tailScale };
 }
 
 /**
@@ -743,6 +745,11 @@ export function applyPartPose(parts, base, P) {
   set('fluke', 'x', P.fluke || 0);
   set('lid', 'x', -(P.shell || 0));
   set('shell', 'x', -(P.shell || 0) * 0.8);      // oyster / conch: the shell top opens and closes
+  // peacock: P.tailUp 0..1 = how open the fan is. The fan trails back at rest (models.js); +x stands it upright and it spreads wider.
+  const up = Math.max(0, Math.min(1, P.tailUp || 0));
+  set('tail', 'x', 0.8 * up);
+  if (parts.tail && parts.tail.scale && base.tailScale) parts.tail.scale.set(base.tailScale.x * (1 + up), base.tailScale.y * (1 + 0.5 * up), base.tailScale.z);
+  set('legR', 'x', P.leg || 0);                   // flamingo: +x folds the foot back and up
 }
 
 /** A new hatch ceremony may start unless another one is still before its burst (egg still in the nest). */
@@ -764,14 +771,44 @@ const WALK_LOCO = { kind: 'walk', speed: 1 };
 /** { kind: 'walk'|'float'|'side'|'hop'|'slow'|'play'|'shell', speed (x walking pace), turn? (x turn rate) } */
 export function locomotionOf(speciesId) { return LOCO[speciesId] || WALK_LOCO; }
 
+// ── Sky locomotion (CONTRACT_V10 §4) ──────────────────────────────────────────────────────────────────────
+/** Small birds hop-hop along the ground and sometimes flutter up for a short hop-flight. */
+export const SKY_SMALL = new Set(['sparrow', 'dove', 'canary', 'tit', 'parrot']);
+for (const id of SKY_SMALL) LOCO[id] = { kind: 'birdhop', speed: 1.05 };
+LOCO.hatchling = { kind: 'wobble', speed: 0.6, turn: 0.7 };   // wobbles in half an eggshell
+LOCO.bat = { kind: 'bat', speed: 1.2 };                       // sleeps by day, flutters in loops at night
+LOCO.swan = { kind: 'glide', speed: 0.55, turn: 0.5 };        // slow, smooth glide
+LOCO.flamingo = { kind: 'stand', speed: 0.8 };                // stands on one leg when idle
+
+/** Night for the bat: 18:00 - 06:00 local time (the same hours the yard lanterns use). */
+export function isNightAt(ms) {
+  const h = new Date(Number.isFinite(ms) ? ms : Date.now()).getHours();
+  return h >= 18 || h < 6;
+}
+
+/** What tapping a pet does besides the usual hop: the owl turns its head, the peacock fans its tail. Null for everyone else. */
+export function tapReaction(speciesId) {
+  if (speciesId === 'owl') return { type: 'headTurn', dur: DEFAULT_DUR.headTurn };
+  if (speciesId === 'peacock') return { type: 'fan', dur: DEFAULT_DUR.fan };
+  return null;
+}
+
+const FREE_TYPES = new Set(['wander', 'approach', 'idle', 'lookAtCamera', 'hop']);
+
 /** Slows the walkers down per species; shells (oyster / conch) mostly stay put and just open and close. Pure. */
-function applyLoco(pet, act, rng) {
+function applyLoco(pet, act, rng, nowMs) {
   const lo = locomotionOf(pet && pet.speciesId);
   if (lo === WALK_LOCO || !act) return act;
   const walking = act.type === 'wander' || act.type === 'approach';
   if (lo.kind === 'shell' && walking && !act.reason && rng() < 0.85) return { type: 'idle', duration: 5 + rng() * 5, reason: 'shell' };
   if (lo.kind === 'play' && act.type === 'idle' && !act.reason && rng() < 0.3) return { type: 'hop', duration: 1.6, hops: 3 };
-  if (Number.isFinite(act.speed) && lo.speed) return { ...act, speed: act.speed * lo.speed };
+  if (lo.kind === 'bat' && FREE_TYPES.has(act.type) && !act.reason) {
+    if (!isNightAt(nowMs)) return { type: 'sleep', nap: true, hang: true, duration: 10 + rng() * 6 };   // asleep by day, wings folded
+    if ((act.type === 'wander' || act.type === 'idle') && rng() < 0.5) return { type: 'batLoop', duration: 5 + rng() * 3 };
+  }
+  if (lo.kind === 'stand' && act.type === 'idle' && !act.reason) act = { ...act, oneLeg: true, duration: (act.duration || 3) * 1.6 };
+  if (lo.kind === 'birdhop' && walking && !act.reason && rng() < 0.22) act = { ...act, flutter: true };   // a short hop-flight with flapping wings
+  if (Number.isFinite(act.speed) && lo.speed) return { ...act, speed: act.speed * lo.speed * (act.flutter ? 1.35 : 1) };
   return act;
 }
 

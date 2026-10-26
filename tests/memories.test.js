@@ -60,7 +60,7 @@ test('journal: caps at 14 days and 6 lines a day (oldest dropped), days stay sor
 
 test('journal: every event kind has cute Thai text with the pet name, short, deterministic', () => withFakeNow(NOON, () => {
   const s = game([{ id: 'p1', name: 'มีมี่' }, { id: 'p2', name: 'โมจิ' }]);
-  assertEq(JOURNAL_KINDS.sort(), ['away', 'birthday', 'bestFriend', 'favSpot', 'firstWear', 'hatch', 'melt', 'photo', 'postcard'].sort());
+  assertEq(JOURNAL_KINDS.sort(), ['away', 'birthday', 'bestFriend', 'favSpot', 'firstWear', 'hatch', 'melt', 'photo', 'postcard', 'familyEgg', 'familyHatch'].sort());
   const ctx = { petId: 'p1', otherId: 'p2', spot: 'chin', acc: '🎩 หมวกทรงสูง', months: 3 };
   for (const [i, kind] of JOURNAL_KINDS.filter(k => k !== 'away').entries()) {
     ctx.day = `2026-09-0${i + 1}`; // one day each: a day only holds 6 lines

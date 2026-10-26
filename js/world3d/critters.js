@@ -2,17 +2,19 @@
 // THREE is passed in (vendored r160) so this module has no import of it and stays testable.
 //
 //   hasModel(speciesId)                    -> bool
-//   buildPetModel(THREE, pet, species)     -> { root, body, head, height, radius, kind, ... }
+//   buildPetModel(THREE, pet, species)     -> { root, body, head, height, radius, kind, ... }   pet.coat (V10 §2) recolours body-like colours; shiny wins
 //   buildBillboard(THREE, emoji, opts?)    -> same shape, kind 'billboard'
 //
 // Conventions: model faces +Z, +Y is up, origin = feet on the ground. `body` is the squash/stretch
 // target (origin at the feet); `head` is a child group pivoting at the head centre (look-at / nod).
 // Water pets (V9 §6): spec.bubble = { r, pitch? } wraps a fully aquatic model in a translucent floating bubble (parts.bubble, ONE extra draw
 // call, a geometry + material shared by every water pet); spec.bubble.pitch tilts the swimmer inside it. Oyster / conch carry a `shell` pivot.
+// Sky pets (V10 §4): wings (wingL/wingR), tail (the peacock's whole fan is the 'tail' pivot), flamingo hip pivots legL / legR.
 // Stage scale lives on `root` (so B's body.scale squash never fights it). Everything built here
 // shares geometries (unit shapes, scaled per mesh) and materials (keyed by colour) per THREE instance.
 
 import { MODEL_SPECS } from '../data/models.js';
+import { getCoat, coatOf } from '../data/coats.js';
 
 export const STAGE_SCALE = [0.7, 0.85, 1.0, 1.15];
 export const LEGENDARY_SCALE = 1.25;
@@ -115,9 +117,33 @@ export function kitStats(T) {
 // ── colour handling (shiny = curated per-species palette, else a gentle pastel shift) ──
 function hashStr(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
 
-/** curated: { '#from': '#to' } from the spec's shinyPalette. Unlisted colours stay as they are when a palette exists. */
-function makePalette(T, shiny, seed, curated) {
-  if (!shiny) return hex => hex;
+/**
+ * V10 coat: every body-like colour takes the coat's own hue (coats.js: hue = target hue, sat = target saturation, light = lightness multiplier).
+ * The original lightness carries the pattern (cow spots, bellies), so a pig and a buffalo in the same coat read as the same colour.
+ * Shiny never gets here (shiny wins over the coat).
+ */
+function coatPalette(T, coat) {
+  const cs = T.SRGBColorSpace;
+  const cache = new Map();
+  return hex => {
+    const key = String(hex).toLowerCase();
+    let out = cache.get(key);
+    if (!out) {
+      const c = new T.Color(key), hsl = { h: 0, s: 0, l: 0 };
+      c.getHSL(hsl, cs);
+      const sat = Math.min(1, coat.sat * (0.8 + 0.4 * Math.min(1, hsl.s)));   // a touch more on already colourful parts
+      const lit = Math.max(0.14, Math.min(0.9, hsl.l * coat.light));          // pastel white would not read as a colour
+      c.setHSL(coat.hue / 360, sat, lit, cs);
+      out = '#' + c.getHexString(cs);
+      cache.set(key, out);
+    }
+    return out;
+  };
+}
+
+/** curated: { '#from': '#to' } from the spec's shinyPalette. Unlisted colours stay as they are when a palette exists. coat: a coats.js entry (ignored when shiny). */
+function makePalette(T, shiny, seed, curated, coat) {
+  if (!shiny) return coat && coat.id !== 'base' ? coatPalette(T, coat) : hex => hex;
   const cs = T.SRGBColorSpace;
   const deg = 28 + (hashStr(seed) % 28);                     // gentle fallback: 28..55 degrees, never more
   const cache = new Map();
@@ -240,7 +266,8 @@ export function buildPetModel(T, pet, species, opts = {}) {
   const spec = id && hasModel(id) ? MODEL_SPECS[id] : null;
   const rarity = (species && species.rarity) || 'common';
   if (!spec) return buildBillboard(T, (species && species.emoji) || '❓', { stage, shiny, rarity });
-  const tpl = template(T, spec, shiny, id, opts.toonGradient || null);
+  const coat = shiny ? 'base' : coatOf(pet);   // shiny wins: a shiny pet ignores its coat in 3D
+  const tpl = template(T, spec, shiny, id, opts.toonGradient || null, coat);
   const root = tpl.root.clone(true); // Mesh.clone shares geometry + material: no new buffers
   const find = n => root.getObjectByName(n) || null;
   const eyes = find('eyes');
@@ -252,7 +279,7 @@ export function buildPetModel(T, pet, species, opts = {}) {
       eyes: eyes ? [eyes] : [], ears: [earL, earR].filter(Boolean), earL, earR,
       tail: find('tail'), tailTip: find('tailTip'), wingL: find('wingL'), wingR: find('wingR'),
       fluke: find('fluke'), spout: find('spout'), shell: find('shell'), bubble: find('bubble'),
-      trunk: find('trunk'), mane: find('mane'), breath: find('breath'), crown: null,
+      trunk: find('trunk'), mane: find('mane'), breath: find('breath'), legL: find('legL'), legR: find('legR'), crown: null,
     },
     crownY: tpl.crownY, crownLift: tpl.crownLift, baseHeight: tpl.baseHeight, baseRadius: tpl.baseRadius, height: tpl.baseHeight, radius: tpl.baseRadius,
     stage: 2, stageScale: 1,
@@ -260,19 +287,19 @@ export function buildPetModel(T, pet, species, opts = {}) {
   return applyStage(T, m, stage);
 }
 
-/** Cached per (species, shiny, gradient): merged geometries are built once and shared by every pet. */
-function template(T, spec, shiny, id, grad) {
+/** Cached per (species, shiny, coat, gradient): merged geometries are built once and shared by every pet. */
+function template(T, spec, shiny, id, grad, coat = 'base') {
   const k = kit(T);
-  const key = id + '|' + (shiny ? 1 : 0) + '|' + (grad || gradient(T)).uuid;
+  const key = id + '|' + (shiny ? 1 : 0) + '|' + coat + '|' + (grad || gradient(T)).uuid;
   let t = k.tpl.get(key);
-  if (!t) { t = assemble(T, spec, shiny, id, grad); k.tpl.set(key, t); }
+  if (!t) { t = assemble(T, spec, shiny, id, grad, coat); k.tpl.set(key, t); }
   return t;
 }
 
 const TAU = Math.PI * 2;
 
-function assemble(T, spec, shiny, seed, grad) {
-  const pal = makePalette(T, shiny, seed, spec.shinyPalette);
+function assemble(T, spec, shiny, seed, grad, coat = 'base') {
+  const pal = makePalette(T, shiny, seed, spec.shinyPalette, getCoat(coat));
   const tm = hex => ({ hex: pal(hex) });   // body-like colour (shifted when shiny); baked into vertex colours
   const fm = hex => ({ hex });             // fixed colour
   const bm = hex => ({ hex });
@@ -734,8 +761,9 @@ function assemble(T, spec, shiny, seed, grad) {
         const pivot = new T.Group();
         pivot.position.set(side * B.w * (o.x ?? 0.88), by + B.h * (o.y ?? 0.35), o.z ?? 0);
         pivot.rotation.z = side * (o.rest ?? 0.2);
+        if (o.back) pivot.rotation.x = o.back;   // V10: tip swept back along the flank
         bodyG.add(pivot);
-        put(pivot, 'sphL', mat, s * 0.2, s * 0.8, s * (o.d ?? 0.55), side * s * 0.1, -s * 0.55, -s * 0.1);
+        put(pivot, 'sphL', mat, s * 0.2, s * (o.h ?? 0.8), s * (o.d ?? 0.55), side * s * 0.1, -s * (o.h ?? 0.8) * 0.6875, -s * 0.1);
         bodyG.add(pivot);
         pivot.name = side > 0 ? 'wingL' : 'wingR';
         pivot.userData.anim = true;
@@ -747,12 +775,36 @@ function assemble(T, spec, shiny, seed, grad) {
       g.position.set(0, by + B.h * (o.y ?? 0.2), -B.d * (o.z ?? 0.8));
       g.rotation.x = -(o.lean ?? 0.5);
       bodyG.add(g);
+      if (o.name) { g.name = o.name; g.userData.anim = true; }   // V10 peacock: the whole fan is the 'tail' pivot (B scales / lifts it open)
       for (let i = 0; i < n; i++) {
         const t = n === 1 ? 0 : i / (n - 1) * 2 - 1;
         const pv = new T.Group();
         pv.rotation.z = t * (o.spread ?? 1.1);
         g.add(pv);
         put(pv, 'sphP', tm(cols[i % cols.length]), s * (o.wd ?? 0.16), s * (1 - Math.abs(t) * 0.12), s * 0.06, 0, s * 0.95, 0);
+        if (o.eye) {   // eye spot on both faces of the feather: gold ring + dark-blue centre
+          const wd = o.wd ?? 0.16;
+          for (const f of [1, -1]) {
+            const ring = put(pv, 'discS', tm(o.eye[1]), s * wd * 0.8, s * wd * 1.05, 1, 0, s * (o.eyeY ?? 1.4), f * s * 0.075);
+            const dot = put(pv, 'discS', tm(o.eye[0]), s * wd * 0.46, s * wd * 0.62, 1, 0, s * (o.eyeY ?? 1.4), f * s * 0.085);
+            if (f < 0) ring.rotation.y = dot.rotation.y = Math.PI;
+          }
+        }
+      }
+    },
+    /** V10 flamingo legs: two hip pivots (parts.legL / parts.legR), each a thin leg reaching the ground + a webbed foot. Rotate .x > 0 to swing the foot back / up (stand on one leg). */
+    pivotlegs(o) {
+      const r = o.r ?? 0.024, mat = tm(o.color || B.color), foot = tm(o.foot || o.color || B.color);
+      for (const side of [1, -1]) {
+        const pv = new T.Group();
+        pv.position.set(side * B.w * (o.x ?? 0.4), by - B.h * (o.y ?? 0.5), o.z ?? 0.02);
+        pv.name = side > 0 ? 'legL' : 'legR';
+        pv.userData.anim = true;
+        bodyG.add(pv);
+        const len = pv.position.y;
+        put(pv, 'cylT', mat, r, len, r, 0, -len, 0);
+        put(pv, 'sphP', mat, r * 1.5, r * 1.5, r * 1.5, 0, -len * 0.5, 0);                 // knee bead
+        put(pv, 'cyl', foot, r * 3.6, r * 0.5, r * 5.2, 0, -len, r * 2.4);
       }
     },
     beard(o) {

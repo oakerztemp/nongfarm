@@ -1038,7 +1038,7 @@ test('migrate v4 -> v5: yard gifts split onto the pets at home, nothing lost', a
   const T = 1790100000000;
   const s = await withFakeNow(T, () => migrate(raw));
   assertEq(s.version, STATE_VERSION, 'version');
-  assertEq(STATE_VERSION, 7, 'STATE_VERSION');
+  assertEq(STATE_VERSION, 8, 'STATE_VERSION');
   // pet5 (cow, sleeping) and pet7 (pig, idle) are the only pets at home; pet5 is first -> gets the remainder + the coin fraction
   assertEq(Object.keys(s.yard.byPet).sort(), ['pet5', 'pet7'], 'only pets at home receive gifts');
   const a = s.yard.byPet.pet5, b = s.yard.byPet.pet7;
@@ -1363,7 +1363,7 @@ test('adopting a v2-shaped cache from another tab goes through migrate()', () =>
 test('migrate v5 -> v6: nothing lost, new fields default, nursery pets get favKnown too', async () => {
   const raw = await loadFixture('save_v5_midgame');
   const s = await withFakeNow(1790200000000, () => migrate(raw));
-  assertEq([s.version, STATE_VERSION], [7, 7]);
+  assertEq([s.version, STATE_VERSION], [8, 8]);
   assertEq([s.friends, s.lastGreetAt], [{}, 0]);
   assert(s.pets.length === 7 && s.pets.every(p => p.favKnown === false), 'every pet has favKnown');
   assertEq(s.nursery.length, 1);
@@ -1400,7 +1400,7 @@ test('v6 sanitising: friends keeps valid pairs of yard pets, each pet its top 4;
 test('migrate v6 -> v7: nothing lost, new fields default (nursery pets too)', async () => {
   const raw = await loadFixture('save_v6_midgame');
   const s = await withFakeNow(1790100000000, () => migrate(raw));
-  assertEq(s.version, 7);
+  assertEq(s.version, STATE_VERSION);
   assertEq([s.wardrobe, s.journal], [{}, []]);
   assert(s.pets.every(p => p.wear.head === null && p.wear.neck === null && p.lastBirthdayGift === null), 'pets');
   assert(s.nursery.length && s.nursery.every(e => e.pet.wear.head === null && e.pet.lastBirthdayGift === null), 'nursery pets');
@@ -1446,19 +1446,28 @@ test('v7 sanitising: journal cleaned, merged by day, capped at 14 days x 6 lines
   assertEq(migrate(JSON.parse(JSON.stringify(s))).journal, s.journal, 'idempotent');
 });
 
-test('save size: a maximal v7 save (20 pets, full wardrobe, 14 days of diary, 120 friend pairs) is < 120 KB', () => {
+test('save size: a maximal v8 save (20 bred pets, full wardrobe, 14 days of diary, 120 friend pairs, 2 family eggs, 3 bred incubator slots) is < 120 KB', () => {
   const s = createNewState();
   s.pets = Array.from({ length: 20 }, (_, i) => ({
     id: `pet${String(i).padStart(4, '0')}abcd`, speciesId: 'hamster', nickname: 'ชื่อน้องยาวๆ ' + i, shiny: i % 2 === 0, personality: 'cheerful', stage: 3, xp: 1234.5678, status: 'idle',
     stats: { hunger: 80.123456789, happy: 70.123456789, energy: 90.123456789, clean: 60.123456789 }, bond: 360, bondDay: '2026-10-25', bondToday: 12, giftDay: '2026-10-25',
     bornAt: 1790000000000 + i, lastFedAt: 1790000000000, favKnown: true, wear: { head: 'acc_tophat', neck: 'acc_scarf' }, lastBirthdayGift: 12,
+    coat: 'midnight', breedReadyAt: 1790000000000, family: { gen: 3, a: { name: 'ชื่อน้องยาวๆ พ่อ', speciesId: 'hamster' }, b: { name: 'ชื่อน้องยาวๆ แม่', speciesId: 'pig' } },
   }));
+  const parent = (n, sp) => ({ petId: `pet${String(n).padStart(4, '0')}abcd`, name: 'ชื่อน้องยาวๆ ' + n, speciesId: sp, personality: 'cheerful', shiny: true, coat: 'rose', gen: 3 });
+  const famEgg = n => ({ id: `fam${n}abcdef`, laidAt: 1790000000000, habitatA: 'farm', habitatB: 'forest', a: parent(n, 'hamster'), b: parent(n + 1, 'pig') });
+  s.familyEggs = [famEgg(0), famEgg(2)];
+  s.incubator = [1, 2, 3].map(n => ({ eggId: 'egg_family', family: famEgg(n), startAt: 1790000000000, readyAt: 1790000900000 }));
+  s.incubatorCapacity = 3;
+  s.coatsSeen = { base: true, cream: true, cocoa: true, mint: true, rose: true, midnight: true };
   s.wardrobe = { acc_bow: 99, acc_cap: 99, acc_widehat: 99, acc_tophat: 99, acc_crown: 99, acc_grad: 99, acc_bell: 99, acc_scarf: 99, acc_lei: 99, acc_butterfly: 99 };
   s.journal = Array.from({ length: 14 }, (_, d) => ({ day: `2026-10-${String(d + 1).padStart(2, '0')}`, lines: Array.from({ length: 6 }, (__, j) => ({ emoji: '🎂', text: 'น้องหมูอ้วนครบ 12 เดือนแล้ว วันนี้วันเกิดของน้อง ' + j, petId: `pet${String(j).padStart(4, '0')}abcd` })) }));
   for (let i = 0, k = 0; i < 20 && k < 120; i++) for (let j = i + 1; j < 20 && k < 120; j++, k++) s.friends[`pet${String(i).padStart(4, '0')}abcd|pet${String(j).padStart(4, '0')}abcd`] = 12.123456789;
   s.postcards = Array.from({ length: POSTCARDS_MAX }, (_, i) => ({ id: `pc${i}`, petName: 'น้องหมู', speciesId: 'pig', text: 'สวัสดีจากบ้านใหม่ ที่นี่สบายมากเลย ขอบคุณที่เลี้ยงเรานะ', at: 1790000000000 + i, read: false }));
   s.friendsMet = Array.from({ length: FRIENDS_MET_MAX }, (_, i) => `pet${String(i % 20).padStart(4, '0')}abcd|pet${String((i + 1) % 20).padStart(4, '0')}abce`);
   const kb = JSON.stringify(s).length / 1024;
-  assert(kb < 120, `maximal v7 save is ${kb.toFixed(1)} KB`);
-  assert(JSON.stringify(migrate(JSON.parse(JSON.stringify(s)))).length / 1024 < 120, 'still small after migrate');
+  assert(kb < 120, `maximal v8 save is ${kb.toFixed(1)} KB`);
+  const back = migrate(JSON.parse(JSON.stringify(s)));
+  assert(JSON.stringify(back).length / 1024 < 120, 'still small after migrate');
+  assertEq([back.familyEggs.length, back.incubator.filter(x => x.family).length, back.pets[0].family.gen], [2, 3, 3], 'bred data survives the sanitiser');
 });

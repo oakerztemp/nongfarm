@@ -10,6 +10,9 @@ import { getTraitDef, TRAIT_SCALE } from './data/traits.js';
 import { CROPS } from './data/crops.js';
 import { hashId, favoriteSpot, FAV_LABEL, STROKE_MIN_MS } from './petBehaviour.js';
 import { getAccessory } from './data/accessories.js';
+import { COAT_IDS } from './data/coats.js';
+import { rollFamilyGenes } from './breeding.js';
+import { journalEvent } from './journal.js';
 
 import { tickFriends, bestFriendMap, bestFriendOf as bestFriendId, friendDecayMult, removePetFriends } from './friends.js';
 
@@ -629,7 +632,9 @@ export function hatchReady(state, slotIndex) {
   const toNursery = state.pets.length >= state.barnCapacity;
   if (toNursery && ensureNursery(state).length >= NURSERY_SLOTS) return fail('เปลเต็มแล้ว! ลานก็เต็มด้วย — ขยายลาน หรือส่งน้องบางตัวไปบ้านใหม่ก่อนนะ');
   const egg = getEgg(slot.eggId);
-  const species = egg && pickSpeciesForHabitat(egg.habitat);
+  // A family egg (CONTRACT_V10) rolls its genes now from the parents' snapshot; a normal egg picks a species of its habitat.
+  const genes = slot.family ? rollFamilyGenes(slot.family) : null;
+  const species = genes ? getSpecies(genes.speciesId) : egg && pickSpeciesForHabitat(egg.habitat);
   if (!species) return fail('ไข่ใบนี้ฟักไม่ได้');
 
   const t = now();
@@ -637,8 +642,8 @@ export function hatchReady(state, slotIndex) {
     id: uid(),
     speciesId: species.id,
     nickname: NICKNAMES[Math.floor(Math.random() * NICKNAMES.length)],
-    shiny: Math.random() < SHINY_CHANCE,
-    personality: PERSONALITY_IDS[Math.floor(Math.random() * PERSONALITY_IDS.length)],
+    shiny: genes ? genes.shiny : Math.random() < SHINY_CHANCE,
+    personality: genes ? genes.personality : PERSONALITY_IDS[Math.floor(Math.random() * PERSONALITY_IDS.length)],
     stage: 0,
     xp: 0,
     stats: { hunger: 80, happy: 80, energy: 100, clean: 100 },
@@ -657,6 +662,7 @@ export function hatchReady(state, slotIndex) {
     station: null,
     bornAt: t,
   };
+  if (genes) Object.assign(pet, { coat: genes.coat, family: genes.family, breedReadyAt: 0 });
   if (toNursery) state.nursery.push({ pet, hatchedAt: t }); else state.pets.push(pet);
   state.incubator.splice(slotIndex, 1);
 
@@ -667,9 +673,16 @@ export function hatchReady(state, slotIndex) {
 
   addPlayerXp(state, 10);
   bumpStat(state, 'hatched');
+  if (genes) {
+    bumpStat(state, 'bred');
+    if (!state.coatsSeen || typeof state.coatsSeen !== 'object') state.coatsSeen = { base: true };
+    state.coatsSeen[genes.coat] = true;
+    journalEvent(state, 'familyHatch', { petId: pet.id, name: genes.family.a.name, other: genes.family.b.name });
+  }
   const rar = RARITIES[species.rarity];
   const msg = `${pet.shiny ? '✨' : '🐣'} ฟักออกมาเป็น ${species.emoji} ${species.nameTh}` +
     `${pet.shiny ? ' ร่างไชนี่!' : ''} (${rar.nameTh}) ชื่อ "${pet.nickname}"` +
+    `${genes ? ` ลูกของ ${genes.family.a.name} กับ ${genes.family.b.name} 💞` : ''}` +
     `${toNursery ? ' — ลานเต็ม เลยพักในเปลอนุบาล 👶' : ''}`;
   addLog(state, msg);
   return { ok: true, msg, pet, nursery: toNursery };
@@ -1273,6 +1286,8 @@ function makeGoals() {
   add('species_all', `📖 สะสมครบทุกชนิด (${total})`, total, all, { coins: 5000, stardust: 300, items: { egg_mystic: 2 } });
   const shinyN = s => SPECIES.filter(sp => (s.collection[sp.id] || {}).shiny).length;
   add('shiny_first', '✨ ได้ร่างไชนี่ตัวแรก', 1, shinyN, { coins: 200, stardust: 20 });
+  const coatsN = s => COAT_IDS.filter(id => s.coatsSeen && s.coatsSeen[id] === true).length;
+  add('coats_all', `🎨 สะสมสีขนครบทุกสี (${COAT_IDS.length})`, COAT_IDS.length, coatsN, { stardust: 50 });
   return goals;
 }
 

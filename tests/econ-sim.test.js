@@ -16,6 +16,11 @@ import { EGGS } from '../js/data/eggs.js';
 import { ITEMS, getItem } from '../js/data/items.js';
 import { DECOR } from '../js/data/decor.js';
 import { ACCESSORIES, shopAccessories, getAccessory } from '../js/data/accessories.js';
+import { getSpecies } from '../js/data/species.js';
+import { getEgg } from '../js/data/eggs.js';
+import { COATS } from '../js/data/coats.js';
+import { canBreed, breed, breedCost, breedPreview, putFamilyEggInIncubator, habitatSpeciesChances, FAMILY_EGG_MAX, BREED_UNLOCK_LEVEL, BREED_COOLDOWN_MS, BREED_COST_MULT, BREED_FRIEND_MULT } from '../js/breeding.js';
+import { STARDUST_BY_RARITY, RELEASE_COINS, rehomeDust, rehomePet, yardOutput } from '../js/pets.js';
 import {
   tickFarm, plantSeed, waterPlot, assignPet, unassignPet, stationPet, unstationPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
   buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, barnUpgradeCost, barnUpgradeStatus, upgradeIncubator, incubatorUpgradePrice,
@@ -216,6 +221,56 @@ function buyAccessoryWhenRich(s, bot) {
   if (buyAccessory(s, want.id).ok) { bot.accSpent += before - s.player.coins; bot.accBought++; }
 }
 
+// V10: breeding is a late-game coin sink. The bot breeds when it is rich (coins >= 3x the cost), best friends first (they are cheaper), then the
+// cheapest eligible pair. Family eggs go into the incubator like bought eggs (only while the yard has room for the baby).
+function breedWhenRich(s, bot) {
+  if (s.player.level < BREED_UNLOCK_LEVEL || (s.familyEggs || []).length >= FAMILY_EGG_MAX) return;
+  let best = null;
+  for (let i = 0; i < s.pets.length; i++) {
+    for (let j = i + 1; j < s.pets.length; j++) {
+      const a = s.pets[i], b = s.pets[j];
+      if (!canBreed(s, a, b).ok) continue;
+      const { cost, bestFriends } = breedCost(s, a, b);
+      if (s.player.coins < 3 * cost) continue;
+      const key = (bestFriends ? 0 : 1) * 1e9 + cost;
+      if (!best || key < best.key) best = { a, b, key, cost, bestFriends };
+    }
+  }
+  if (!best) return;
+  const before = s.player.coins;
+  if (breed(s, best.a.id, best.b.id).ok) {
+    bot.bred++;
+    bot.breedSpent += before - s.player.coins;
+    if (best.bestFriends) bot.bredBest++;
+  }
+}
+
+function incubateFamilyEggs(s) {
+  for (const egg of [...(s.familyEggs || [])]) {
+    if (s.incubator.length >= s.incubatorCapacity) break;
+    putFamilyEggInIncubator(s, egg.id);
+  }
+}
+
+// A breeder with a family egg waiting makes room, like a player would: when a ready egg cannot hatch because the yard AND the nursery are full,
+// the weakest nursery baby (else the weakest idle yard pet) goes to a new home, then the egg hatches. Only runs while breeding is on.
+const RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
+function makeRoomForFamily(s, bot) {
+  if (!(s.familyEggs || []).length && !s.incubator.some(sl => sl.family)) return;
+  for (let guard = 0; guard < 4; guard++) {
+    // family slots first, then the normal eggs that block the incubator
+    const idx = [...s.incubator.keys()].filter(i => now() >= s.incubator[i].readyAt).sort((x, y) => !!s.incubator[y].family - !!s.incubator[x].family)[0];
+    if (idx == null) return;
+    if (hatchReady(s, idx).ok) continue;
+    // a breeder keeps the babies it bred (they start weakest, so without this key they would be the first to go)
+    const weak = list => list.sort((x, y) => !!x.family - !!y.family || RARITY_ORDER.indexOf(getSpecies(x.speciesId).rarity) - RARITY_ORDER.indexOf(getSpecies(y.speciesId).rarity) || x.stage - y.stage || (x.bond || 0) - (y.bond || 0))[0];
+    const out = weak((s.nursery || []).map(e => e.pet)) || weak(s.pets.filter(p => p.status === 'idle' && !(s.familyEggs || []).some(e => e.a.petId === p.id || e.b.petId === p.id)));
+    if (!out || !rehomePet(s, out.id).ok) return;
+    bot.rehomed++;
+    hatchReady(s, idx);
+  }
+}
+
 const canWorkAfterRecall = p => p.stats.energy >= 20 && p.stats.hunger >= 15 && !p.sick;
 
 function session(s, bot, cadence) {
@@ -225,6 +280,7 @@ function session(s, bot, cadence) {
   // 1. collect trips + hatch
   for (const ex of [...s.expeditions]) if (ex.done) claimExpedition(s, ex.id);
   for (let i = s.incubator.length - 1; i >= 0; i--) hatchReady(s, i);
+  if (!bot.noBreed) makeRoomForFamily(s, bot);
 
   // 2. harvest everything ready, then deliver orders we can
   harvestAll(s, false);
@@ -290,6 +346,9 @@ function session(s, bot, cadence) {
     if (pet.stats.happy < 50 && pet.stats.energy > 30 && pet.status === 'idle') playWithPet(s, pet.id);
     if (pet.status === 'idle' && pet.stats.energy < 30) toggleSleep(s, pet.id);
   }
+
+  // 5b. V10: a rich bot breeds two idle pets before it sends them out
+  if (!bot.noBreed) breedWhenRich(s, bot);
 
   // 6. put idle pets to work: expedition or helper on a growing plot, whichever pays more per hour
   const zones = ZONES.filter(z => z.unlockLevel <= s.player.level);
@@ -378,6 +437,7 @@ function session(s, bot, cadence) {
       if (!putEggInIncubator(s, e.id).ok) break;
     }
   }
+  if (!bot.noBreed) incubateFamilyEggs(s);
   const reserve = 100;
   for (let guard = 0; guard < 12; guard++) {
     const spare = startCoins() - reserve;
@@ -433,7 +493,7 @@ function runSim(profile, seed, opts = {}) {
     Math.random = mulberry32(seed);
     try {
       const s = createNewState();
-      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
+      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
       let last = START;
       let lastRowAt = START;
@@ -479,10 +539,16 @@ async function resultOff(name) {   // same bot + seed, accessory buying switched
   return resultsOff[name];
 }
 
+const resultsNoBreed = {};
+async function resultNoBreed(name) {   // same bot + seed, breeding switched off (V10 gate 3)
+  if (!resultsNoBreed[name]) resultsNoBreed[name] = await runSim(name, 20260302, { noBreed: true });
+  return resultsNoBreed[name];
+}
+
 function table(name, r) {
   const share = k => Math.round((100 * r.by[k]) / Math.max(1, r.earned));
   const lines = [`[econ-sim] ${name}: ${Math.round(r.perHour)} coins/h earned on average (${r.ms} ms); income mix crops ${share('crop')}% / forage ${share('forage')}% / orders ${share('orders')}% / yard ${share('yard')}%; plot-helper assignments ${r.assigns}, full-team combos ${r.combos}`,
-    `yard tiers reached (virtual days) M ${r.tierDay.M} / L ${r.tierDay.L} / XL ${r.tierDay.XL}; ${r.bot.upgrades} upgrades, ${r.bot.gathers} gathering trips; decor built ${r.bot.decorBuilt}, placed ${r.bot.decorPlaced}, ${r.bot.decorSpent} coins; accessories bought ${r.bot.accBought} for ${r.bot.accSpent} coins`,
+    `yard tiers reached (virtual days) M ${r.tierDay.M} / L ${r.tierDay.L} / XL ${r.tierDay.XL}; ${r.bot.upgrades} upgrades, ${r.bot.gathers} gathering trips; decor built ${r.bot.decorBuilt}, placed ${r.bot.decorPlaced}, ${r.bot.decorSpent} coins; accessories bought ${r.bot.accBought} for ${r.bot.accSpent} coins; family eggs laid ${r.bot.bred} (${r.bot.bredBest} best friends) for ${r.bot.breedSpent} coins, hatched ${r.state.stats.bred || 0}, ${r.bot.rehomed} pets sent to new homes to make room`,
     'day  lvl  plots pets inc barn orders  coins/h(day)  yard%   coins'];
   for (const x of r.rows) {
     lines.push(`${String(x.day).padStart(3)}  ${String(x.level).padStart(3)}  ${String(x.plots).padStart(5)} ${String(x.pets).padStart(4)} ${String(x.inc).padStart(3)} ${String(x.barn).padStart(4)} ${String(x.orders).padStart(6)}  ${String(Math.round(x.perHour)).padStart(12)}  ${String(Math.round(100 * x.yardShare)).padStart(4)}%  ${String(x.coins).padStart(7)}`);
@@ -897,4 +963,150 @@ test('econ: accessories cannot be sold or bought as items (no buy->sell loop)', 
   const before = s.player.coins;
   for (const a of shopAccessories()) assert(buyAccessory(s, a.id).ok, 'buy ' + a.id);
   assertEq(s.player.coins + shopAccessories().reduce((t, a) => t + a.price, 0), before, 'exact price paid, nothing back');
+});
+
+
+// ── V10: breeding guardrails (CONTRACT_V10 "Economy and save guardrails") ───
+const RARITY_LIST = ['common', 'uncommon', 'rare', 'epic'];   // legendary pets can never breed
+const HABITAT_LIST = [...new Set(SPECIES.map(s => s.habitat))];
+const eggOf = habitat => EGGS.find(e => e.habitat === habitat);
+const speciesOfRarity = (habitat, rarity) => SPECIES.find(s => s.habitat === habitat && s.rarity === rarity);
+const dustOf = id => STARDUST_BY_RARITY[getSpecies(id).rarity];
+const SHINY_EGG = 0.03;   // pets.js SHINY_CHANCE for a bought egg
+
+/** A yard pet of this species (stage 2, full stats): coins/h of yard production incl. the gifted items at their shop value. */
+function yardValuePerHour(speciesId, stage = 2) {
+  const s = createNewState();
+  s.barnCapacity = 20;
+  s.pets.push({ id: 'v', speciesId, nickname: 'v', shiny: false, personality: 'cheerful', stage, xp: 0, stats: { hunger: 100, happy: 100, energy: 100, clean: 100 }, poop: 0, sick: false, zeroSince: null, zeroMs: 0, poopTimer: null, lastFedAt: 0, bond: 0, status: 'idle', task: null, bornAt: START, station: null });
+  const r = yardRates(s);
+  let v = r.coins;
+  for (const [id, n] of Object.entries(r.items || {})) { const it = getItem(id); v += n * (it ? (it.sell ?? it.buy ?? 0) : 0); }
+  return v;
+}
+
+/** Odds of the baby for parents of the given rarities in the given habitats: [{ p, speciesId|null (null = a fresh roll of habitat) , habitat }], plus its shiny chance and the cost. */
+function babyOf(habA, rarA, habB, rarB, shinyParents, bestFriends) {
+  const s = createNewState();
+  const mk = (id, hab, rar) => ({ id, speciesId: speciesOfRarity(hab, rar).id, shiny: !!shinyParents, coat: 'base', bond: 0, stage: 2, status: 'idle', stats: {} });
+  const a = mk('a', habA, rarA), b = mk('b', habB, rarB);
+  s.pets.push(a, b);
+  const pv = breedPreview(s, a, b);
+  const cost = bestFriends ? breedCost(s, a, b).baseCost * BREED_FRIEND_MULT : breedCost(s, a, b).baseCost;   // baseCost = BREED_COST_MULT x the dearer egg (rounded to 10 below)
+  return { species: pv.species, shiny: pv.shinyChance, cost: bestFriends ? Math.round(cost / 10) * 10 : cost, baseCost: breedCost(s, a, b).baseCost };
+}
+
+/** Expected value of `fn(speciesId)` for a baby / an egg roll in `habitat`. */
+const eggRollValue = (habitat, fn) => habitatSpeciesChances(habitat).reduce((t, x) => t + x.p * fn(x.species.id), 0);
+const babyValue = (baby, fn) => baby.species.reduce((t, x) => t + x.chance * (x.speciesId ? fn(x.speciesId) : eggRollValue(x.habitat, fn)), 0);
+
+test('econ V10 gate 1: breeding is no stardust pump (per coin of cost, a bred baby never rehomes for more stardust than a bought egg of that habitat; shiny x2 and the best-friend price included)', () => {
+  const worst = [];
+  let checked = 0;
+  for (const hab of HABITAT_LIST) {
+    const egg = eggOf(hab);
+    const eggPerCoin = eggRollValue(hab, dustOf) * (1 + SHINY_EGG) / egg.price;
+    for (const ra of RARITY_LIST) for (const rb of RARITY_LIST) {
+      if (!speciesOfRarity(hab, ra) || !speciesOfRarity(hab, rb)) continue;
+      for (const shinyParents of [false, true]) for (const best of [false, true]) {
+        const baby = babyOf(hab, ra, hab, rb, shinyParents, best);
+        const perCoin = babyValue(baby, dustOf) * (1 + baby.shiny) / baby.cost;   // a shiny rehomes for x2 = x(1 + chance) in expectation
+        checked++;
+        if (perCoin > eggPerCoin * 1.0000001) worst.push({ hab, ra, rb, shinyParents, best, ratio: perCoin / eggPerCoin });
+      }
+    }
+  }
+  assert(checked >= 80, 'pairs checked: ' + checked);
+  worst.sort((x, y) => y.ratio - x.ratio);
+  const fmt = w => `${w.hab} ${w.ra}+${w.rb}${w.shinyParents ? ' (shiny parents)' : ''}${w.best ? ' (best friends)' : ''}: ${(100 * (w.ratio - 1)).toFixed(0)}% more stardust per coin than the egg`;
+  assert(!worst.length, `${worst.length} of ${checked} parent pairs out-earn buying an egg (worst: ${worst.slice(0, 4).map(fmt).join(' | ')}). Constants to move: BREED_COST_MULT (${BREED_COST_MULT}), BREED_FRIEND_MULT (${BREED_FRIEND_MULT}), INHERIT, SHINY_PER_PARENT`);
+  console.log(`[econ-sim] V10 gate 1: ${checked} parent pairs, none beats the egg in stardust per coin`);
+});
+
+test('econ V10 gate 2: breeding is no coin pump (a bred baby repays its cost no faster than a bought egg: RELEASE_COINS + 14 days of yard value per coin spent, best-friend price included)', () => {
+  const days14 = 14 * 24;
+  const worst = [];
+  const lines = [];
+  let checked = 0;
+  for (const hab of HABITAT_LIST) {
+    const egg = eggOf(hab);
+    const eggReturn = (RELEASE_COINS + days14 * eggRollValue(hab, id => yardValuePerHour(id))) / egg.price;
+    for (const ra of RARITY_LIST) for (const rb of RARITY_LIST) {
+      if (!speciesOfRarity(hab, ra) || !speciesOfRarity(hab, rb)) continue;
+      for (const best of [false, true]) {
+        const baby = babyOf(hab, ra, hab, rb, true, best);
+        const babyReturn = (RELEASE_COINS + days14 * babyValue(baby, id => yardValuePerHour(id))) / baby.cost;
+        checked++;
+        if (babyReturn > eggReturn * 1.0000001) worst.push({ hab, ra, rb, best, ratio: babyReturn / eggReturn });
+      }
+    }
+    lines.push(`${hab} egg returns ${eggReturn.toFixed(1)}x its price in 14 days`);
+  }
+  assert(checked >= 40, 'pairs checked: ' + checked);
+  worst.sort((x, y) => y.ratio - x.ratio);
+  assert(!worst.length, `${worst.length} of ${checked} parent pairs repay faster than an egg (worst: ${worst.slice(0, 3).map(w => `${w.hab} ${w.ra}+${w.rb}${w.best ? ' best friends' : ''} ${w.ratio.toFixed(2)}x`).join(' | ')})`);
+  console.log(`[econ-sim] V10 gate 2: no pair repays faster than an egg. NOTE the literal wording ("cannot repay its cost within 14 days") is impossible: ${lines.join(', ')}`);
+});
+
+test('econ V10 gate 3: with breeding ON vs OFF the day-14 income is <= 1.15x, the yard stays <= 20% every day, yard tiers stay within +-25% of the V6 baseline, and the bot really breeds', async () => {
+  const out = [];
+  for (const name of ['3h', 'realistic']) {
+    const on = await result(name), off = await resultNoBreed(name);
+    const d14 = r => r.rows.find(x => x.day === 14) || r.rows[r.rows.length - 1];
+    assertEq(off.bot.bred, 0, name + ' OFF run lays no family eggs');
+    assert(on.bot.bred >= 3 && (on.state.stats.bred || 0) >= 3, `${name}: the bot laid ${on.bot.bred} family eggs and hatched ${on.state.stats.bred || 0} (needs >= 3 hatched by day 14)`);
+    assert(on.state.pets.some(p => p.family) || (on.state.nursery || []).some(e => e.pet.family), name + ': a bred baby with a family line exists');
+    assert(d14(on).perHour <= 1.15 * d14(off).perHour, `${name}: day-14 income ${Math.round(d14(on).perHour)} coins/h ON vs ${Math.round(d14(off).perHour)} OFF (> 1.15x)`);
+    assert(d14(on).perHour <= 4500, `${name}: day-14 ${Math.round(d14(on).perHour)} coins/h (> 4500 gate)`);
+    for (const x of on.rows) assert(x.yardShare <= 0.2, `${name} day ${x.day}: yard is ${(100 * x.yardShare).toFixed(1)}% of income with breeding (> 20%)`);
+    for (const tier of ['M', 'L', 'XL']) {
+      const base = V6_BASELINE_TIER_DAYS[name][tier], got = on.tierDay[tier];
+      assert(got != null && got >= base * (1 - TIER_TOLERANCE) && got <= base * (1 + TIER_TOLERANCE), `${name} (breeding ON): tier ${tier} on day ${got}, baseline ${base}`);
+    }
+    out.push(`${name}: ${on.bot.bred} eggs laid (${on.bot.bredBest} best friends) for ${on.bot.breedSpent} coins, ${on.state.stats.bred || 0} hatched, ${on.bot.rehomed} rehomed to make room; day-14 ${Math.round(d14(on).perHour)}/h ON vs ${Math.round(d14(off).perHour)}/h OFF (${(d14(on).perHour / d14(off).perHour).toFixed(2)}x); whole run ${Math.round(on.perHour)} vs ${Math.round(off.perHour)}; tiers M ${on.tierDay.M} L ${on.tierDay.L} XL ${on.tierDay.XL} (OFF ${off.tierDay.M}/${off.tierDay.L}/${off.tierDay.XL}); worst yard day ${Math.round(100 * Math.max(...on.rows.map(x => x.yardShare)))}%`);
+  }
+  console.log('[econ-sim] V10 breeding ON vs OFF: ' + out.join(' | '));
+  globalThis.__econBreed = out;
+});
+
+test('econ V10 gate 4: family eggs and coats have no buy->sell path (not an item, not in any shop / egg list, coats add no value, a bred baby costs coins and only pays the normal rehome price)', () => withFakeNow(START, () => {
+  const s = createNewState();
+  s.player.coins = 99999;
+  s.player.level = 30;
+  for (const id of ['egg_family', ...COATS.map(c => 'coat_' + c.id), ...COATS.map(c => c.id)]) {
+    assert(!getItem(id), id + ' is not an item');
+    assert(!buyItem(s, id, 1).ok && !sellItem(s, id, 1).ok, id + ' cannot go through buy / sell');
+  }
+  assert(!EGGS.some(e => e.id === 'egg_family') && getEgg('egg_family') && getEgg('egg_family').price === 0, 'the family egg is outside EGGS (no shop, no stardust shop, no expedition drop)');
+  addItem(s, 'egg_family', 1);   // even if one were smuggled into the bag: nothing to sell it for
+  assert(!sellItem(s, 'egg_family', 1).ok, 'a family egg in the bag cannot be sold');
+  // a coat changes nothing about what a pet is worth
+  for (const sp of [speciesOfRarity('farm', 'common'), speciesOfRarity('mystic', 'epic')]) {
+    const base = { speciesId: sp.id, shiny: false }, mint = { speciesId: sp.id, shiny: false, coat: 'midnight' };
+    assertEq(rehomeDust(mint), rehomeDust(base), sp.id + ': a coat does not change the rehome stardust');
+    const yardPet = coat => ({ ...base, id: 'y', stage: 2, coat, stats: { hunger: 80, happy: 80, energy: 100, clean: 100 }, bond: 0 });
+    assertEq(yardOutput(yardPet('midnight')), yardOutput(yardPet('base')), sp.id + ': a coat does not change the yard output');
+  }
+  // every possible pair costs real coins, and best friends still pay more than half of the dearer egg x2
+  for (const hab of HABITAT_LIST) {
+    const low = RARITY_LIST.find(r => speciesOfRarity(hab, r));
+    const baby = babyOf(hab, low, hab, low, false, true);
+    assert(baby.cost >= 1.4 * eggOf(hab).price - 10, `${hab}: best-friend breeding costs ${baby.cost}`);
+    assert(baby.cost > 0 && baby.cost > RELEASE_COINS * 10, `${hab}: a baby costs far more than rehoming it pays`);
+  }
+}));
+
+test('econ V10: breeding is level-gated, rate-limited by the 72 h cooldown and the 2-egg cap (the bot never lays more than one egg per parent per 72 h)', async () => {
+  for (const name of ['3h', 'realistic']) {
+    const on = await result(name);
+    // every pet is a parent at most once per 72 h: with N pets the bot cannot lay more than N/2 eggs per 72 h, so over 14 days it is bounded by N x 14 / 6
+    const bound = Math.ceil(on.state.pets.length * 14 / 6) + 6;
+    assert(on.bot.bred <= bound, `${name}: ${on.bot.bred} family eggs in 14 days (bound ${bound})`);
+    assert(on.bot.breedSpent <= on.earned, `${name}: the bot spent ${on.bot.breedSpent} on breeding but earned ${on.earned}`);
+  }
+  const s = createNewState();
+  s.player.level = BREED_UNLOCK_LEVEL - 1;
+  assert(!canBreed(s, 'x', 'y').ok, 'below the unlock level nothing breeds');
+  assertEq(BREED_COOLDOWN_MS, 72 * 3600 * 1000, 'cooldown 72 h');
+  assertEq(FAMILY_EGG_MAX, 2, 'family egg cap 2');
 });

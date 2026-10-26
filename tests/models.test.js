@@ -33,10 +33,10 @@ function vertexColors(m, eyes = false) {
 const drawCalls = m => { let n = 0; m.root.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; };
 const build = (id, over = {}) => buildPetModel(THREE, { speciesId: id, stage: 2, shiny: false, ...over }, getSpecies(id));
 
-test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends and the 15 water friends', () => {
+test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends and the 11 sky friends', () => {
   assertEq(FARM.length, 21, 'farm species count');
   for (const sp of FARM) assert(hasModel(sp.id), 'no model for ' + sp.id);
-  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water', 'unexpected spec for ' + id);
+  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky', 'unexpected spec for ' + id);
   for (const id of LEGEND_IDS) assert(hasModel(id), 'no model for ' + id);
 });
 
@@ -292,7 +292,7 @@ test('models V5: billboards never apply a colour filter; shiny just sets shinySt
   assertEq([plain.shinyStyle, shiny.shinyStyle, shiny.shiny], [null, 'halo', true], 'shinyStyle');
   assertEq([shiny.legendary, shiny.rarity], [true, 'legendary'], 'legendary billboard');
   assertEq(+shiny.root.scale.x.toFixed(6), 1.25, 'legendary billboard scale');
-  const epic = buildPetModel(THREE, { stage: 2 }, getSpecies('flamingo'));
+  const epic = buildPetModel(THREE, { stage: 2 }, { id: 'test_epic', emoji: '\u{1F9A9}', rarity: 'epic' });   // every epic has a model now: a made-up one exercises the billboard path
   assertEq([epic.legendary, epic.rarity], [false, 'epic'], 'epic billboard');
   assertEq(build('cow', { shiny: true }).shinyStyle, 'palette', 'model shinyStyle');
 });
@@ -317,7 +317,7 @@ test('models: the stage-3 crown rides on the head, just above the head-top ancho
       assert(Math.hypot(c2.x - a2.x, c2.z - a2.z) / k < 0.3, `${id} crown stays on the rotated head`);
     }
   }
-  for (const sid of ['flamingo', 'beluga', 'deer']) {   // billboards: centred above the sprite
+  for (const sid of ['trex', 'beluga', 'lizard']) {   // billboards: centred above the sprite
     const m = buildPetModel(THREE, { stage: 3 }, getSpecies(sid));
     assertEq([m.parts.crown.position.x, m.parts.crown.position.z], [0, 0], sid + ' billboard crown centred');
     const dy = m.parts.crown.position.y - m.anchor.position.y;
@@ -754,4 +754,259 @@ test('water: 20 water pets in one yard stay inside the scene budget (counting th
   const xl = Array.from({ length: 20 }, (_, i) => drawCalls(buildL(AQUATIC[i % AQUATIC.length], { stage: 3 }))).reduce((a, b) => a + b, 0);
   assert(xl <= 20 * 9, 'worst case: 20 master swimmers = ' + xl + ' calls');
   console.log(`[models] 20 water pets = ${calls} model draw calls, ${trisSum} tris (20 master swimmers: ${xl} calls)`);
+});
+
+// ── V10 §4: the 11 sky friends ──────────────────────────────────────────────
+const SKY = {
+  sparrow: 'common', dove: 'common', canary: 'common', tit: 'common', hatchling: 'common', parrot: 'uncommon', bat: 'uncommon',
+  swan: 'rare', owl: 'rare', flamingo: 'epic', peacock: 'epic',
+};
+const SKY_IDS = Object.keys(SKY);
+const skyBudget = id => (SKY[id] === 'common' || SKY[id] === 'uncommon' ? { tris: 1200, calls: 6 } : { tris: 1600, calls: 7 });
+const hasColor = (m, mesh, hex) => { const want = hexKey(hex); const a = geoOf(m, mesh).attributes.color; for (let i = 0; i < a.count; i++) if ([a.getX(i), a.getY(i), a.getZ(i)].map(v => v.toFixed(3)).join(',') === want) return true; return false; };
+
+test('sky: every habitat-sky species except the eagle has a spec; the rarity table matches species.js', () => {
+  const sky = SPECIES.filter(s => s.habitat === 'sky' && s.id !== 'eagle');
+  assertEq(sky.map(s => s.id).sort(), SKY_IDS.slice().sort(), 'the 11 sky friends');
+  for (const id of SKY_IDS) {
+    assert(hasModel(id), 'no model for ' + id);
+    assertEq(getSpecies(id).rarity, SKY[id], id + ' rarity');
+  }
+  assert(hasModel('eagle'), 'the eagle was already there');
+});
+
+test('sky: 11 models build; budgets (common/uncommon <= 1.2k tris + 6 calls, rare/epic <= 1.6k + 7), finite, standing on the ground', () => {
+  const rows = [];
+  for (const id of SKY_IDS) {
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assertEq(m.kind, 'model', id);
+      assert(m.root.isGroup && m.body.isGroup && m.head && m.head.isGroup && m.body.parent === m.root, id + ' groups');
+      const t = tris(m.root), calls = drawCalls(m) - (stage === 3 ? 1 : 0);   // the crown sprite is an extra call for masters only
+      const b = skyBudget(id);
+      assert(t <= b.tris, `${id} has ${t} triangles (budget ${b.tris})`);
+      assert(calls <= b.calls, `${id} uses ${calls} draw calls (budget ${b.calls})`);
+      assert(Number.isFinite(m.height) && m.height > 0.3 && m.height < 2.4, `${id} height ${m.height}`);
+      assert(Number.isFinite(m.radius) && m.radius > 0.15 && m.radius < 1.3, `${id} radius ${m.radius}`);
+      m.root.updateMatrixWorld(true);
+      let bad = 0;
+      m.root.traverse(o => {
+        for (const v of [o.position, o.scale, o.quaternion]) for (const k of ['x', 'y', 'z']) if (!Number.isFinite(v[k])) bad++;
+        if (o.isMesh) for (const x of o.matrixWorld.elements) if (!Number.isFinite(x)) bad++;
+      });
+      assertEq(bad, 0, id + ' NaN transforms');
+      const box = new THREE.Box3().setFromObject(m.root);
+      assert(Math.abs(box.min.y) < 0.05, `${id} stage ${stage}: feet at y=${box.min.y}`);
+      if (stage === 2) rows.push(`${id} ${t}t/${calls}c`);
+    }
+    assertEq(buildL(id).legendary, false, id + ' is not legendary');
+  }
+  console.log('[models] sky: ' + rows.join(', '));
+});
+
+test('sky: the shared toon material + one eye material only; merged geometry cached per species and shiny', () => {
+  const mats = new Set();
+  for (const id of SKY_IDS) {
+    materials(buildL(id).root, mats);
+    const a = buildL(id), b = buildL(id, { stage: 0 });
+    for (const n of ['bodyMesh', 'headMesh']) assert(geoOf(a, n) === geoOf(b, n), `${id} ${n} not shared`);
+    assert(geoOf(buildL(id, { shiny: true }), 'bodyMesh') !== geoOf(a, 'bodyMesh'), id + ' shiny has its own buffers');
+    assertEq(tris(buildL(id).root), tris(buildL(id, { shiny: true }).root), id + ' shiny keeps the geometry');
+  }
+  const toon = [...mats].filter(x => x.isMeshToonMaterial);
+  assertEq(toon.length, 1, 'one shared toon material for all 11');
+  assertEq([...mats].filter(x => !x.isMeshToonMaterial).length, 1, 'plus the eye material');
+});
+
+test('sky: standard animated parts (head, eyes, anchor, wingL/wingR, tail) exist and can be driven; the specials have their own pivots', () => {
+  for (const id of SKY_IDS) {
+    const m = buildL(id);
+    assertEq(m.parts.eyes.length, 1, id + ' merged eyes');
+    assert(m.parts.eyes[0].parent === m.head, id + ' eyes on head');
+    assert(m.anchor && m.anchor.parent === m.head && m.parts.breath && m.parts.breath.parent === m.head, id + ' anchors on head');
+    assert(m.anchor.position.y > 0.1, id + ' head-top anchor above the head centre');
+    assert(m.parts.wingL && m.parts.wingR && m.parts.wingL !== m.parts.wingR, id + ' wing pivots');
+    assert(m.parts.wingL.children.some(c => c.isMesh) && m.parts.wingR.children.some(c => c.isMesh), id + ' wings have geometry');
+    assert(m.parts.wingL.position.x > 0.1 && m.parts.wingR.position.x < -0.1, id + ' wings at the shoulders (L is +x, R is -x)');
+    assert(build(id).parts.wingL !== m.parts.wingL, id + ' wings are per pet (clone)');
+    m.parts.wingL.rotation.z = 0.9; m.parts.wingR.rotation.z = -0.9;   // flap
+    if (id !== 'flamingo') {
+      assert(m.parts.tail && m.parts.tail.isGroup && m.parts.tail.children.some(c => c.isMesh), id + ' tail pivot with geometry');
+      assert(build(id).parts.tail !== m.parts.tail, id + ' tail is per pet (clone)');
+      m.parts.tail.rotation.x += 0.3;
+    } else assertEq(m.parts.tail, null, id + ' has no tail pivot (that keeps it at 7 calls)');
+    m.head.rotation.y = 0.5; m.parts.eyes[0].scale.y = 0.1;
+    m.root.updateMatrixWorld(true);
+    assert(Number.isFinite(new THREE.Box3().setFromObject(m.root).max.y), id + ' still finite when driven');
+    assertEq([m.parts.fluke, m.parts.shell, m.parts.bubble, m.parts.trunk], [null, null, null, null], id + ' has no water / mammoth parts');
+  }
+  // the flamingo has hip pivots so B can pose a one-legged stand; nobody else does
+  const fl = buildL('flamingo');
+  assert(fl.parts.legL && fl.parts.legR && fl.parts.legL !== fl.parts.legR && fl.parts.legL.children.some(c => c.isMesh) && fl.parts.legR.children.some(c => c.isMesh), 'flamingo leg pivots with geometry');
+  assert(fl.parts.legL.position.x > 0.05 && fl.parts.legR.position.x < -0.05 && fl.parts.legL.position.y > 0.3, 'flamingo hips: one each side, high above the ground');
+  const box0 = new THREE.Box3().setFromObject(fl.root);
+  fl.parts.legL.rotation.x = 2.0;   // fold the foot back and up
+  fl.root.updateMatrixWorld(true);
+  const box1 = new THREE.Box3().setFromObject(fl.root);
+  assert(box1.max.y <= box0.max.y + 1e-6 && Number.isFinite(box1.min.z), 'folding a leg keeps the model finite and inside its height');
+  assert(new THREE.Box3().setFromObject(fl.parts.legL).min.y > 0.1, 'a folded flamingo leg leaves the ground');
+  assert(new THREE.Box3().setFromObject(fl.parts.legR).min.y < 0.05, 'the other leg still stands');
+  for (const id of SKY_IDS.filter(i => i !== 'flamingo')) assertEq([buildL(id).parts.legL, buildL(id).parts.legR], [null, null], id + ' has no leg pivots');
+  // the peacock's whole fan is the `tail` pivot (B lifts / scales it open): a big, wide fan of feathers
+  const pea = buildL('peacock');
+  const fan = new THREE.Box3().setFromObject(pea.parts.tail).getSize(new THREE.Vector3());
+  assert(fan.length() > 0.7, 'peacock fan is big: ' + fan.length().toFixed(2));
+  assert(geoOf(pea, 'tailMesh').attributes.position.count > 300, 'peacock fan: nine feathers with eye spots in one merged mesh');
+  pea.parts.tail.scale.set(2, 1.5, 1); pea.parts.tail.rotation.x = -0.2;   // open
+  pea.root.updateMatrixWorld(true);
+  const open = new THREE.Box3().setFromObject(pea.parts.tail).getSize(new THREE.Vector3());
+  assert(open.x > fan.x * 1.5 && open.y > fan.y * 1.5, `an opened fan is wider and taller (${open.x.toFixed(2)} x ${open.y.toFixed(2)} vs ${fan.x.toFixed(2)} x ${fan.y.toFixed(2)})`);
+});
+
+test('sky: signature parts are really there (hatchling shell, parrot tail, bat membrane wings + ears, swan neck, owl eyes, flamingo legs, peacock eyes on the fan)', () => {
+  const size = (m, n) => bboxOf(m, n).getSize(new THREE.Vector3());
+  // hatchling: a pale shell bowl wider than the chick, with a zig-zag rim, sitting on the ground
+  const hat = buildL('hatchling');
+  assert(hasColor(hat, 'bodyMesh', '#fff6e6') && size(hat, 'bodyMesh').x > 0.6, 'hatchling: eggshell bowl wider than the chick');
+  assert(hat.height > 0.8 && bboxOf(hat, 'bodyMesh').min.y < 0.02, 'hatchling: the shell sits on the ground');
+  // parrot: long colourful tail (red -> blue -> yellow), hooked dark beak tip, white eye rings
+  const par = buildL('parrot');
+  assert(['#e23d3a', '#2f7bd9', '#f2c230'].every(c => hasColor(par, 'tailMesh', c)), 'parrot: three-colour tail');
+  assert(size(par, 'tailMesh').length() > 0.5 && hasColor(par, 'headMesh', '#3a3436'), 'parrot: long tail + dark beak hook');
+  assert(MODEL_SPECS.parrot.eyes.ring, 'parrot: white eye rings');
+  // bat: membrane wings with finger bones (a wide wing span), big pointy ears folded into the head
+  const bat = buildL('bat');
+  assert(MODEL_SPECS.bat.extras.some(e => e.t === 'batwings') && size(bat, 'wingLMesh').length() > 0.35, 'bat: wings are bone + membrane fingers');
+  assert(bat.parts.earL === null && bboxOf(bat, 'headMesh').max.y > MODEL_SPECS.bat.head.r * 1.4, 'bat: big ears are static (merged into the head, no extra calls)');
+  assert(hasColor(bat, 'headMesh', '#ffffff'), 'bat: tiny fangs');
+  // swan: a long S-curved neck, white all over, black face mask, orange beak
+  const swan = buildL('swan');
+  assert(swan.height > 1.2 && swan.head.position.y > 0.9, 'swan: head high on a long neck');
+  assert(hasColor(swan, 'headMesh', '#2a2630') && hasColor(swan, 'headMesh', '#f3892a'), 'swan: black mask + orange beak');
+  assert(size(swan, 'bodyMesh').y > 0.85, 'swan: the neck is part of the body mesh');
+  // owl: ear tufts rise above the head, big ringed eyes, speckled belly
+  const owl = buildL('owl');
+  assert(bboxOf(owl, 'headMesh').max.y > MODEL_SPECS.owl.head.r * 1.2 && MODEL_SPECS.owl.eyes.s >= 0.2 && MODEL_SPECS.owl.eyes.ring, 'owl: ear tufts + big ringed eyes');
+  assert(hasColor(owl, 'bodyMesh', '#b58d62'), 'owl: speckled belly');
+  // flamingo: long thin legs (the model is mostly leg), pink all over, black beak tip
+  const fla = buildL('flamingo');
+  assert(fla.height > 1.1 && bboxOf(fla, 'bodyMesh').min.y > 0.3, 'flamingo: the body floats on long legs');
+  assert(size(fla, 'legLMesh').y > 0.4 && hasColor(fla, 'legLMesh', '#ff7f9f'), 'flamingo: leg pivots are long');
+  assert(hasColor(fla, 'headMesh', '#2a2630'), 'flamingo: black beak tip');
+  // peacock: crest, white cheek patch, eye spots (two colours) on the fan
+  const pea = buildL('peacock');
+  assert(hasColor(pea, 'tailMesh', '#2a5fc9') && hasColor(pea, 'tailMesh', '#e8b84a'), 'peacock: gold-ringed blue eye spots on the fan');
+  assert(hasColor(pea, 'headMesh', '#fffdf4'), 'peacock: white cheek patch');
+  assert(bboxOf(pea, 'headMesh').max.y > MODEL_SPECS.peacock.head.r * 1.5, 'peacock: crest above the head');
+  assert(hasColor(buildL('tit'), 'headMesh', '#4f86d6') && hasColor(buildL('canary'), 'headMesh', '#ffe46a') && hasColor(buildL('sparrow'), 'headMesh', '#4a3a34'), 'tit blue cap, canary tuft, sparrow bib');
+});
+
+test('sky: shiny = curated palettes (each palette really hits the model; eyes never shift; no hue-rotated fallback)', () => {
+  for (const id of SKY_IDS) {
+    const spec = MODEL_SPECS[id], pal = spec.shinyPalette;
+    assert(pal && Object.keys(pal).length >= 3, id + ' has a curated palette');
+    for (const k of Object.keys(pal)) assert(k === k.toLowerCase() && /^#[0-9a-f]{6}$/.test(k) && /^#[0-9a-f]{6}$/.test(pal[k]), `${id}: palette key ${k}`);
+    const normal = buildL(id), shiny = buildL(id, { shiny: true });
+    assertEq([shiny.shiny, shiny.shinyStyle], [true, 'palette'], id + ' flag');
+    const cn = vertexColors(normal), cs = vertexColors(shiny);
+    const hit = Object.keys(pal).filter(k => cn.has(hexKey(k)));
+    assert(hit.length >= 3, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
+    for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied (has target ${cs.has(hexKey(pal[k]))}, still has source ${cs.has(hexKey(k))}; meshes ${(() => { const r = []; shiny.root.traverse(o => { if (o.isMesh) r.push(o.name + ':' + o.material.type + ':' + o.geometry.attributes.position.count); }); return r.join(','); })()})`);
+    assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
+    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
+    const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
+    for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
+  }
+});
+
+test('sky: stage scale + crown still work (master crown rides the head); masters stay inside the call budget + 1', () => {
+  for (const id of SKY_IDS) {
+    for (let st = 0; st < 4; st++) {
+      const m = buildL(id, { stage: st });
+      assertEq(m.root.scale.x, STAGE_SCALE[st], `${id} scale at stage ${st}`);
+      assertEq(!!m.parts.crown, st === 3, `${id} crown at stage ${st}`);
+    }
+    const master = buildL(id, { stage: 3 });
+    assert(master.parts.crown.parent === master.head, id + ' crown on the head');
+    assert(drawCalls(master) <= skyBudget(id).calls + 1, `${id} master calls ${drawCalls(master)}`);
+    assert(master.height > buildL(id, { stage: 2 }).height, id + ' master is bigger');
+  }
+});
+
+test('sky: 20 sky pets in one yard stay inside the scene budget (sum <= 20 x 7)', () => {
+  let calls = 0, trisSum = 0;
+  for (let i = 0; i < 20; i++) { const m = buildL(SKY_IDS[i % SKY_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
+  assert(calls <= 20 * 7, 'sky yard of 20 pets: ' + calls + ' calls');
+  console.log(`[models] 20 sky pets = ${calls} model draw calls, ${trisSum} tris`);
+});
+
+// ── V10 §2: coats (3D) ──────────────────────────────────────────────────────
+const COAT_IDS_3D = ['cream', 'cocoa', 'mint', 'rose', 'midnight'];
+const sameSet = (a, b) => [...a].sort().join('|') === [...b].sort().join('|');
+
+test('coats: a coat recolours the body-like vertex colours of a model but never the eyes; base = no coat = identical', () => {
+  for (const id of ['cow', 'hamster', 'dove', 'owl', 'turtle', 'dragon']) {
+    const base = buildL(id), baseCols = vertexColors(base);
+    assert(sameSet(vertexColors(buildL(id, { coat: 'base' })), baseCols), id + ': coat base = no coat');
+    assert(geoOf(buildL(id, { coat: 'base' }), 'bodyMesh') === geoOf(base, 'bodyMesh'), id + ': base coat shares the plain template');
+    assert(sameSet(vertexColors(buildL(id, { coat: 'nonsense' })), baseCols), id + ': an unknown coat is base');
+    for (const coat of COAT_IDS_3D) {
+      const m = buildL(id, { coat }), cols = vertexColors(m);
+      assert([...cols].filter(c => !baseCols.has(c)).length >= 3, `${id} ${coat}: body colours changed`);
+      assert(sameSet(vertexColors(m, true), vertexColors(base, true)), `${id} ${coat}: eye colours must not change`);
+      assertEq(tris(m.root), tris(base.root), `${id} ${coat}: same geometry`);
+      assert(!m.shiny && m.shinyStyle === null, `${id} ${coat}: a coat is not shiny`);
+    }
+  }
+  // the coats look different from each other
+  const bodyHash = coat => [...vertexColors(buildL('hamster', { coat }))].sort().join('|');
+  assertEq(new Set(['base', ...COAT_IDS_3D].map(bodyHash)).size, 6, 'six distinct looks');
+});
+
+test('coats: mint turns a white cow green, midnight and cocoa are darker, every coat stays readable (not black, not white)', () => {
+  const avg = (m, mesh = 'bodyMesh') => {
+    const a = geoOf(m, mesh).attributes.color, c = new THREE.Color(), o = { h: 0, s: 0, l: 0 };
+    let h = 0, s = 0, l = 0;
+    for (let i = 0; i < a.count; i++) { c.setRGB(a.getX(i), a.getY(i), a.getZ(i)); c.getHSL(o); h += o.h; s += o.s; l += o.l; }
+    return { h: h / a.count * 360, s: s / a.count, l: l / a.count };
+  };
+  const base = avg(buildL('hamster')), midnight = avg(buildL('hamster', { coat: 'midnight' })), cocoa = avg(buildL('hamster', { coat: 'cocoa' })), mint = avg(buildL('cow', { coat: 'mint' }));
+  assert(midnight.l < base.l * 0.75, `midnight is dark (${midnight.l.toFixed(2)} vs ${base.l.toFixed(2)})`);
+  assert(cocoa.l < base.l, 'cocoa is darker');
+  assert(mint.h > 80 && mint.h < 200 && mint.s > 0.1, `a mint cow reads green (hue ${mint.h.toFixed(0)}, sat ${mint.s.toFixed(2)})`);
+  for (const coat of COAT_IDS_3D) for (const id of ['cow', 'hamster', 'sheep']) {
+    const v = avg(buildL(id, { coat }));
+    assert(v.l > 0.12 && v.l < 0.97, `${id} ${coat}: lightness ${v.l.toFixed(2)} stays readable`);
+  }
+});
+
+test('coats: shiny wins over the coat; templates are shared per coat; no extra draw calls or materials', () => {
+  for (const id of ['cow', 'sparrow', 'dragon']) {
+    const plainShiny = buildL(id, { shiny: true });
+    for (const coat of COAT_IDS_3D) {
+      const m = buildL(id, { shiny: true, coat });
+      assert(geoOf(m, 'bodyMesh') === geoOf(plainShiny, 'bodyMesh'), `${id}: shiny ${coat} shares the shiny template (the coat is ignored)`);
+      assert(sameSet(vertexColors(m), vertexColors(plainShiny)), `${id}: shiny ${coat} has the shiny colours`);
+      assertEq(m.shinyStyle, 'palette', id + ' shinyStyle');
+    }
+  }
+  const before = kitStats(THREE);
+  const a = buildL('goat', { coat: 'mint' }), b = buildL('goat', { coat: 'mint', stage: 0 }), c = buildL('goat', { coat: 'rose' }), d = buildL('goat');
+  assert(geoOf(a, 'bodyMesh') === geoOf(b, 'bodyMesh') && geoOf(a, 'headMesh') === geoOf(b, 'headMesh'), 'same coat: shared merged geometry');
+  assert(geoOf(a, 'bodyMesh') !== geoOf(c, 'bodyMesh') && geoOf(a, 'bodyMesh') !== geoOf(d, 'bodyMesh') && geoOf(c, 'bodyMesh') !== geoOf(d, 'bodyMesh'), 'different coats have their own templates');
+  assert(kitStats(THREE).templates - before.templates <= 3, 'at most one template per coat (mint, rose, plain goat)');
+  const after = kitStats(THREE);
+  buildL('goat', { coat: 'mint' }); buildL('goat', { coat: 'rose' });
+  assertEq(kitStats(THREE).templates, after.templates, 'repeat builds make no new templates');
+  assertEq(kitStats(THREE).materials, after.materials, 'no new materials');
+  for (const coat of COAT_IDS_3D) {
+    const m = buildL('goat', { coat }), p = buildL('goat');
+    assertEq(drawCalls(m), drawCalls(p), coat + ': same draw calls');
+    assert([...materials(m.root)].every(x => materials(p.root).has(x)), coat + ': same shared materials');
+  }
+  // billboards (species without a spec) never tint: just the emoji
+  const bb = buildPetModel(THREE, { speciesId: 'penguin', stage: 2, coat: 'mint' }, getSpecies('penguin'));
+  assertEq(bb.kind, 'billboard', 'a coated billboard is just the emoji');
 });

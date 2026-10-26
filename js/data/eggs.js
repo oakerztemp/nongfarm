@@ -14,7 +14,12 @@ export const EGGS = [
   { id: 'egg_mystic',  emoji: '🥚', nameTh: 'ไข่ดินแดนตำนาน',  habitat: 'mystic',  price: 2000, unlockLevel: 10, hatchMs: 15 * MIN, color: '#e0c3f5' },
 ];
 
-const BY_ID = new Map(EGGS.map(e => [e.id, e]));
+// The family egg (CONTRACT_V10) lives in an incubator slot as eggId 'egg_family' so getEgg() never returns null for it.
+// It is deliberately NOT in EGGS: the shop, the sell list, the stardust shop and expedition drops iterate EGGS, and a
+// family egg can't be bought, sold or gifted. hatchMs is 0 here; the real time comes from breeding.js familyEggHatchMs().
+export const FAMILY_EGG = { id: 'egg_family', emoji: '🥚', nameTh: 'ไข่ครอบครัว', habitat: null, price: 0, unlockLevel: 99, hatchMs: 0, color: '#ffd3e4', family: true };
+
+const BY_ID = new Map([...EGGS, FAMILY_EGG].map(e => [e.id, e]));
 
 export function getEgg(id) {
   return BY_ID.get(id) || null;

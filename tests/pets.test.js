@@ -1982,13 +1982,13 @@ test('dress-up: rehoming hands the accessories back', () => {
 });
 
 test('birthday gift: +1 bond through addBond, once; the 30-a-day bond cap still holds', () => withFakeNow(Date.UTC(2026, 9, 25, 5), () => {
-  const { s, pet } = setup('hamster', { bornAt: Date.now() - 60 * 24 * HOUR });
+  const { s, pet } = setup('hamster', { bornAt: now() - 60 * 24 * HOUR });
   pet.bondDay = null;
   const r = claimBirthdayV9(s, 'p1');
   assert(r.ok && r.months === 2, 'claimed');
   assertEq(pet.bond, 1, '+1 heart point');
   assert(!claimBirthdayV9(s, 'p1').ok, 'once per birthday');
-  const full = setup('hamster', { bornAt: Date.now() - 30 * 24 * HOUR });
+  const full = setup('hamster', { bornAt: now() - 30 * 24 * HOUR });
   full.pet.bondDay = require_today(); full.pet.bondToday = 30;
   claimBirthdayV9(full.s, 'p1');
   assertEq(full.pet.bondToday, 30, 'the daily cap of 30 still holds');
@@ -2046,4 +2046,64 @@ test('dress-up: swapping a dressed yard pet into the nursery frees its accessori
   assert(swapWithNursery(s, 'b1', 'p1').ok, 'swapped');
   assertEq(wardrobeCount(s, 'acc_bow'), 1, 'copy is free again');
   assertEq(wearOf(pet).head, null, 'baby wears nothing');
+});
+
+// ── CONTRACT_V10 §4: sky locomotion and idles ──
+import { SKY_SMALL, isNightAt, tapReaction } from '../js/petBehaviour.js';
+
+test('sky locomotion: small birds hop and flutter, hatchling wobbles, swan glides, flamingo stands on one leg', () => {
+  for (const id of ['sparrow', 'dove', 'canary', 'tit', 'parrot']) { assert(SKY_SMALL.has(id), id); assertEq(locomotionOf(id).kind, 'birdhop', id); }
+  assertEq(locomotionOf('hatchling').kind, 'wobble', 'hatchling'); assertEq(locomotionOf('bat').kind, 'bat', 'bat');
+  assertEq(locomotionOf('swan').kind, 'glide', 'swan'); assertEq(locomotionOf('flamingo').kind, 'stand', 'flamingo');
+  assertEq(locomotionOf('owl').kind, 'walk', 'owl walks'); assertEq(locomotionOf('peacock').kind, 'walk', 'peacock walks');
+  assert(locomotionOf('swan').speed < 0.7 && locomotionOf('swan').turn < 1, 'swan is slow and turns gently');
+  configureYard('L');
+  const day = new Date(2026, 9, 26, 13).getTime();
+  const acts = (id, n, ctx = {}, ms = day) => { const { pet } = setup(id, { personality: 'cheerful' }); const rng = makeRng(5); const out = []; for (let i = 0; i < n; i++) out.push(nextAction(pet, { x: 0, z: 0, others: [], last: 'idle', ...ctx }, rng, ms)); return out; };
+  const sparrow = acts('sparrow', 300).filter(a => a.type === 'wander' || a.type === 'approach');
+  const fl = sparrow.filter(a => a.flutter);
+  assert(fl.length > 5 && fl.length < sparrow.length * 0.5, `some walks become a flutter hop: ${fl.length}/${sparrow.length}`);
+  assert(acts('hamster', 200).every(a => !a.flutter), 'only small birds flutter');
+  assert(acts('sparrow', 200, {}).every(a => !a.flutter || (a.speed > 0 && Number.isFinite(a.speed))), 'flutter speed is finite');
+  // flamingo: an idle moment is one-legged
+  const idles = acts('flamingo', 300).filter(a => a.type === 'idle' && !a.reason);
+  assert(idles.length > 10 && idles.every(a => a.oneLeg), 'flamingo idles on one leg');
+  assert(acts('hamster', 300).every(a => !a.oneLeg), 'others do not');
+  // swan: slower than a plain walker
+  const sp = id => { const w = acts(id, 300).filter(a => a.type === 'wander'); return w.reduce((n, a) => n + a.speed, 0) / w.length; };
+  assert(sp('swan') < sp('hamster') * 0.7, 'swan glides slowly');
+});
+
+test('sky locomotion: the bat sleeps by day and loops at night; the night is 18:00-06:00', () => {
+  configureYard('L');
+  const noon = new Date(2026, 9, 26, 13).getTime(), midnight = new Date(2026, 9, 26, 23).getTime();
+  assert(!isNightAt(noon) && isNightAt(midnight) && isNightAt(new Date(2026, 9, 26, 3).getTime()) && !isNightAt(new Date(2026, 9, 26, 6).getTime()), 'hours');
+  const run = (ms, over = {}) => { const { pet } = setup('bat', { personality: 'cheerful', ...over }); const rng = makeRng(9); const c = {}; for (let i = 0; i < 300; i++) { const a = nextAction(pet, { x: 0, z: 0, others: [], last: 'idle' }, rng, ms); c[a.type] = (c[a.type] || 0) + 1; if (a.type === 'sleep' && a.hang) c.hang = (c.hang || 0) + 1; } return c; };
+  const d = run(noon), n = run(midnight);
+  assert(d.sleep > 200 && d.hang > 200 && !d.batLoop && !d.wander, 'asleep by day: ' + JSON.stringify(d));
+  assert(n.batLoop > 30 && !n.hang, 'loops at night: ' + JSON.stringify(n));
+  assert(!run(noon, { stats: { hunger: 10 } }).hang, 'a hungry bat still goes to the bowl');
+  const loop = nextAction(setup('bat').pet, { x: 0, z: 0, others: [], last: 'idle' }, () => 0.1, midnight);
+  assert(loop.type === 'batLoop' ? loop.duration > 3 && loop.duration < 10 : true, 'loop lasts a few seconds');
+  const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'batLoop' }), loco: locomotionOf('bat') };
+  let guard = 0; while (!advanceActor(A, 0.1, () => {}).decided && guard++ < 200);
+  assert(guard > 20 && guard < 200, 'batLoop is a timed action');
+});
+
+test('sky tap reactions: owl turns its head, peacock fans its tail, others have none; new parts pose safely', () => {
+  assertEq(tapReaction('owl').type, 'headTurn', 'owl'); assertEq(tapReaction('peacock').type, 'fan', 'peacock');
+  assert(tapReaction('hamster') === null && tapReaction('sparrow') === null, 'others');
+  assert(tapReaction('owl').dur > 1 && tapReaction('peacock').dur > 1, 'durations');
+  // models.js: the peacock fan trails back at rest (x = -1) and stands up with +x; the flamingo folds a foot back and up with +x
+  const scale = { x: 1, y: 1, z: 1, set(x, y, z) { this.x = x; this.y = y; this.z = z; } };
+  const tail = { rotation: { x: -1, y: 0, z: 0 }, scale }, legR = { rotation: { x: 0.1, y: 0, z: 0 } };
+  const parts = { tail, legR }, base = partBases(parts);
+  applyPartPose(parts, base, { tailUp: 1, leg: 1 });
+  near(tail.rotation.x, -0.2, 'tail stands up'); near(legR.rotation.x, 0.1 + 1, 'leg folds back');
+  assertEq([scale.x, scale.y, scale.z], [2, 1.5, 1], 'the fan spreads open');
+  applyPartPose(parts, base, {});
+  near(tail.rotation.x, -1, 'tail back'); near(legR.rotation.x, 0.1, 'leg back');
+  assertEq([scale.x, scale.y, scale.z], [1, 1, 1], 'the fan closes');
+  applyPartPose({}, partBases({}), { tailUp: 1, leg: 1 });   // billboards have no parts: no throw
+  assertEq(beginAction({ type: 'fan' }).dur, 3.2, 'fan lasts 3.2s'); assertEq(beginAction({ type: 'headTurn' }).dur, 2.4, 'head turn');
 });

@@ -18,14 +18,19 @@ import {
   STARDUST_BY_RARITY, BOOK_GOALS, getGoal, isGoalClaimed, claimGoal, makeShiny, buyHabitatEgg,
   RELEASE_COINS, NURSERY_SLOTS, nurseryPets, getNurseryPet, adoptFromNursery, swapWithNursery, compareCandidates,
   arrivedPostcards, unreadPostcardCount, markPostcardRead, favoriteLine, friendLine, wearOf, wardrobeList, wearAccessory, takeOffAccessory,
+  bondHearts,
 } from '../pets.js';
+import {
+  breedPreview, breed, putFamilyEggInIncubator, familyEggHatchMs, BREED_UNLOCK_LEVEL, BREED_MIN_STAGE, BREED_MIN_HEARTS, FAMILY_EGG_MAX,
+} from '../breeding.js';
+import { COATS, getCoat, coatOf } from '../data/coats.js';
 import { getAccessory, ACC_SLOTS } from '../data/accessories.js';
 import { journalDays } from '../journal.js';
 import { listPhotos, getPhotoUrl, deletePhoto, downloadPhoto, photoFilename } from '../album.js';
 import * as farmLogic from '../farm.js'; // decor build / place / remove (namespace import: guarded, in case it is missing)
 import { DECOR, getDecor } from '../data/decor.js';
 import { takeAwayDigest } from '../away.js';
-import { onBestFriend, friendEventMessage } from '../friends.js';
+import { onBestFriend, friendEventMessage, bestFriendOf } from '../friends.js';
 
 const e = escapeHtml;
 
@@ -136,6 +141,43 @@ function rarityBadge(species) {
   return `<span class="pet-rarity" style="--rar:${r.color}">${r.nameTh}</span>`;
 }
 
+// ── ครอบครัวน้อง 💞 (CONTRACT_V10 §3): coat chips, family line, "หาคู่" status ─────────────────────────────
+const speciesEmoji = id => { const sp = getSpecies(id); return sp ? sp.emoji : '🐾'; };
+const pctText = v => { const p = v * 100; return String(p >= 10 ? Math.round(p) : Math.round(p * 10) / 10); };
+
+/** A coat as a small chip ("🌿 สีมิ้นต์", optionally with its odds). Empty string for an unknown coat. */
+export function coatChipHtml(id, chance) {
+  const c = getCoat(id);
+  return c ? `<span class="coat-chip coat-${e(c.id)}" title="${e(c.nameTh)}">${c.emoji} ${e(c.nameTh)}${chance != null ? ` <b>${pctText(chance)}%</b>` : ''}</span>` : '';
+}
+
+/** "ครอบครัว" line of a bred pet: parent emojis + names, generation, coat chip. Empty string for shop / expedition pets. */
+export function familyLineHtml(pet) {
+  const f = pet && pet.family;
+  if (!f || !f.a || !f.b) return '';
+  return `<div class="b3-station b3-family">👪 ครอบครัว ${speciesEmoji(f.a.speciesId)} ${e(f.a.name)} + ${speciesEmoji(f.b.speciesId)} ${e(f.b.name)} · รุ่นที่ ${Number(f.gen) || 1} ${coatChipHtml(coatOf(pet))}</div>`;
+}
+
+/** Why this pet cannot look for a partner yet: { ok, text } (text = a friendly Thai sentence; the cooldown has a live countdown). */
+export function breedStatus(state, pet) {
+  const sp = getSpecies(pet.speciesId);
+  const no = text => ({ ok: false, text });
+  if ((state.player.level || 1) < BREED_UNLOCK_LEVEL) return no(`ปลดล็อกที่เลเวล ${BREED_UNLOCK_LEVEL}`);
+  if (sp && sp.rarity === 'legendary') return no('ตำนานมีได้ตัวเดียวในโลก จึงมีลูกไม่ได้นะ');
+  if (pet.stage < BREED_MIN_STAGE) return no('ต้องโตเต็มวัยก่อนนะ');
+  if (bondHearts(pet) < BREED_MIN_HEARTS) return no(`ต้องสนิทถึง ${BREED_MIN_HEARTS} หัวใจ`);
+  if (pet.sick) return no('ไม่สบายอยู่ ให้หายก่อนนะ');
+  if (pet.status === 'sleeping') return no('หลับอยู่ ปลุกก่อนนะ');
+  if (pet.status === 'working') return no('กำลังทำงานอยู่');
+  if (pet.status === 'expedition') return no('ออกสำรวจอยู่');
+  const wait = (Number(pet.breedReadyAt) || 0) - now();
+  if (wait > 0) return no(`พักหลังมีลูก อีก <span data-countdown="${Number(pet.breedReadyAt)}">${formatDuration(wait)}</span>`);
+  if ((state.familyEggs || []).length >= FAMILY_EGG_MAX) return no(`ไข่ครอบครัวเต็มแล้ว (${FAMILY_EGG_MAX} ใบ) ใส่ตู้ฟักก่อนนะ`);
+  if (state.pets.filter(p => p.status !== 'nursery').length < 2) return no('ต้องมีน้องในลานอย่างน้อย 2 ตัว');
+  return { ok: true, text: 'เลือกคู่ได้เลย' };
+}
+const plainText = html => String(html).replace(/<[^>]*>/g, '');
+
 // ── Pet chip & picker (exported for farm views) ─────────────────────────────
 export function petChipHtml(pet) {
   const st = stageOf(pet);
@@ -170,6 +212,23 @@ export function openPetPicker({ title = 'เลือกน้อง', filter, d
 }
 
 // ── Barn: incubator ─────────────────────────────────────────────────────────
+/** "🐶 A + 🐱 B" of a family egg (snapshot of its parents). */
+const familyParentsHtml = fam => `${speciesEmoji(fam.a.speciesId)} ${e(fam.a.name)} + ${speciesEmoji(fam.b.speciesId)} ${e(fam.b.name)}`;
+
+/** 🥚💞 ไข่ครอบครัว: laid family eggs waiting for an incubator slot. Empty string when there are none. */
+function renderFamilyEggs(state) {
+  const list = state.familyEggs || [];
+  if (!list.length) return '';
+  const full = state.incubator.length >= state.incubatorCapacity;
+  return `<section class="incu-section card fam-section">
+    <div class="barn-head"><h2 class="barn-title">🥚💞 ไข่ครอบครัว</h2><span class="badge">${list.length}/${FAMILY_EGG_MAX}</span></div>
+    <div class="incu-slots">${list.map(egg => `<div class="incu-slot is-family" style="--egg-color:#ffd3e4">
+      <div class="incu-egg" aria-hidden="true">🥚💞</div>
+      <div class="incu-info"><div class="incu-name">${familyParentsHtml(egg)}</div>
+        <div class="incu-time muted">ฟักใน ${formatDuration(familyEggHatchMs(egg))}</div>
+        <button type="button" class="btn btn-sm btn-primary" data-action="put-family-egg" data-egg-id="${e(egg.id)}"${full ? ' disabled title="ตู้ฟักเต็ม"' : ''}>ใส่ตู้ฟัก</button></div></div>`).join('')}</div></section>`;
+}
+
 function renderIncubator(state, t) {
   const slots = [];
   for (let i = 0; i < state.incubatorCapacity; i++) {
@@ -186,13 +245,15 @@ function renderIncubator(state, t) {
         </div></div>`);
       continue;
     }
-    const egg = getEgg(slot.eggId);
+    const fam = slot.family || null;
+    const egg = fam ? null : getEgg(slot.eggId);
     const ready = t >= slot.readyAt;
     const pct = ready ? 100 : clamp(((t - slot.startAt) / (slot.readyAt - slot.startAt)) * 100, 0, 100);
-    slots.push(`<div class="incu-slot${ready ? ' is-ready' : ''}" style="--egg-color:${egg ? egg.color : '#f6e7b0'}">
-      <div class="incu-egg" aria-hidden="true">${egg ? egg.emoji : '🥚'}</div>
+    slots.push(`<div class="incu-slot${ready ? ' is-ready' : ''}${fam ? ' is-family' : ''}" style="--egg-color:${fam ? '#ffd3e4' : egg ? egg.color : '#f6e7b0'}">
+      <div class="incu-egg" aria-hidden="true">${fam ? '🥚💞' : egg ? egg.emoji : '🥚'}</div>
       <div class="incu-info">
-        <div class="incu-name">${egg ? e(egg.nameTh) : 'ไข่ปริศนา'}</div>
+        <div class="incu-name">${fam ? '🥚💞 ไข่ครอบครัว' : egg ? e(egg.nameTh) : 'ไข่ปริศนา'}</div>
+        ${fam ? `<div class="incu-parents">${familyParentsHtml(fam)}</div>` : ''}
         ${ready
           ? '<div class="incu-time incu-ready-text">พร้อมฟักแล้ว! 🎉</div>'
           : `<div class="incu-time">เหลือ <span data-countdown="${slot.readyAt}">${formatDuration(slot.readyAt - t)}</span></div>`}
@@ -286,6 +347,7 @@ function renderPetCard(pet, state) {
     <div class="pet-actions">
       ${petActionsHtml(pet, 'data-action')}
       ${actionBtn('wear', pet.id, '👗 แต่งตัว', pet.status === 'sleeping' ? '' : '')}
+      ${actionBtn('breed', pet.id, '💞 หาคู่', (() => { const b = breedStatus(state, pet); return b.ok ? '' : plainText(b.text); })())}
     </div>
   </article>`;
 }
@@ -325,6 +387,7 @@ function nurserySheetHtml(pet, state, opts = {}) {
   const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
       <b>${sp.rarity === 'legendary' ? '✦ ตำนานปรากฏตัว!' : pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
       <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
+      ${pet.family ? `<div class="b3-reveal-family">💞 ลูกของ ${e(pet.family.a.name)} กับ ${e(pet.family.b.name)}</div>` : ''}
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
   return `<div class="b3-sheet-head">
       <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
@@ -642,6 +705,7 @@ function renderBarn(state) {
   const toggle = barnToggleHtml(mode);
   if (mode === '3d' || mode === 'loading') {
     return `<div class="barn-view barn-3d">
+      ${renderFamilyEggs(state)}
       <section class="barn-section">
         <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
           <div class="barn-head-r">${memoryBtnsHtml()}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
@@ -664,6 +728,7 @@ function renderBarn(state) {
     </div>`;
   return `<div class="barn-view">
     ${greetBar}
+    ${renderFamilyEggs(state)}
     ${renderIncubator(state, t)}
     ${renderNursery(state)}
     <section class="barn-section">
@@ -729,8 +794,10 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
   const reveal = opts.reveal && sp ? `<div class="b3-reveal${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
       <b>${sp.rarity === 'legendary' ? '✦ ตำนานปรากฏตัว!' : pet.shiny ? '✨ ฟักสำเร็จ! ร่างไชนี่!' : '🐣 ฟักสำเร็จ!'}</b>
       <div>${e(sp.nameTh)} ${rarityBadge(sp)} ${traitBadge(sp)}</div>
+      ${pet.family ? `<div class="b3-reveal-family">💞 ลูกของ ${e(pet.family.a.name)} กับ ${e(pet.family.b.name)}</div>` : ''}
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
-  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}
+  const br = breedStatus(state, pet);
+  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}${familyLineHtml(pet)}
       <div class="b3-sheet-line"><span class="pet-status">${statusLabel(pet, state)}</span>
         <span class="pet-hearts" title="ความผูกพัน ${bond.hearts}/5">${heartsHtml(bond.hearts)}</span></div>
       <div class="b3-stats">
@@ -738,7 +805,9 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
         ${miniStat('⚡', 'พลัง', pet.stats.energy)}${miniStat('🫧', 'สะอาด', pet.stats.clean)}</div>
       <div class="pet-actions b3-acts">${petActionsHtml(pet, 'data-b3')}</div>
       <button type="button" class="b3-wear-row" data-b3="wear" data-pet-id="${e(pet.id)}" aria-label="แต่งตัวให้${e(petName(pet))}">
-        <span class="b3-wear-t">👗 แต่งตัว</span><span class="b3-wear-now">${wornEmojis(pet) || '<small class="muted">ยังไม่ได้ใส่อะไร</small>'}</span><span aria-hidden="true">›</span></button></div>`;
+        <span class="b3-wear-t">👗 แต่งตัว</span><span class="b3-wear-now">${wornEmojis(pet) || '<small class="muted">ยังไม่ได้ใส่อะไร</small>'}</span><span aria-hidden="true">›</span></button>
+      <button type="button" class="b3-wear-row b3-breed-row${br.ok ? '' : ' is-off'}" data-b3="breed" data-pet-id="${e(pet.id)}"${br.ok ? '' : ' disabled'} aria-label="หาคู่ให้${e(petName(pet))}">
+        <span class="b3-wear-t">💞 หาคู่</span><span class="b3-wear-now"><small class="${br.ok ? '' : 'muted'}">${br.text}</small></span>${br.ok ? '<span aria-hidden="true">›</span>' : ''}</button></div>`;
 }
 
 const SLOT_TH = { head: 'หัว', neck: 'คอ' };
@@ -785,6 +854,7 @@ const barnCtx = {
   nurseryAdopt: id => run(s => adoptFromNursery(s, id)),
   nurserySwap: id => openSwapPicker(id),
   nurseryRehome: id => confirmRehome(id),
+  openBreed: id => openBreedPicker(id),
   onHatchBlocked: () => openRehomePicker(),
   decor: decorApi,
   onFatal(err) {
@@ -822,8 +892,16 @@ function reconcileBarn3d() {
 function openEggPicker() {
   const state = getState();
   const owned = EGGS.filter(eg => countItem(state, eg.id) > 0);
-  const html = owned.length
-    ? `<div class="pet-picker-list">${owned.map(eg =>
+  const fams = state.familyEggs || [];
+  const famHtml = fams.length
+    ? `<h4 class="pet-detail-h">🥚💞 ไข่ครอบครัว</h4><div class="pet-picker-list">${fams.map(g =>
+        `<button type="button" class="pet-picker-item incu-pick is-family" data-family-egg-id="${e(g.id)}" style="--egg-color:#ffd3e4">` +
+        '<span class="incu-pick-egg">🥚💞</span>' +
+        `<span class="incu-pick-main"><b>${familyParentsHtml(g)}</b></span>` +
+        `<span class="pet-picker-desc">ใส่ตู้ฟัก · ${formatDuration(familyEggHatchMs(g))}</span></button>`).join('')}</div>`
+    : '';
+  const html = owned.length || fams.length
+    ? `${famHtml}<div class="pet-picker-list">${owned.map(eg =>
         `<button type="button" class="pet-picker-item incu-pick" data-egg-id="${e(eg.id)}" style="--egg-color:${eg.color}">` +
         `<span class="incu-pick-egg">${eg.emoji}</span>` +
         `<span class="incu-pick-main"><b>${e(eg.nameTh)}</b> <small>×${countItem(state, eg.id)}</small></span>` +
@@ -835,10 +913,82 @@ function openEggPicker() {
     html,
     onMount(el) {
       el.addEventListener('click', ev => {
+        const f = ev.target.closest('[data-family-egg-id]');
+        if (f) { close(); run(s => putFamilyEggInIncubator(s, f.dataset.familyEggId)); return; }
         const b = ev.target.closest('[data-egg-id]');
         if (!b) return;
         close();
         run(s => putEggInIncubator(s, b.dataset.eggId));
+      });
+    },
+  });
+}
+
+/** "ลูกจะเป็น 🐶 45 % · 🐱 45 % · 🥚 สุ่มถิ่น 10 %" from breedPreview().species. */
+function speciesOddsText(list) {
+  const fresh = list.filter(x => !x.speciesId);
+  const parts = list.filter(x => x.speciesId).map(x => `${speciesEmoji(x.speciesId)} ${pctText(x.chance)} %`);
+  if (fresh.length) {
+    const habs = [...new Set(fresh.map(x => (HABITATS[x.habitat] || {}).emoji).filter(Boolean))].join('');
+    parts.push(`🥚 สุ่มถิ่น${habs} ${pctText(fresh.reduce((n, x) => n + x.chance, 0))} %`);
+  }
+  return `ลูกจะเป็น ${parts.join(' · ')}`;
+}
+
+/** One row of the partner picker (pure string, exported for tests). armed = the second tap shows the price. */
+export function breedRowHtml(pet, pv, { best = false, armed = false } = {}) {
+  const st = STAGES[pet.stage] || STAGES[0];
+  const sp = getSpecies(pet.speciesId);
+  const priceTxt = pv.cost ? `🪙 ${pv.cost}${pv.friendDiscount > 0 ? ` <small class="breed-save">ลด ${pv.friendDiscount} 🪙 เพราะเพื่อนซี้</small>` : ''}` : '';
+  return `<button type="button" class="pet-picker-item cmp-item breed-row${best ? ' is-best' : ''}${armed ? ' is-armed' : ''}" data-pet-id="${e(pet.id)}"${pv.ok ? '' : ` disabled title="${e(pv.reason)}"`}>
+    <span class="cmp-emoji${pet.shiny ? ' is-shiny' : ''}" aria-hidden="true">${petEmoji(pet)}</span>
+    <span class="cmp-main"><span class="cmp-name"><b>${e(petName(pet))}</b> <small>${st.icon} ${st.nameTh}</small>${sp ? ` ${rarityBadge(sp)}` : ''}${best ? ' <span class="cmp-chip is-best">💕 เพื่อนซี้</span>' : ''}</span>
+      ${pv.ok || pv.species.length ? `<span class="breed-odds">${speciesOddsText(pv.species)}</span>
+      <span class="breed-odds">✨ ไชนี่ ${pctText(pv.shinyChance)} %</span>
+      <span class="cmp-chips">${pv.coats.filter(c => c.chance >= 0.005).map(c => coatChipHtml(c.coat, c.chance)).join('')}</span>` : ''}
+      ${pv.ok ? `<span class="breed-price">${priceTxt}</span>` : `<span class="cmp-hint is-off">${e(pv.reason)}</span>`}
+      ${armed && pv.ok ? `<span class="breed-confirm">💞 แตะอีกครั้งเพื่อยืนยัน · จ่าย ${pv.cost} 🪙</span>` : ''}</span></button>`;
+}
+
+/** 💞 หาคู่: the partner picker (best friend first). Two taps: the first shows the price, the second lays the egg. */
+function openBreedPicker(petId) {
+  const first = getPet(getState(), petId);
+  if (!first) return;
+  let armed = null;
+  let box = null;
+  let close = () => {};
+  const paint = () => {
+    const state = getState();
+    const me = getPet(state, petId);
+    if (!box || !me) return;
+    const bf = bestFriendOf(state, petId);
+    const rows = state.pets.filter(p => p.id !== petId && p.status !== 'nursery')
+      .map(p => ({ p, pv: breedPreview(state, petId, p.id), best: p.id === bf }))
+      .sort((x, y) => (y.best - x.best) || (y.pv.ok - x.pv.ok) || petName(x.p).localeCompare(petName(y.p), 'th'));
+    const mine = breedStatus(state, me);
+    box.innerHTML = `<div class="breed-head">${petChipHtml(me)}</div>
+      <p class="muted cmp-intro">เลือกคู่ให้ <b>${e(petName(me))}</b> · ลูกจะได้หน้าตา นิสัย และสีขนจากพ่อแม่ (บางทีก็กลายพันธุ์!) · จ่ายค่าไข่ครั้งเดียว แล้วพ่อแม่พักฟื้น 3 วัน</p>
+      ${mine.ok ? '' : `<p class="breed-note">💞 ${mine.text}</p>`}
+      ${rows.length
+        ? `<div class="pet-picker-list cmp-list">${rows.map(r => breedRowHtml(r.p, r.pv, { best: r.best, armed: armed === r.p.id })).join('')}</div>`
+        : '<p class="muted pet-picker-empty">ยังไม่มีน้องตัวอื่นในลานให้เป็นคู่เลย</p>'}`;
+  };
+  close = openModal({
+    title: '💞 หาคู่',
+    html: '<div class="breed-picker"></div>',
+    onMount(el) {
+      box = el.querySelector('.breed-picker');
+      paint();
+      el.addEventListener('click', ev => {
+        const b = ev.target.closest('.breed-row');
+        if (!b || b.disabled) return;
+        const pid = b.dataset.petId;
+        if (armed !== pid) { armed = pid; paint(); return; }   // first tap: show the price
+        const r = run(s => breed(s, petId, pid));
+        if (r && r.ok) {
+          close();
+          if (barn3d && typeof barn3d.breedScene === 'function') { try { barn3d.breedScene(petId, pid); } catch (err) { console.warn('breeding scene skipped', err); } }
+        } else { armed = null; paint(); }
       });
     },
   });
@@ -936,6 +1086,8 @@ function openDetails(petId) {
     ${jobsHtml(sp)}
     <h4 class="pet-detail-h">อาหาร</h4>
     <div class="pet-detail-diet">${dietChips(sp)} <span class="pet-fav">⭐ ของโปรด: ${favoriteLabel(sp)}</span></div>
+    ${familyLineHtml(pet)}
+    ${(() => { const b = breedStatus(state, pet); return `<div class="pet-detail-breed"><button type="button" class="btn btn-sm${b.ok ? ' btn-primary' : ''}" data-action="breed"${b.ok ? '' : ' disabled'}>💞 หาคู่</button> <small class="muted">${b.text}</small></div>`; })()}
     <h4 class="pet-detail-h">ตั้งชื่อ</h4>
     <div class="pet-rename">
       <input type="text" class="pet-rename-input" maxlength="16" value="${e(petName(pet))}" aria-label="ชื่อน้อง">
@@ -969,6 +1121,7 @@ function openDetails(petId) {
           const r = run(s => claimGift(s, petId));
           if (r && r.ok) close();
         },
+        breed: () => { close(); openBreedPicker(petId); },
         'rename-save': save,
         'release-ask': () => { confirmBox.hidden = false; askBtn.hidden = true; },
         'release-no': () => { confirmBox.hidden = true; askBtn.hidden = false; },
@@ -991,6 +1144,7 @@ function openHatchReveal(pet, toNursery = false) {
       <div class="pet-reveal-emoji pet-emoji">${sp.emoji}</div>
       <h3>${e(petName(pet))}</h3>
       <p>${e(sp.nameTh)} ${rarityBadge(sp)}</p>
+      ${pet.family ? `<p class="pet-reveal-family">💞 ลูกของ ${e(pet.family.a.name)} กับ ${e(pet.family.b.name)} · รุ่นที่ ${Number(pet.family.gen) || 1} ${coatChipHtml(coatOf(pet))}</p>` : ''}
       <p class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</p>
       ${toNursery ? '<p class="nursery-note">👶 ลานเต็ม น้องเลยพักอยู่ในเปลอนุบาล — รับเข้าลานได้เมื่อมีที่ว่าง หรือสลับกับน้องในลานก็ได้</p>' : ''}</div>`,
   });
@@ -1014,6 +1168,8 @@ function bindBarn(root) {
     poop: withPet(id => run(s => pickPoop(s, id))),
     details: withPet(id => openDetails(id)),
     wear: withPet(id => openWearModal(id)),
+    breed: withPet(id => openBreedPicker(id)),
+    'put-family-egg': btn => { run(s => putFamilyEggInIncubator(s, btn.dataset.eggId)); },
     gift: withPet(id => run(s => claimGift(s, id))),
     'put-egg': () => openEggPicker(),
     hatch: btn => {
@@ -1105,6 +1261,17 @@ function renderStardustShop(state) {
     <div class="book-shop-eggs">${eggs}</div></section>`;
 }
 
+/** 🎨 coat collection: one chip per coat; the ones not seen yet are greyed out. */
+function coatBookHtml(state) {
+  const seen = state.coatsSeen || { base: true };
+  const have = COATS.filter(c => seen[c.id]).length;
+  return `<div class="coat-book"><div class="book-group-head"><h3>🎨 สีขน</h3><span class="muted">${have}/${COATS.length}</span></div>
+    <div class="coat-chips">${COATS.map(c => seen[c.id]
+      ? coatChipHtml(c.id)
+      : `<span class="coat-chip is-unseen" title="ยังไม่เคยเจอ">❔ ???</span>`).join('')}</div>
+    <small class="muted">ได้สีใหม่จากลูกๆ ของคู่รัก — ดูได้ที่ 💞 หาคู่</small></div>`;
+}
+
 function renderBook(state) {
   const col = state.collection || {};
   const known = sp => (col[sp.id] && col[sp.id].owned > 0);
@@ -1147,6 +1314,7 @@ function renderBook(state) {
       <h2 class="barn-title">📖 สมุดสัตว์</h2>
       <p>สะสมแล้ว <b>${have}</b> / ${total} สายพันธุ์ (${pct}%) · ✨ ไชนี่ ${shinyN} ชนิด${readyN ? ` · 🎁 รับรางวัลได้ ${readyN} ข้อ` : ''}</p>
       <div class="book-bar"><div class="book-bar-fill" style="width:${pct}%"></div></div>
+      ${coatBookHtml(state)}
       <div class="book-goals">${globalGoals.map(g => goalHtml(state, g)).join('')}</div>
     </section>
     ${renderStardustShop(state)}${groups}</div>`;

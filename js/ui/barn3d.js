@@ -30,7 +30,7 @@ import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, b
   configureYard, yardProps, yardTierOf, DECOR_USE,
   favoriteSpot, createStroke, handStroke, tickStroke, strokeMelt, finishActorStroke, clearStrokeState, pickGiftLabels, GIFT_LABEL_MAX,
   pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots,
-  locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot } from '../petBehaviour.js';
+  locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot, tapReaction } from '../petBehaviour.js';
 import { createWorld, mergeStaticParts } from '../world3d/engine.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
@@ -52,7 +52,7 @@ const HABITAT_AURA = {
   mystic: '#b388ff', sky: '#ffd54f', water: '#4dd0e1', savanna: '#ffb300',
   forest: '#66bb6a', polar: '#b3e5fc', bug: '#2ecc71', farm: '#ffca28',
 };
-const FLY_TYPES = new Set(['flyCircle', 'soar']);
+const FLY_TYPES = new Set(['flyCircle', 'soar', 'batLoop']);
 const RUN_TYPES = new Set(['gallop', 'sprint']);
 const TRAIL_TYPES = new Set(['flyCircle', 'gallop']);
 const smooth = u => { const x = Math.min(1, Math.max(0, u)); return x * x * (3 - 2 * x); };
@@ -429,6 +429,7 @@ export function mountBarn3d(host, ctx) {
   }
 
   function removeActorRec(A) {
+    if (breedSc && (breedSc.a === A || breedSc.b === A)) endBreed();
     clearStrokeState(A);
     releaseDecor(A);
     clearWear(A);
@@ -499,7 +500,7 @@ export function mountBarn3d(host, ctx) {
     const pet = A.pet;
     const P = A.pose || (A.pose = {});
     P.hop = 0; P.sy = 1; P.sx = 1; P.roll = 0; P.pitch = 0; P.yaw = 0; P.shake = 0;
-    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0; P.shell = 0; P.fluke = 0; P.lift = 0;
+    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0; P.shell = 0; P.fluke = 0; P.lift = 0; P.tailUp = 0; P.leg = 0;
     if (A.hold > 0 && A.hold < SELECT_HOLD / 2) A.hold = Math.max(0, A.hold - dt);
     if (A.hidden) { if (A.stroke || A.strokeMelt) clearStrokeState(A); return P; } // a newborn waiting for its hatch ceremony
 
@@ -534,7 +535,11 @@ export function mountBarn3d(host, ctx) {
     else switch (A.act.type) {
       case 'wander': case 'approach': case 'walkTo': break;
       case 'buddy': buddyPose(A, P, t, dt); break;
+      case 'breedMeet': breedMeetPose(A, P, t, dt); break;
       case 'flyCircle': case 'soar': flightPose(A, P, t); break;
+      case 'batLoop': batLoopPose(A, P, t); break;
+      case 'headTurn': headTurnPose(A, P, t); break;
+      case 'fan': fanPose(A, P, t, dt); break;
       case 'gallop': case 'sprint': runPose(A, P, t, dt); break;
       case 'breach': breachPose(A, P); break;
       case 'roar': roarPose(A, P, t); break;
@@ -659,6 +664,7 @@ export function mountBarn3d(host, ctx) {
         if (!(A.model.parts && (A.model.parts.lid || A.model.parts.shell))) P.sy *= 0.97 + 0.04 * P.shell;
       }
     }
+    skyLoco(A, P, t, dt, moving);
     // part flavour (only has an effect on models that own the part)
     P.tailTip = moving ? Math.sin(A.phase * 2.2) * 0.55 : Math.sin(t * 1.6 + A.seed) * 0.16;
     if (A.act.type === 'idle' || A.act.type === 'lookAtCamera') P.trunk = Math.sin(t * 0.9 + A.seed) * 0.12;
@@ -668,6 +674,77 @@ export function mountBarn3d(host, ctx) {
     }
     if (pet.sick) { P.sy *= 0.96; }
     return P;
+  }
+
+  // ── น้องฟ้า (CONTRACT_V10 §4): small birds hop, hatchling wobbles, swan glides, flamingo stands on one leg ─────────
+  function skyLoco(A, P, t, dt, moving) {
+    const kind = A.loco.kind;
+    if (kind === 'walk' || A.curl > 0.5) { A.legUp = 0; return; }
+    const act = A.act;
+    if (kind === 'birdhop') {
+      if (!moving) return;
+      if (act.flutter && act.target) {
+        // short hop-flight: lifts off, flaps, comes down before the target
+        const d = Math.hypot(act.target.x - A.x, act.target.z - A.z);
+        const lift = smooth(act.t / 0.25) * smooth(d / 0.55);
+        P.hop = lift * (0.42 + Math.sin(t * 9) * 0.05);
+        P.wing = Math.sin(t * 40) * 0.95 * lift; P.pitch = 0.14 * lift; P.sy = 1; P.sx = 1; P.roll = Math.sin(t * 7) * 0.05 * lift;
+      } else {
+        const s = Math.abs(Math.sin(A.phase * 1.5));       // hop-hop on both feet
+        P.hop = s * 0.15; P.sy = 0.92 + 0.14 * s; P.sx = 1.05 - 0.07 * s; P.roll = 0; P.wing = Math.sin(A.phase * 3) * 0.12;
+      }
+    } else if (kind === 'wobble') {
+      const k = moving ? 0.32 : 0.12;
+      P.roll += Math.sin(moving ? A.phase * 1.3 : t * 2.2 + A.seed) * k;
+      if (moving) { P.hop = Math.abs(Math.sin(A.phase * 1.3)) * 0.05; P.sy = 1; P.sx = 1; }
+    } else if (kind === 'glide') {
+      if (moving) { P.hop = 0; P.sy = 1; P.sx = 1; P.roll = Math.sin(A.phase * 0.35) * 0.025; P.pitch = 0.02; P.tail = 0; P.hPitch = -0.12; }
+      P.hop += Math.sin(t * 1.3 + A.seed) * 0.012;
+    } else if (kind === 'stand') {
+      const idle = !moving && (act.type === 'idle' || act.type === 'lookAtCamera') && !act.reason;
+      A.legUp = (A.legUp || 0) + (((idle && (act.oneLeg || act.type === 'lookAtCamera')) ? 1 : 0) - (A.legUp || 0)) * Math.min(1, dt * 3.5);
+      const u = A.legUp;
+      P.leg = u * 1.1; P.roll += u * (0.05 + Math.sin(t * 0.8 + A.seed) * 0.02);
+      P.hop += u * 0.03; P.hYaw += u * Math.sin(t * 0.6 + A.seed) * 0.25;
+    }
+  }
+
+  /** bat at night: flutters in loops over the yard (a small circle around where it started). */
+  function batLoopPose(A, P, t) {
+    const act = A.act;
+    if (!act.init) act.init = { x: A.x, z: A.z, dir: Math.random() < 0.5 ? 1 : -1 };
+    const I = act.init, T = act.dur;
+    const lift = Math.min(smooth(act.t / 0.6), smooth((T - act.t) / 0.7));
+    const R = 1.1, om = 2.1;
+    const ang = om * act.t * I.dir;
+    const c = clampToYard(I.x + Math.sin(ang) * R * lift, I.z + (1 - Math.cos(ang)) * R * lift);
+    A.x = c.x; A.z = c.z;
+    A.heading += angDiff(A.heading, Math.atan2(Math.cos(ang) * I.dir, Math.sin(ang) * I.dir)) * 0.2;
+    P.hop = lift * (1.0 + Math.sin(act.t * 3.1) * 0.25 + Math.sin(t * 11) * 0.06);
+    P.wing = Math.sin(t * 26) * 0.85 * lift; P.roll = -I.dir * 0.3 * lift; P.pitch = 0.1 * lift;
+  }
+
+  /** owl, on tap: the head swings round both ways. */
+  function headTurnPose(A, P, t) {
+    const act = A.act, T = act.dur || 2.4;
+    A.heading += angDiff(A.heading, faceCam(A)) * 0.12;
+    const env = smooth(act.t / 0.35) * smooth((T - act.t) / 0.35);
+    P.hYaw = Math.sin((act.t / T) * TAU) * 2.4 * env;
+    P.hRoll = Math.sin(act.t * 3) * 0.08 * env; P.sy = 1 + 0.04 * env;
+    if (at(act, 'eyes', 0.3)) popAt(A, '👀', 0, 0.1);
+  }
+
+  /** peacock, on tap: the tail stands up into a fan and shimmers. */
+  function fanPose(A, P, t, dt) {
+    const act = A.act, T = act.dur || 3.2;
+    A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 5);
+    const open = smooth(act.t / 0.5) * smooth((T - act.t) / 0.5);
+    P.tailUp = open; P.tail = Math.sin(t * 24) * 0.12 * open;
+    P.wing = (0.35 * open + Math.sin(t * 20) * 0.1 * open);
+    P.sy = 1 + 0.07 * open; P.sx = 1 + 0.05 * open + Math.sin(t * 18) * 0.025 * open; P.pitch = -0.1 * open;
+    P.hPitch = -0.2 * open;
+    if (at(act, 'f1', 0.5)) { fxo('sparkle', world, A.id); popAt(A, '✨', 0.2, 0.2); }
+    if (at(act, 'f2', 1.4)) { fxo('sparkle', world, A.id); popAt(A, '🌈', -0.2, 0.3); }
   }
 
   // ── signature moves (legendary full size, epic `small`) ────────────────
@@ -855,6 +932,7 @@ export function mountBarn3d(host, ctx) {
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j];
         if (b.hidden || a.scripted || b.scripted) continue; // flying / galloping pets pass over the crowd
+        if (a.mate === b.id || b.mate === a.id) continue;   // the pair in a breeding scene stands close
         const hard = (ra + b.model.radius * 0.8);
         const dx = b.x - a.x, dz = b.z - a.z;
         const d = Math.hypot(dx, dz);
@@ -864,8 +942,8 @@ export function mountBarn3d(host, ctx) {
         if (d >= min) continue;
         const nx = d > 1e-4 ? dx / d : 1, nz = d > 1e-4 ? dz / d : 0;
         const push = d < hard ? (hard - d) : (soft - d) * Math.min(1, dt * 1.6);
-        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || ((a.act.type === 'decor' || a.act.type === 'buddy' || a.act.type === 'shelter' || (a.act.type === 'party' && a.act.host)) && a.act.arrived);
-        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || ((b.act.type === 'decor' || b.act.type === 'buddy' || b.act.type === 'shelter' || (b.act.type === 'party' && b.act.host)) && b.act.arrived);
+        const aFixed = a.pinned || a.pet.status === 'sleeping' || a.hold > 0 || ((a.act.type === 'decor' || a.act.type === 'buddy' || a.act.type === 'breedMeet' || a.act.type === 'shelter' || (a.act.type === 'party' && a.act.host)) && a.act.arrived);
+        const bFixed = b.pinned || b.pet.status === 'sleeping' || b.hold > 0 || ((b.act.type === 'decor' || b.act.type === 'buddy' || b.act.type === 'breedMeet' || b.act.type === 'shelter' || (b.act.type === 'party' && b.act.host)) && b.act.arrived);
         if (aFixed && bFixed) continue;
         const wa = aFixed ? 0 : bFixed ? 1 : 0.5, wb = bFixed ? 0 : aFixed ? 1 : 0.5;
         a.x -= nx * push * wa; a.z -= nz * push * wa;
@@ -889,6 +967,21 @@ export function mountBarn3d(host, ctx) {
       if (r > maxR) { a.x *= maxR / r; a.z *= maxR / r; }
       if (!Number.isFinite(a.x) || !Number.isFinite(a.z)) { a.x = 0; a.z = 0.5; }
     }
+  }
+
+  // ── family eggs: pastel egg with a ribbon band and a bow (4 small meshes, shared geometry) ────────────────────
+  const FAMILY_EGG_COLOR = '#ffe4ee';
+  const ribbonGeo = own(new THREE.TorusGeometry(0.296, 0.035, 6, 22));
+  const bowGeo = own(new THREE.SphereGeometry(0.075, 8, 6));
+  function ribbonize(egg) {
+    const band = new THREE.Mesh(ribbonGeo, toon('#ff7eb3')); band.rotation.x = Math.PI / 2; band.position.y = 0.04;
+    const bowL = new THREE.Mesh(bowGeo, toon('#ff7eb3')), bowR = new THREE.Mesh(bowGeo, toon('#ff7eb3')), knot = new THREE.Mesh(bowGeo, toon('#ff4f93'));
+    bowL.position.set(-0.09, 0.31, 0); bowL.scale.set(1.35, 0.8, 0.8); bowL.rotation.z = 0.4;
+    bowR.position.set(0.09, 0.31, 0); bowR.scale.set(1.35, 0.8, 0.8); bowR.rotation.z = -0.4;
+    knot.position.set(0, 0.3, 0); knot.scale.setScalar(0.65);
+    for (const m of [band, bowL, bowR, knot]) m.userData.noPick = true;
+    egg.add(band, bowL, bowR, knot);
+    return egg;
   }
 
   // ── nests / eggs ───────────────────────────────────────────────────────
@@ -928,14 +1021,15 @@ export function mountBarn3d(host, ctx) {
     const t = now();
     for (const n of nests) {
       const slot = state.incubator[n.i];
-      const key = slot ? `${slot.eggId}` : '';
+      const key = slot ? `${slot.eggId}${slot.family ? ':' + slot.family.id : ''}` : '';
       if (key !== n.eggKey && !ceremonyOwnsNest(n.i)) {
         if (n.egg) { n.group.remove(n.egg); n.egg = null; }
         if (slot) {
           const eggDef = getEgg(slot.eggId);
-          const egg = new THREE.Mesh(G.egg, eggMat(eggDef ? eggDef.color : '#f6e7b0'));
+          const egg = new THREE.Mesh(G.egg, eggMat(slot.family ? FAMILY_EGG_COLOR : eggDef ? eggDef.color : '#f6e7b0'));
           egg.scale.set(0.85, 1.12, 0.85);
           egg.position.y = 0.45;
+          if (slot.family) ribbonize(egg);   // a family egg wears a pastel ribbon
           n.group.add(egg);
           n.egg = egg;
         }
@@ -955,7 +1049,7 @@ export function mountBarn3d(host, ctx) {
       if (!el) continue;
       let text = '';
       if (ceremonyOwnsNest(n.i)) text = '';
-      else if (n.slot) text = t >= n.slot.readyAt ? '' : `⏳ ${formatDuration(n.slot.readyAt - t)}`;
+      else if (n.slot) text = t >= n.slot.readyAt ? '' : `${n.slot.family ? '💞' : '⏳'} ${formatDuration(n.slot.readyAt - t)}`;
       else text = '➕';
       if (el.textContent !== text) el.textContent = text;
       el.hidden = !text;
@@ -1237,7 +1331,8 @@ export function mountBarn3d(host, ctx) {
     const r = ctx.run(s => patPet(s, petId));
     if (r && r.ok) {
       fx.heart(world, headPos(A));
-      if (pet.status !== 'sleeping' && !pet.sick) react(A, 'hop', { dur: 0.7, hops: 1, height: 0.3 });
+      const tr = tapReaction(pet.speciesId);
+      if (pet.status !== 'sleeping' && !pet.sick) { if (tr) react(A, tr.type, { dur: tr.dur }); else react(A, 'hop', { dur: 0.7, hops: 1, height: 0.3 }); }
       if (!r.rewarded) fx.emojiPop(world, headPos(A), '😌');
     }
     A.hold = SELECT_HOLD;
@@ -1447,7 +1542,7 @@ export function mountBarn3d(host, ctx) {
       onArrive: AA => {
         begin(AA, { type: 'hop', dur: 1.3, hops: 2 });
         AA.hold = 4.5;
-        if (!legend) addTag(AA, `🐣 ${petName(pet)}`, '', 4500); // legendary pets get the ✦ tag from selectPet()
+        if (!legend) addTag(AA, `🐣 ${petName(pet)}${pet.family ? ` · ลูกของ ${pet.family.a.name} กับ ${pet.family.b.name}` : ''}`, '', 4500); // legendary pets get the ✦ tag from selectPet()
         fx.heart(world, headPos(AA));
         if (legend) fxo('sparkle', world, AA.id);
         if (mine) mine.revealShown = true;
@@ -2428,6 +2523,102 @@ export function mountBarn3d(host, ctx) {
     if (at(act, 'n1', 0.2)) { popAt(A, '💕', 0, 0.1); if (F.pet.status !== 'sleeping' && F.act.type === 'idle') react(F, 'hop', { dur: 0.7, hops: 1, height: 0.25 }); }
   }
 
+  // ── ฉากไข่ครอบครัว (CONTRACT_V10 §3): the pair walk together, nuzzle, a heart burst, a ribbon egg pops out ──────────
+  let breedSc = null;
+
+  function endBreed() {
+    const S = breedSc;
+    if (!S) return;
+    breedSc = null;
+    for (const X of [S.a, S.b]) {
+      X.mate = null;
+      if (X.act.type === 'breedMeet') X.act.dur = 0;
+    }
+    if (S.egg) world.scene.remove(S.egg.mesh);
+  }
+
+  /**
+   * Plays the scene for a pair that just bred (the egg itself is already in state.familyEggs). Returns false (and does
+   * nothing) when it cannot be shown: a pet is off-screen or hidden, a hatch ceremony runs, or the barn is paused.
+   */
+  function breedScene(aId, bId) {
+    if (disposed || !isOn || photo || breedSc || hatching) return false;
+    const A = actors.get(aId), B = actors.get(bId);
+    if (!A || !B || A === B || A.hidden || B.hidden || A.spawn || B.spawn) return false;
+    const pa = world.worldToScreen(headPos(A)), pb = world.worldToScreen(headPos(B));
+    if (!pa.visible || !pb.visible) return false;
+    if (selected || selectedCrib) closeSheet();
+    const M = clampToYard((A.x + B.x) / 2, Math.max((A.z + B.z) / 2, YARD.backLimit + 0.5));
+    const ang = Math.atan2(B.x - A.x, B.z - A.z);
+    const off = 0.3 + (A.model.radius + B.model.radius) * 0.3;
+    const spot = k => clampToYard(M.x + Math.sin(ang) * off * k, M.z + Math.cos(ang) * off * k);
+    const S = { a: A, b: B, M, t: 0, nt: 0, arrived: 0, burst: false, egg: null, done: new Set(), spots: [] };
+    breedSc = S;
+    A.mate = B.id; B.mate = A.id;
+    S.spots = [[A, spot(-1)], [B, spot(1)]];
+    S.spots.forEach(([X, target]) => {
+      X.hold = 0;
+      begin(X, { type: 'breedMeet', target, speed: 1.15, dur: 9, onArrive: () => { if (breedSc === S) { S.arrived++; S.done.add(X.id); } } });
+    });
+    return true;
+  }
+
+  function breedMeetPose(A, P, t, dt) {
+    const act = A.act, S = breedSc, F = actors.get(A.mate);
+    if (!act.arrived || !F || !S) return;
+    A.heading += angDiff(A.heading, Math.atan2(F.x - A.x, F.z - A.z)) * Math.min(1, dt * 7);
+    if (S.arrived < 2) { P.hYaw = Math.sin(t * 1.5 + A.seed) * 0.2; return; }
+    const u = S.nt, side = A.id < F.id ? 0 : 1.4;
+    P.pitch = -0.22 * Math.sin(Math.min(1, u / 0.6) * Math.PI);
+    P.hRoll = Math.sin(u * 8 + side) * 0.3; P.tail = Math.sin(u * 20) * 0.6; P.wing = Math.sin(u * 14) * 0.2;
+    P.hop = Math.max(0, Math.sin(u * 5.5 + side)) * 0.08;
+    if (u > 1.3 && u < 2.3) P.hop += Math.sin((u - 1.3) * Math.PI) * 0.3;   // a happy jump at the heart burst
+  }
+
+  function stepBreed(dt) {
+    const S = breedSc;
+    if (!S) return;
+    S.t += dt;
+    const { a, b, M } = S;
+    if (!actors.has(a.id) || !actors.has(b.id) || a.hidden || b.hidden || a.pet.status === 'sleeping' || b.pet.status === 'sleeping' || hatching
+        || (S.arrived < 2 && S.t > 14)) { endBreed(); return; }
+    if (S.arrived < 2) {   // other pets may push a walker away from its exact spot: close enough counts
+      for (const [X, tg] of S.spots) {
+        if (!S.done.has(X.id) && Math.hypot(X.x - tg.x, X.z - tg.z) < 0.55 && X.act.type === 'breedMeet') { S.done.add(X.id); S.arrived++; X.act.arrived = true; X.act.t = 0; }
+        if (S.done.has(X.id) && X.act.type === 'breedMeet') X.act.t = 0;   // the first to arrive waits: its 9 s start when both are there
+      }
+      if (S.arrived < 2) return;
+    }
+    if (a.act.type !== 'breedMeet' || b.act.type !== 'breedMeet') { endBreed(); return; }   // one wandered off: no nuzzle with nobody
+    S.nt += dt;
+    if (S.nt > 1.3 && !S.burst) {
+      S.burst = true;
+      fx.heart(world, headPos(a)); fx.heart(world, headPos(b));
+      fxo('confetti', world, { x: M.x, y: 0.9, z: M.z }, 16);
+      for (let k = 0; k < 7; k++) later(k * 90, () => fxo('emojiPop', world, { x: M.x + (Math.random() - 0.5) * 1.0, y: 0.7 + Math.random() * 0.8, z: M.z + (Math.random() - 0.5) * 0.6 }, k % 2 ? '💕' : '💖'));
+    }
+    if (S.nt > 1.9 && !S.egg) {
+      const mesh = ribbonize(new THREE.Mesh(G.egg, eggMat(FAMILY_EGG_COLOR)));
+      mesh.userData.noPick = true;
+      mesh.position.set(M.x, 0.45, M.z + 0.05);
+      mesh.scale.setScalar(0.01);
+      world.scene.add(mesh);
+      S.egg = { mesh, t: 0 };
+      fxo('sparkleAt', world, { x: M.x, y: 0.7, z: M.z });
+      fxo('emojiPop', world, { x: M.x, y: 1.3, z: M.z }, '🥚💞');
+    }
+    if (S.egg) {
+      const E = S.egg; E.t += dt;
+      const m = E.mesh, u = E.t;
+      const k = ease.outBack(u / 0.5) * (u > 2.6 ? Math.max(0, 1 - (u - 2.6) / 0.5) : 1);
+      m.scale.set(0.85 * k, 1.12 * k, 0.85 * k);
+      m.position.y = 0.45 + (u < 0.8 ? Math.sin((u / 0.8) * Math.PI) * 0.85 : 0) + (u >= 0.8 && u < 1.2 ? Math.abs(Math.sin((u - 0.8) * 8)) * 0.06 : 0);
+      m.rotation.z = u > 1.2 && u < 2.4 ? Math.sin((u - 1.2) * 14) * 0.14 : 0;
+      m.rotation.y += dt * 1.5;
+      if (u > 3.1) endBreed();
+    } else if (S.nt > 4.5) endBreed();
+  }
+
   // ── แต่งตัวน้อง 👗 (CONTRACT_V9 §1): small merged meshes on the head / neck, emoji sprites on billboards ────────────────
   const accMat = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: world.toonGradient }));
   const accGeos = new Map();
@@ -3121,6 +3312,7 @@ export function mountBarn3d(host, ctx) {
       feedWith(petId, btn.dataset.itemId);
     },
     wear: btn => { if (btn.dataset.petId) { sheetMode = 'wear'; refreshUi(); } },
+    breed: btn => { if (btn.dataset.petId && ctx.openBreed) ctx.openBreed(btn.dataset.petId); },
     'wear-pick': btn => wearPick(btn.dataset.petId, btn.dataset.accId),
     'wear-off': btn => wearOff(btn.dataset.petId, btn.dataset.slot),
     photo: () => enterPhoto(),
@@ -3272,6 +3464,7 @@ export function mountBarn3d(host, ctx) {
     stepDecor(dt, t);
     stepPops(dt);
     stepHatch(dt);
+    stepBreed(dt);
     stepTemps(dt);
     // selection ring
     const sel = selTarget();
@@ -3298,7 +3491,7 @@ export function mountBarn3d(host, ctx) {
   sync(getState());
   const unWeather = bindWeather(world, { onChange: onWeather });   // real-hour weather (js/weather.js); ?weather=rain forces it
   if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), stroke: (id, phase, region, point, ms) => onStroke({ id, phase, region, point: point || { x: 0, y: 0.5, z: 0 }, durationMs: ms }), greet: d => { greetDigest = d; greetWait = 0; }, kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); },
-    weather: k => { wxDebug = true; world.setWeather(k, 1); onWeather({ kind: k, intensity: 1 }); }, photo: () => enterPhoto(), info: () => ({ party, rainSt, wxKind, photo, stats: world.getStats() }), applyWear: id => applyWear(actors.get(id)) };
+    weather: k => { wxDebug = true; world.setWeather(k, 1); onWeather({ kind: k, intensity: 1 }); }, photo: () => enterPhoto(), info: () => ({ party, rainSt, wxKind, photo, stats: world.getStats() }), applyWear: id => applyWear(actors.get(id)), breedScene: (a, b) => breedScene(a, b), breedInfo: () => breedSc && { t: breedSc.t, nt: breedSc.nt, arrived: breedSc.arrived, egg: !!breedSc.egg } };
 
   return {
     setActive(on) {
@@ -3309,8 +3502,11 @@ export function mountBarn3d(host, ctx) {
       world.setActive(isOn);
       if (isOn) sync(getState());
     },
+    /** plays the breeding scene for the pair; false when it was skipped (off-screen, no 3D, ...). */
+    breedScene(aId, bId) { return breedScene(aId, bId); },
     dispose() {
       if (disposed) return;
+      endBreed();
       if (hatching) { // toggled to the list / left mid-ceremony: never lose the news
         announceHatch();
         if (hatching.pet && !hatching.revealShown && ctx.revealHatch) ctx.revealHatch(hatching.pet, !!hatching.nurseryPetId);

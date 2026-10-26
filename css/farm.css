@@ -132,7 +132,7 @@
 .shop-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .shop-head .farm-h { margin: 0; }
 .shop-coins { font-weight: 700; padding: 2px 12px; border-radius: 999px; background: var(--surface-2); }
-.shop-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.shop-tabs { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 4px; }   /* wraps on phones: every tab (⬆️ อัปเกรด last) stays visible */
 .shop-tab {
   flex: none; padding: 6px 12px; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--border); background: var(--surface); color: var(--text);

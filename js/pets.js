@@ -637,7 +637,7 @@ export function hatchReady(state, slotIndex) {
   const egg = getEgg(slot.eggId);
   // A family egg (CONTRACT_V10) rolls its genes now from the parents' snapshot; a normal egg picks a species of its habitat.
   const genes = slot.family ? rollFamilyGenes(slot.family) : null;
-  const species = genes ? getSpecies(genes.speciesId) : egg && pickSpeciesForHabitat(egg.habitat);
+  const species = genes ? getSpecies(genes.speciesId) : egg && egg.legend ? pickWeighted(SPECIES.filter(s => s.rarity === 'legendary'), () => 1) : egg && pickSpeciesForHabitat(egg.habitat);
   if (!species) return fail('ไข่ใบนี้ฟักไม่ได้');
 
   const t = now();

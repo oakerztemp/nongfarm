@@ -19,7 +19,11 @@ export const EGGS = [
 // family egg can't be bought, sold or gifted. hatchMs is 0 here; the real time comes from breeding.js familyEggHatchMs().
 export const FAMILY_EGG = { id: 'egg_family', emoji: '🥚', nameTh: 'ไข่ครอบครัว', habitat: null, price: 0, unlockLevel: 99, hatchMs: 0, color: '#ffd3e4', family: true };
 
-const BY_ID = new Map([...EGGS, FAMILY_EGG].map(e => [e.id, e]));
+// V14 legendary egg: only from system mail (claimMail puts it straight into the incubator). Not in EGGS for the same reasons
+// as the family egg (no shop, sell, stardust or drop path). Hatches a random legendary species (pets.js hatchReady).
+export const LEGEND_EGG = { id: 'egg_legend', emoji: '🥚', nameTh: 'ไข่ตำนาน', habitat: null, price: 0, unlockLevel: 99, hatchMs: 10 * MIN, color: '#ffd36b', legend: true };
+
+const BY_ID = new Map([...EGGS, FAMILY_EGG, LEGEND_EGG].map(e => [e.id, e]));
 
 export function getEgg(id) {
   return BY_ID.get(id) || null;

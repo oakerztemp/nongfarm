@@ -114,8 +114,9 @@ export function createNewState() {
 export function ensureMail(s) {
   if (!Array.isArray(s.mail)) s.mail = [];
   if (!Array.isArray(s.mailSent)) s.mailSent = [];
+  const level = (s.player && s.player.level) || 1;
   for (const m of SYSTEM_MAILS) {
-    if (s.mailSent.includes(m.id)) continue;
+    if (s.mailSent.includes(m.id) || level < (m.minLevel || 1)) continue;   // V14: a level-gated mail arrives on that level-up
     s.mailSent.push(m.id);
     s.mail.unshift({ id: m.id, at: now(), read: false, claimed: false });
   }
@@ -849,4 +850,5 @@ export function addPlayerXp(state, n) {
     p.level += 1;
     notify(`เลเวลอัพ! Lv.${p.level}`, 'success');
   }
+  ensureMail(state);   // V14: level-gated system mail
 }

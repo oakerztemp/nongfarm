@@ -234,16 +234,16 @@ export const MODEL_SPECS = {
     extras: [{ t: 'whiskers', color: '#d8cfd3', len: 0.5, n: 2, az: 0.28, el: -0.18 }],
   },
 
-  horse: {
-    body: { w: 0.36, h: 0.36, d: 0.58, color: '#b0703e', y: 0.46 },
-    legs: { type: 'long', h: 0.26, r: 0.06, color: '#a2663a', hoof: '#3d2f2f', x: 0.6, z: 0.64 },
-    neck: { r: 0.15, top: 0.85, z: 0.5 },
-    head: { r: 0.25, w: 0.88, h: 1.0, d: 1.2, y: 0.98, z: 0.6 },
-    eyes: { s: 0.13, gap: 0.62, el: 0.12 },
+  horse: {   // V14 chibi proportions (as the V13 unicorn): short sturdy legs, big head, sparkly eyes
+    body: { w: 0.37, h: 0.35, d: 0.5, color: '#b0703e', y: 0.4 },
+    legs: { type: 'long', h: 0.22, r: 0.075, color: '#a2663a', hoof: '#3d2f2f', x: 0.58, z: 0.62 },
+    neck: { r: 0.15, top: 0.85, z: 0.45 },
+    head: { r: 0.3, w: 0.95, h: 0.95, d: 1.08, y: 0.93, z: 0.6 },
+    eyes: { s: 0.21, gap: 0.55, el: 0.06, tall: 1.35 },
     ears: { type: 'cat', s: 0.5, az: 0.5, el: 0.8, up: 0.65, inner: '#ffb3c1' },
-    snout: { type: 'muzzle', color: '#946034', w: 0.58, h: 0.5, d: 0.45, el: -0.4, nose: false, nostrils: true },
-    tail: { type: 'fluffy', w: 0.08, h: 0.27, d: 0.09, dy: -0.2, dz: 0.03, rot: 0.15, color: '#3f2c24', y: 0.6 },
-    extras: [{ t: 'mane', color: '#3f2c24', n: 5, s: 0.12, endZ: 0.0 }],
+    snout: { type: 'muzzle', color: '#c98a5a', w: 0.48, h: 0.34, d: 0.24, el: -0.42, nose: false, nostrils: true },
+    tail: { type: 'fluffy', w: 0.1, h: 0.3, d: 0.11, dy: -0.2, dz: 0.03, rot: 0.15, color: '#3f2c24', y: 0.42 },
+    extras: [{ t: 'mane', color: '#3f2c24', n: 6, s: 0.19, endZ: -0.1, lo: true }],
   },
 
   racehorse: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
@@ -276,14 +276,14 @@ export const MODEL_SPECS = {
     ],
   },
 
-  llama: {
-    body: { w: 0.35, h: 0.34, d: 0.42, color: '#f3e7d1', y: 0.5 },
-    legs: { type: 'long', h: 0.26, r: 0.05, color: '#ead9bb', hoof: '#6b5a4c', x: 0.6, z: 0.58 },
+  llama: {   // V14 chibi proportions (as the V13 unicorn): short sturdy legs, big head, sparkly eyes
+    body: { w: 0.36, h: 0.35, d: 0.42, color: '#f3e7d1', y: 0.42 },
+    legs: { type: 'long', h: 0.2, r: 0.068, color: '#ead9bb', hoof: '#6b5a4c', x: 0.58, z: 0.58 },
     neck: { r: 0.12, top: 0.85, z: 0.5, color: '#f7eedd' },
-    head: { r: 0.2, w: 0.88, h: 1.0, d: 1.1, y: 1.05, z: 0.5, color: '#f7eedd' },
-    eyes: { s: 0.14, gap: 0.55, el: 0.14 },
+    head: { r: 0.26, w: 0.92, h: 1.0, d: 1.0, y: 0.98, z: 0.5, color: '#f7eedd' },
+    eyes: { s: 0.21, gap: 0.55, el: 0.1, tall: 1.35 },
     ears: { type: 'cat', s: 0.62, az: 0.5, el: 0.95, up: 0.75, flare: 0.25, color: '#f3e7d1', inner: '#ffb3c1' },
-    snout: { type: 'muzzle', color: '#f7eedd', w: 0.5, h: 0.36, d: 0.34, el: -0.28, nose: '#e98a9a', noseS: 0.11, noseY: 0.6 },
+    snout: { type: 'muzzle', color: '#f7eedd', w: 0.5, h: 0.34, d: 0.26, el: -0.3, nose: '#e98a9a', noseS: 0.11, noseY: 0.6 },
     tail: { type: 'puff', s: 0.1, y: 0.35 },
     extras: [
       { t: 'wool', color: '#f3e7d1', n: 5, s: 0.55, head: [[0, 0.98, 0.0, 0.5], [0.3, 0.9, 0.1, 0.3]] },
@@ -509,12 +509,12 @@ export const MODEL_SPECS = {
     shinyPalette: { '#c9783c': '#eac860', '#d98a4c': '#f0d070', '#e8a868': '#f6dc88', '#f4c892': '#fff6d0', '#fff0d8': '#fffbe8', '#f4d3a6': '#fff0b8' },
   },
 
-  deer: {
+  deer: {   // V14 chibi proportions (as the V13 unicorn): short sturdy legs, big head, sparkly eyes
     body: { w: 0.3, h: 0.3, d: 0.42, color: '#b98450', lo: true },
-    legs: { type: 'long', h: 0.2, r: 0.04, color: '#a8744a', x: 0.55, z: 0.6 },
+    legs: { type: 'long', h: 0.17, r: 0.055, color: '#a8744a', x: 0.55, z: 0.6 },
     neck: { r: 0.1, top: 0.85, z: 0.5 },
-    head: { r: 0.24, w: 0.95, h: 1.0, d: 1.05, y: 0.9, z: 0.4 },
-    eyes: { s: 0.13, gap: 0.58, el: 0.1 },
+    head: { r: 0.28, w: 0.95, h: 1.0, d: 1.0, y: 0.86, z: 0.4 },
+    eyes: { s: 0.2, gap: 0.56, el: 0.08, tall: 1.35 },
     blush: false,
     ears: { type: 'cat', s: 0.62, az: 0.85, el: 0.5, up: 0.1, flare: 0.7, inner: false },
     snout: { type: 'nose', color: '#3a2a2e', s: 0.07, el: -0.3 },
@@ -1478,3 +1478,21 @@ export const MODEL_SPECS = {
     shinyPalette: { '#f0b878': '#b9a0f0', '#f6c890': '#dcc8ff', '#d9955a': '#8a70d0', '#ff9a6a': '#ff8fc0', '#ffc09a': '#ffd0e6', '#e0985a': '#8a70d0', '#7ae8ff': '#ffe66a', '#9a5a30': '#4a3290' },
   },
 };
+
+// ───────── V14: the V13 chibi recipe for every model ─────────
+// The 11 legendaries (V13) and the long-legged horse / llama / deer (V14) are tuned by hand; every other spec gets the same recipe here, in place:
+// sparkly eyes (larger, a little taller), a slightly bigger head, shorter muzzles / snouts / beaks. Blush stays as each spec set it.
+const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer']);
+export const CHIBI = { eyeMult: 1.25, eyeMax: 0.21, eyeTall: 1.3, headMult: 1.06, snoutMult: 0.8, beakMult: 0.85 };
+
+function chibify(spec) {
+  const e = spec.eyes || (spec.eyes = {});
+  e.s = Math.min(CHIBI.eyeMax, Math.max(e.s ?? 0.16, (e.s ?? 0.16) * CHIBI.eyeMult));
+  if ((e.tall ?? 1.2) >= 1) e.tall = Math.max(e.tall ?? 1.2, CHIBI.eyeTall);   // droopy eyes (sloth, tall < 1) stay sleepy
+  if (spec.head) spec.head.r = +((spec.head.r ?? 0.3) * CHIBI.headMult).toFixed(3);
+  const sn = spec.snout;
+  if (sn && (sn.type === 'muzzle' || sn.type === 'pointy') && sn.d) sn.d = +(sn.d * CHIBI.snoutMult).toFixed(3);
+  if (sn && sn.type === 'beak' && sn.len) sn.len = +(sn.len * CHIBI.beakMult).toFixed(3);
+}
+
+for (const [id, spec] of Object.entries(MODEL_SPECS)) if (!CHIBI_TUNED.has(id)) chibify(spec);

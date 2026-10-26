@@ -23,13 +23,13 @@ async function loadFixture(name) {
 
 test('v12 mail: a new save has the welcome mail once, unread, with its gift (badge 1)', () => withFakeNow(T0, () => {
   const s = createNewState();
-  assertEq(s.mail.length, SYSTEM_MAILS.length, 'one mail per system mail');
+  assertEq(s.mail.length, SYSTEM_MAILS.filter(m => !m.minLevel || m.minLevel <= 1).length, 'one mail per system mail of level 1');
   assertEq(s.mail[0].id, WELCOME, 'welcome mail');
   assert(!s.mail[0].read && !s.mail[0].claimed, 'unread, not claimed');
   assert(s.mailSent.includes(WELCOME), 'marked as sent');
   assertEq(mailBadgeCount(s), 1, 'badge');
   ensureMail(s); ensureMail(s);
-  assertEq(s.mail.length, SYSTEM_MAILS.length, 'ensureMail never duplicates');
+  assertEq(s.mail.length, 1, 'ensureMail never duplicates');
   readMail(s, WELCOME);
   assertEq(mailBadgeCount(s), 1, 'read but gift not taken still counts');
 }));
@@ -138,3 +138,35 @@ test('v12 review fixes: a guest who only took the gift stays pristine; the rehom
     assert(!isPristine(s), 'a real pet is progress');
   });
 });
+
+test('v14 legendary egg: the mail arrives on reaching Lv.5 (not before), goes into the incubator, refuses a full one, hatches a legendary', async () => {
+  const { addPlayerXp, xpForLevel } = await import('../js/state.js');
+  const { hatchReady } = await import('../js/pets.js');
+  const { SPECIES } = await import('../js/data/species.js');
+  await withFakeNow(T0, clock => {
+    const s = createNewState();
+    assert(!s.mail.some(m => m.id === 'gift_legend_egg'), 'not at Lv.1');
+    while (s.player.level < 4) addPlayerXp(s, xpForLevel(s.player.level));
+    assert(!s.mail.some(m => m.id === 'gift_legend_egg'), 'not at Lv.4');
+    addPlayerXp(s, xpForLevel(s.player.level));
+    assertEq(s.player.level, 5, 'Lv.5');
+    assert(s.mail.some(m => m.id === 'gift_legend_egg' && !m.claimed), 'arrives at Lv.5');
+    s.incubator.push({ eggId: 'egg_farm', startAt: T0, readyAt: T0 });
+    assert(!claimMail(s, 'gift_legend_egg').ok, 'full incubator refused');
+    assert(!s.mail.find(m => m.id === 'gift_legend_egg').claimed, 'still claimable');
+    s.incubator.length = 0;
+    const r = claimMail(s, 'gift_legend_egg');
+    assert(r.ok, r.reason);
+    assertEq(s.incubator[0].eggId, 'egg_legend', 'in the incubator');
+    assert(!claimMail(s, 'gift_legend_egg').ok, 'second claim refused');
+    clock.advance(11 * 60 * 1000);
+    const h = hatchReady(s, 0);
+    assert(h.ok, h.reason);
+    assertEq(SPECIES.find(sp => sp.id === h.pet.speciesId).rarity, 'legendary', 'a legendary hatched');
+    assertEq(countItemSafe(s, 'egg_legend'), 0, 'never an inventory item');
+    const m = migrate(JSON.parse(JSON.stringify(s)));
+    assertEq(m.mail.filter(x => x.id === 'gift_legend_egg').length, 1, 'not re-sent after a reload');
+  });
+});
+
+const countItemSafe = (s, id) => (s.inventory && s.inventory[id]) || 0;

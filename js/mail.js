@@ -6,6 +6,7 @@ import { getMailDef } from './data/mail.js';
 import { LIMITED_PETS } from './data/limited.js';
 import { getSpecies } from './data/species.js';
 import { ensureNursery, STAGES } from './pets.js';
+import { getEgg } from './data/eggs.js';
 
 const fail = reason => ({ ok: false, reason });
 
@@ -40,13 +41,28 @@ export function limitedPet(limitedId, t = now()) {
   };
 }
 
-/** Takes a mail's gift: a Limited pet goes to the yard, or the nursery when the yard is full. */
+/** V14: an egg gift goes straight into a free incubator slot. */
+function claimEgg(state, m, eggId) {
+  const egg = getEgg(eggId);
+  if (!egg) return fail('ของขวัญนี้รับไม่ได้');
+  if (state.incubator.length >= state.incubatorCapacity) return fail('ตู้ฟักเต็มอยู่ — ฟักไข่ใบเดิมให้เสร็จก่อน แล้วค่อยมารับนะ');
+  const t = now();
+  state.incubator.push({ eggId: egg.id, startAt: t, readyAt: t + egg.hatchMs });
+  m.claimed = true;
+  m.read = true;
+  const msg = `🥚✨ ใส่${egg.nameTh}ในตู้ฟักแล้ว ลุ้นเลยว่าจะได้น้องตำนานตัวไหน!`;
+  addLog(state, msg);
+  return { ok: true, msg };
+}
+
+/** Takes a mail's gift: an egg goes to the incubator; a Limited pet goes to the yard, or the nursery when the yard is full. */
 export function claimMail(state, id) {
   const m = (state.mail || []).find(x => x.id === id);
   const def = m && getMailDef(m.id);
   if (!def) return fail('ไม่พบจดหมายนี้');
   if (!def.gift) return fail('จดหมายนี้ไม่มีของขวัญ');
   if (m.claimed) return fail('รับของขวัญไปแล้ว');
+  if (def.gift.egg) return claimEgg(state, m, def.gift.egg);
   const pet = limitedPet(def.gift.limited);
   const species = pet && getSpecies(pet.speciesId);
   if (!species) return fail('ของขวัญนี้รับไม่ได้');

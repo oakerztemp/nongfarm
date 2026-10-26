@@ -553,6 +553,7 @@ function runSim(profile, seed, opts = {}) {
         if (t > T0) bot.autoDispatch += catchUp(s, last, t);
         last = t;
         claimDaily(s);
+        if (opts.gift) for (const m of s.mail) if (!m.claimed && claimMail(s, m.id).ok) bot.mailClaims = (bot.mailClaims || 0) + 1;   // V14: the Lv.5 egg too
         session(s, bot, Math.max(10 * MIN, next(t) - t));
         for (const [id, cap] of [['M', 6], ['L', 10], ['XL', 15]]) if (!(id in tierDay) && s.barnCapacity >= cap) tierDay[id] = +((t - T0) / DAY).toFixed(2);
         if (t >= T0 + (rows.length + 1) * DAY) {
@@ -1298,12 +1299,13 @@ test('econ V11 gate 2: with festival play ON vs OFF the income per hour stays wi
   globalThis.__econFest = out;
 });
 
-test('econ V12 gate: the Limited welcome pet (taken on minute one) keeps day-14 income <= 1.10x and <= 4500/h, the yard <= 20% every day and the yard tiers within +-25% of the V6 baseline', async () => {
+test('econ V12/V14 gate: the Limited welcome pet (taken on minute one) and the Lv.5 legendary egg keep day-14 income <= 1.10x and <= 4500/h, the yard <= 20% every day and the yard tiers within +-25% of the V6 baseline', async () => {
   const out = [];
   for (const name of ['3h', 'realistic']) {
     const on = await resultGift(name), off = await result(name);
     const d14 = r => r.rows.find(x => x.day === 14) || r.rows[r.rows.length - 1];
     assert(on.state.pets.some(p => p.limited === 'celestial') || (on.state.nursery || []).some(e => e.pet.limited === 'celestial'), name + ': the Limited pet is still owned on day 14');
+    assert(on.state.mail.some(m => m.id === 'gift_legend_egg' && m.claimed), name + ': the bot took the Lv.5 legendary egg');
     assert(d14(on).perHour <= 1.10 * d14(off).perHour, `${name}: day-14 income ${Math.round(d14(on).perHour)} coins/h with the gift vs ${Math.round(d14(off).perHour)} without (> 1.10x)`);
     assert(d14(on).perHour <= 4500, `${name}: day-14 ${Math.round(d14(on).perHour)} coins/h (> 4500 gate)`);
     for (const x of on.rows) assert(x.yardShare <= 0.2, `${name} day ${x.day}: yard is ${(100 * x.yardShare).toFixed(1)}% of income with the gift (> 20%)`);

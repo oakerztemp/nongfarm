@@ -4,18 +4,29 @@ import { escapeHtml as e, notify, openModal } from '../util.js';
 import { mailList, mailBadgeCount, readMail, claimMail } from '../mail.js';
 import { LIMITED_PETS } from '../data/limited.js';
 import { getSpecies } from '../data/species.js';
+import { getEgg } from '../data/eggs.js';
 
 const dateTh = at => (at ? new Date(at).toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }) : '');
 
+const claimBtn = m => (m.claimed ? '<span class="badge">✅ รับแล้ว</span>'
+  : `<button type="button" class="btn btn-primary btn-sm" data-mail-claim="${e(m.id)}">🎁 รับของขวัญ</button>`);
+
 function giftHtml(m) {
+  const egg = m.def.gift && m.def.gift.egg && getEgg(m.def.gift.egg);
+  if (egg) {
+    return `<div class="mail-gift">
+      <span class="mail-gift-emoji" aria-hidden="true">${egg.emoji}</span>
+      <span><b>${e(egg.nameTh)}</b><br><small class="muted">✦ ฟักได้น้องระดับตำนาน 1 ตัว (สุ่ม) · เข้าตู้ฟักทันที</small></span>
+      ${claimBtn(m)}
+    </div>`;
+  }
   const L = m.def.gift && LIMITED_PETS[m.def.gift.limited];
   if (!L) return '';
   const sp = getSpecies(L.speciesId);
   return `<div class="mail-gift">
       <span class="mail-gift-emoji" aria-hidden="true">${sp ? sp.emoji : '🎁'}</span>
       <span><b>${e(L.nameTh)}</b> ${L.icon} <span class="pet-limited-tag">${L.badge}</span><br><small class="muted">✨ ไชนี่ · ✦ ตำนาน · ออร่าสีรุ้งเฉพาะตัว</small></span>
-      ${m.claimed ? '<span class="badge">✅ รับแล้ว</span>'
-        : `<button type="button" class="btn btn-primary btn-sm" data-mail-claim="${e(m.id)}">🎁 รับของขวัญ</button>`}
+      ${claimBtn(m)}
     </div>`;
 }
 

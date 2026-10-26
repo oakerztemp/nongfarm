@@ -4,6 +4,8 @@ import { fastForwardQuests } from './quests.js'; // circular on purpose: only ca
 import { getCrop } from './data/crops.js';
 import { getSpecies, HABITATS } from './data/species.js';
 import { COAT_IDS } from './data/coats.js';
+import { SYSTEM_MAILS, MAIL_MAX, getMailDef } from './data/mail.js';
+import { LIMITED_PETS } from './data/limited.js';
 import { FESTIVAL_IDS, SHOP_ITEM_IDS, TASK_POOL, LANTERN_MAX, KRATHONG_MAX, LOGIN_MAX, TASKS_PER_FESTIVAL, LEDGER_MAX, SEEN_DAYS_MAX, FLOAT_DAYS_MAX } from './data/festivals.js';
 
 // v7: accessory ids are validated against js/data/accessories.js (owned by the data author). It is loaded with a tolerant
@@ -60,7 +62,7 @@ function newPlot(index) {
 
 export function createNewState() {
   const t = now();
-  return {
+  const s = {
     version: STATE_VERSION,
     updatedAt: 0,
     lastTick: t,
@@ -101,7 +103,35 @@ export function createNewState() {
     coatsSeen: { base: true }, // v8: coatId -> true for every coat the player has had (the coats_all book goal)
     festival: newFestival(), // v9: { id, key, tasks, loginDays, seenDays, ledger, lanterns, krathongs, owned, krathong, floatDays } (js/festival.js)
     journal: [],          // v7: [{ day: 'YYYY-MM-DD', lines: [{ emoji, text, petId? }] }] oldest day first, <= JOURNAL_DAYS_MAX x JOURNAL_LINES_MAX (js/journal.js)
+    mail: [],             // V12: [{ id, at, read, claimed }] newest first, <= MAIL_MAX; text + gift in js/data/mail.js (js/mail.js)
+    mailSent: [],         // V12: system mail ids already delivered (ensureMail sends each one once per save)
   };
+  ensureMail(s);
+  return s;
+}
+
+/** V12: delivers every system mail this save has not had yet (newest first, <= MAIL_MAX). Idempotent. */
+export function ensureMail(s) {
+  if (!Array.isArray(s.mail)) s.mail = [];
+  if (!Array.isArray(s.mailSent)) s.mailSent = [];
+  for (const m of SYSTEM_MAILS) {
+    if (s.mailSent.includes(m.id)) continue;
+    s.mailSent.push(m.id);
+    s.mail.unshift({ id: m.id, at: now(), read: false, claimed: false });
+  }
+  if (s.mail.length > MAIL_MAX) s.mail.length = MAIL_MAX;
+}
+
+/** V12: mail entries of known ids only (unique, booleans, at a number), mailSent unique short strings, unknown pet.limited dropped. */
+function sanitiseMail(s) {
+  const seen = new Set();
+  s.mail = (Array.isArray(s.mail) ? s.mail : []).filter(m => isObj(m) && getMailDef(m.id) && !seen.has(m.id) && seen.add(m.id))
+    .map(m => ({ id: m.id, at: Number.isFinite(m.at) ? m.at : 0, read: m.read === true, claimed: m.claimed === true }));
+  s.mailSent = [...new Set((Array.isArray(s.mailSent) ? s.mailSent : []).filter(id => typeof id === 'string' && id.length <= 40))].slice(-100);
+  for (const m of s.mail) if (!s.mailSent.includes(m.id)) s.mailSent.push(m.id);
+  const pets = [...s.pets, ...(Array.isArray(s.nursery) ? s.nursery.map(e => isObj(e) && e.pet) : [])];
+  for (const p of pets) if (isObj(p) && p.limited !== undefined && !LIMITED_PETS[p.limited]) delete p.limited;
+  ensureMail(s);
 }
 
 // ---- migration / sanitising ----
@@ -702,6 +732,7 @@ function migrateUnsafe(raw) {
   sanitiseV7(s);
   sanitiseV8(s);
   sanitiseV9(s);
+  sanitiseMail(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];
@@ -724,9 +755,13 @@ export function isPristine(s) {
   const fresh = createNewState();
   const plots = Array.isArray(s.plots) ? s.plots : [];
   const empty = x => !Array.isArray(x) || x.length === 0;
+  // V12: the welcome-mail Limited pet (and its book entry) is not progress
+  const gifts = (Array.isArray(s.pets) ? s.pets : []).concat((Array.isArray(s.nursery) ? s.nursery : []).map(e => e && e.pet)).filter(p => p && LIMITED_PETS[p.limited]);
+  const realPets = (Array.isArray(s.pets) ? s.pets : []).filter(p => !(p && LIMITED_PETS[p.limited]));
+  const realBook = Object.entries(s.collection || {}).filter(([id, c]) => !(c && c.owned <= gifts.filter(p => p.speciesId === id).length));
   return s.player.level === fresh.player.level && s.player.xp === fresh.player.xp
-    && empty(s.pets) && empty(s.incubator) && empty(s.expeditions)
-    && Object.keys(s.collection || {}).length === 0
+    && empty(realPets) && empty(s.incubator) && empty(s.expeditions)
+    && realBook.length === 0
     && plots.length === fresh.plots.length && plots.every(p => !p || !p.cropId);
 }
 

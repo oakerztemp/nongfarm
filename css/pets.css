@@ -688,3 +688,37 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .fest-kr-n { font-weight: 700; }
 .fest-note { font-size: 0.8rem; margin: 6px 0 0; }
 @media (prefers-reduced-motion: reduce) { .fest-chip.has-claim { animation: none; } }
+
+/* ───────── V12 Limited pets + mailbox ───────── */
+.pet-limited-tag {
+  font-weight: 700; white-space: nowrap;
+  background: linear-gradient(90deg, #ff6ad5, #c774e8, #8795e8, #29c4e6); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.pet-card.is-limited, .pet-detail-top.is-limited, .nursery-row.is-limited {
+  border: 2px solid transparent;
+  background: linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(120deg, #ff6ad5, #c774e8, #8795e8, #7af5ff, #94ffd8, #ffe27a, #ff6ad5) border-box;
+  background-size: 100% 100%, 300% 300%;
+  animation: ltd-border 6s linear infinite;
+}
+.is-limited .pet-emoji { filter: drop-shadow(0 0 5px #c774e8) drop-shadow(0 0 10px #7af5ff); }
+.pet-limited-line { margin-top: 4px; font-size: 0.85rem; }
+@keyframes ltd-border { to { background-position: 0 0, 300% 0; } }
+
+.hdr-mail { position: relative; min-width: 32px; padding: 4px 8px; font-size: 1rem; }
+@media (max-width: 420px) { .hdr-mail { min-width: 28px; padding: 4px 4px; } }
+.hdr-mail-badge {
+  position: absolute; top: -2px; right: -2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 99px;
+  background: #e5484d; color: #fff; font-size: 0.65rem; line-height: 16px; font-weight: 700;
+}
+.mailbox { display: grid; gap: 10px; }
+.mail-item { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface); }
+.mail-item.is-new { border-color: var(--accent); }
+.mail-item-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.mail-item-body { margin: 6px 0 8px; line-height: 1.5; }
+.mail-gift { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mail-gift-emoji { font-size: 2rem; filter: drop-shadow(0 0 5px #c774e8) drop-shadow(0 0 10px #7af5ff); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-card.is-limited, .pet-detail-top.is-limited, .nursery-row.is-limited { animation: none; }
+}

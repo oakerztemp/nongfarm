@@ -36,6 +36,7 @@ import { createWorld, mergeStaticParts, WILD } from '../world3d/engine.js';
 import { activeFestival, LOY_ID } from '../festival.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
+import { limitedOf } from '../data/limited.js';
 
 /** 🎂 today is the pet's N-month birthday: { isToday, months } (js/birthday.js). */
 const bdayOf = pet => birthdayInfo(pet);
@@ -414,10 +415,33 @@ export function mountBarn3d(host, ctx) {
       A.deco.push(fxo('aura', world, A.id, { color: HABITAT_AURA[sp.habitat] || '#ffd54f', intensity: 1 }));
       if (!low) A.deco.push(fxo('particles', world, A.id, { kind: A.pet.speciesId === 'dragon' ? 'embers' : 'motes', rate: 5 }));
     }
+    const ltd = limitedOf(A.pet);
+    if (ltd) {
+      // V12 Limited: rainbow aura (colour walked in stepLimitedAuras) + stars + motes, instead of the legendary aura
+      A.deco.forEach(h => h && h.remove && h.remove()); A.deco.length = 0;
+      A.ltdAura = fxo('aura', world, A.id, { color: ltd.aura.colors[0], intensity: 1.25 });
+      A.deco.push(A.ltdAura);
+      if (!low) A.deco.push(fxo('twinkle', world, A.id, { rate: 7 }), fxo('particles', world, A.id, { kind: 'motes', rate: 6, color: ltd.aura.colors[2] }));
+      return;
+    }
+    A.ltdAura = null;
     const billboard = A.model.kind === 'billboard' || A.model.shinyStyle === 'halo';
-    if (A.pet.shiny && billboard) {
-      A.deco.push(fxo('glowHalo', world, A.id, { color: '#ffe27a' }));
-      if (!low) A.deco.push(fxo('twinkle', world, A.id));
+    if (A.pet.shiny && billboard) A.deco.push(fxo('glowHalo', world, A.id, { color: '#ffe27a' }));
+    // V12: shiny 3D models get a lasting aura too (they used to get only the recolour + a rare sparkle)
+    else if (A.pet.shiny && rar !== 'legendary') A.deco.push(fxo('aura', world, A.id, { color: '#ffe27a', intensity: 0.8 }));
+    if (A.pet.shiny && !low) A.deco.push(fxo('twinkle', world, A.id));
+  }
+
+  /** V12: Limited auras slowly walk their colour list. */
+  const ltdColA = new THREE.Color(), ltdColB = new THREE.Color();
+  function stepLimitedAuras(t) {
+    for (const A of actors.values()) {
+      const ltd = A.ltdAura && typeof A.ltdAura.setColor === 'function' && limitedOf(A.pet);
+      if (!ltd) continue;
+      const cols = ltd.aura.colors;
+      const u = (t * 0.25) % cols.length, i = Math.floor(u);
+      ltdColA.set(cols[i]).lerp(ltdColB.set(cols[(i + 1) % cols.length]), u - i);
+      A.ltdAura.setColor(ltdColA.getHex());
     }
   }
 
@@ -3988,6 +4012,7 @@ export function mountBarn3d(host, ctx) {
     animateNests(t, dt);
     animateCribs(t, dt);
     stepDecor(dt, t);
+    stepLimitedAuras(t);
     stepPops(dt);
     stepHatch(dt);
     stepBreed(dt);

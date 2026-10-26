@@ -15,6 +15,7 @@ import { AWAY_MIN_MS, snapshotForAway, buildAwayDigest, setAwayDigest, takeAwayD
 import { CROPS } from './data/crops.js';
 import { initQuestBar } from './ui/questBar.js';
 import { openSettings } from './ui/settings.js';
+import { openMailbox, updateMailBadge } from './ui/mailbox.js';
 import { createNotifyMemory, pollNotifications } from './notify.js';
 import { initInstallPrompt, registerServiceWorker, showNotice } from './pwa.js';
 
@@ -123,6 +124,7 @@ function updateHeader() {
   $('hdr-xp-fill').style.width = `${Math.min(100, (player.xp / need) * 100).toFixed(1)}%`;
   $('hdr-xp-text').textContent = `${Math.floor(player.xp)}/${need}`;
   $('hdr-coins').textContent = Math.floor(player.coins).toLocaleString('th-TH');
+  updateMailBadge($('mail-btn'));
 }
 
 function updateSaveDot() {
@@ -449,6 +451,7 @@ async function start() {
   $('tab-claim').addEventListener('click', storage.claimWriter);
 
   $('settings-btn').addEventListener('click', openSettings);
+  $('mail-btn').addEventListener('click', openMailbox);
   initInstallPrompt();
   void registerServiceWorker();
   if ('serviceWorker' in navigator) {

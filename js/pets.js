@@ -11,6 +11,7 @@ import { CROPS } from './data/crops.js';
 import { hashId, favoriteSpot, FAV_LABEL, STROKE_MIN_MS } from './petBehaviour.js';
 import { getAccessory } from './data/accessories.js';
 import { COAT_IDS } from './data/coats.js';
+import { limitedOf } from './data/limited.js';
 import { rollFamilyGenes } from './breeding.js';
 import { journalEvent } from './journal.js';
 import { festivalEvent, festivalPostcardTemplates } from './festival.js';
@@ -360,7 +361,8 @@ export function yardItemTable(state, habitat) {
 /** Does this pet produce gifts right now? Returns coins/h and items/h (0 when it does not). */
 export function yardOutput(pet) {
   const none = { coins: 0, items: 0, habitat: null };
-  if (!pet || pet.sick || pet.status === 'working' || pet.status === 'expedition' || pet.status === 'nursery') return none;
+  // V12: a Limited gift pet gives no yard gifts (an extra legendary from minute one pushed the yard over 20% of day-1 income)
+  if (!pet || limitedOf(pet) || pet.sick || pet.status === 'working' || pet.status === 'expedition' || pet.status === 'nursery') return none;
   const sp = getSpecies(pet.speciesId);
   if (!sp) return none;
   const happy = (pet.stats && pet.stats.happy) || 0;
@@ -1091,6 +1093,7 @@ export function rehomePet(state, petId) {
   if (!found) return fail('ไม่พบน้องตัวนี้');
   const { pet, where } = found;
   if (isBusy(pet)) return fail('น้องกำลังทำงานอยู่ ส่งไปบ้านใหม่ไม่ได้');
+  if (limitedOf(pet)) return fail('น้อง Limited เป็นของขวัญพิเศษ ส่งไปบ้านใหม่ไม่ได้นะ');
   const dust = rehomeDust(pet);
   const label = nong(pet);
   returnWear(state, pet);                       // dressed-up accessories go back to the wardrobe (CONTRACT_V9 §1)
@@ -1216,13 +1219,14 @@ export function compareCandidates(state, { scope = 'all', excludeId = null } = {
     const sp = getSpecies(pet.speciesId);
     const dup = speciesCount(state, pet.speciesId);
     const busy = isBusy(pet);
+    const ltd = scope === 'all' && !!limitedOf(pet);   // the rehome picker: a Limited pet cannot go (swapping into a crib is fine)
     const st = pet.station && Number.isFinite(pet.station.plotIndex) ? `ประจำแปลง #${pet.station.plotIndex + 1}` : null;
     return {
       id: pet.id, pet, where, emoji: petEmoji(pet), name: petName(pet), stage: pet.stage,
       stageName: (STAGES[pet.stage] || STAGES[0]).nameTh, power: petPower(pet), hearts: bondHearts(pet),
       shiny: !!pet.shiny, station: st, rarity: sp ? sp.rarity : 'common', rarityName: sp ? RARITIES[sp.rarity].nameTh : '',
-      dup, suggest: dup > 1 && !pet.shiny && !busy, eligible: !busy,
-      reason: busy ? (pet.status === 'expedition' ? 'ออกสำรวจอยู่' : 'กำลังทำงานอยู่') : '',
+      dup, suggest: dup > 1 && !pet.shiny && !busy, eligible: !busy && !ltd,
+      reason: busy ? (pet.status === 'expedition' ? 'ออกสำรวจอยู่' : 'กำลังทำงานอยู่') : ltd ? 'น้อง Limited ส่งไปบ้านใหม่ไม่ได้' : '',
     };
   });
   const key = r => [r.eligible ? 0 : 1, r.dup > 1 ? 0 : 1, r.power, r.hearts, r.shiny ? 1 : 0, r.station ? 1 : 0, RARITY_RANK[r.rarity] || 0];

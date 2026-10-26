@@ -23,6 +23,7 @@ import { getEgg } from '../js/data/eggs.js';
 import { COATS } from '../js/data/coats.js';
 import { canBreed, breed, breedCost, breedPreview, putFamilyEggInIncubator, habitatSpeciesChances, FAMILY_EGG_MAX, BREED_UNLOCK_LEVEL, BREED_COOLDOWN_MS, BREED_COST_MULT, BREED_FRIEND_MULT } from '../js/breeding.js';
 import { STARDUST_BY_RARITY, RELEASE_COINS, rehomeDust, rehomePet, yardOutput } from '../js/pets.js';
+import { claimMail } from '../js/mail.js';
 import {
   tickFarm, plantSeed, waterPlot, assignPet, unassignPet, stationPet, unstationPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
   buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, barnUpgradeCost, barnUpgradeStatus, upgradeIncubator, incubatorUpgradePrice,
@@ -538,6 +539,7 @@ function runSim(profile, seed, opts = {}) {
     Date.now = () => clock.get();   // uid() mixes in Date.now(): without this pet ids (and everything hashed from them) differ on every run
     try {
       const s = createNewState();
+      if (opts.gift) assert(claimMail(s, 'welcome_celestial').ok, 'the bot takes the V12 welcome gift');
       const bot = { noFest: !!opts.noFest, fest: { gained: {}, total: 0, logins: 0, tasks: 0, items: [], spent: 0, crafted: 0, floated: 0, mat: {}, leak: 0 }, earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, layLog: [], by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
       let last = T0;
@@ -596,6 +598,12 @@ const resultsNoFest = {};
 async function resultNoFest(name) {
   if (!resultsNoFest[name]) resultsNoFest[name] = await runSim(name, 20260302, { noFest: true });
   return resultsNoFest[name];
+}
+
+const resultsGift = {};
+async function resultGift(name) {   // same bot + seed, the V12 Limited welcome pet taken on minute one
+  if (!resultsGift[name]) resultsGift[name] = await runSim(name, 20260302, { gift: true });
+  return resultsGift[name];
 }
 
 const resultsNoBreed = {};
@@ -1288,4 +1296,23 @@ test('econ V11 gate 2: with festival play ON vs OFF the income per hour stays wi
   console.log('[econ-sim] V11 festivals ON vs OFF: ' + out.join(' | '));
   globalThis.__econFingerprint = out.map(x => x.replace(/ seed0:.*/, '')).join('|');
   globalThis.__econFest = out;
+});
+
+test('econ V12 gate: the Limited welcome pet (taken on minute one) keeps day-14 income <= 1.10x and <= 4500/h, the yard <= 20% every day and the yard tiers within +-25% of the V6 baseline', async () => {
+  const out = [];
+  for (const name of ['3h', 'realistic']) {
+    const on = await resultGift(name), off = await result(name);
+    const d14 = r => r.rows.find(x => x.day === 14) || r.rows[r.rows.length - 1];
+    assert(on.state.pets.some(p => p.limited === 'celestial') || (on.state.nursery || []).some(e => e.pet.limited === 'celestial'), name + ': the Limited pet is still owned on day 14');
+    assert(d14(on).perHour <= 1.10 * d14(off).perHour, `${name}: day-14 income ${Math.round(d14(on).perHour)} coins/h with the gift vs ${Math.round(d14(off).perHour)} without (> 1.10x)`);
+    assert(d14(on).perHour <= 4500, `${name}: day-14 ${Math.round(d14(on).perHour)} coins/h (> 4500 gate)`);
+    for (const x of on.rows) assert(x.yardShare <= 0.2, `${name} day ${x.day}: yard is ${(100 * x.yardShare).toFixed(1)}% of income with the gift (> 20%)`);
+    for (const tier of ['M', 'L', 'XL']) {
+      const base = V6_BASELINE_TIER_DAYS[name][tier], got = on.tierDay[tier];
+      assert(got != null && got >= base * (1 - TIER_TOLERANCE) && got <= base * (1 + TIER_TOLERANCE), `${name} (gift): tier ${tier} on day ${got}, baseline ${base}`);
+    }
+    out.push(`${name}: day-14 ${Math.round(d14(on).perHour)}/h with gift vs ${Math.round(d14(off).perHour)}/h (${(d14(on).perHour / d14(off).perHour).toFixed(3)}x); whole run ${Math.round(on.perHour)} vs ${Math.round(off.perHour)}; tiers M ${on.tierDay.M} L ${on.tierDay.L} XL ${on.tierDay.XL} (without ${off.tierDay.M}/${off.tierDay.L}/${off.tierDay.XL})`);
+  }
+  console.log('[econ-sim] V12 welcome gift ON vs OFF: ' + out.join(' | '));
+  globalThis.__econGift = out;
 });

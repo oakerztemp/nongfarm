@@ -635,6 +635,17 @@ export function waterPlot(state, plotIndex) {
   return done('💧 รดน้ำแล้ว พืชโตไวขึ้น 20%');
 }
 
+/** V12: plots waterAll would water (planted, still growing, not watered yet). */
+export const waterablePlots = state => (state.plots || []).filter(p => p && p.cropId && !p.watered && !isReady(p));
+
+/** V12 "รดน้ำทั้งหมด": waters every plot that still can be. */
+export function waterAll(state) {
+  const list = waterablePlots(state);
+  if (!list.length) return fail('ไม่มีแปลงที่ต้องรดน้ำ');
+  for (const p of list) p.watered = true;
+  return done(`💧 รดน้ำแล้ว ${list.length} แปลง พืชโตไวขึ้น 20%`);
+}
+
 export function fertilize(state, plotIndex) {
   const plot = getPlot(state, plotIndex);
   if (!plot || !plot.cropId) return fail('แปลงนี้ยังไม่ได้ปลูกอะไร');

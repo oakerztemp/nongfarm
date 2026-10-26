@@ -13,7 +13,7 @@ import { ACCESSORIES } from '../data/accessories.js';
 import { getEgg } from '../data/eggs.js';
 import {
   ZONES, getZone, MAX_PLOTS, MAX_BARN,
-  plantSeed, waterPlot, fertilize, assignPet, unassignPet, harvestPlot, harvestAll, replantPlot, completeOrder,
+  plantSeed, waterPlot, waterAll, waterablePlots, fertilize, assignPet, unassignPet, harvestPlot, harvestAll, replantPlot, completeOrder,
   incubatorUpgradePrice, upgradeIncubator, MAX_INCUBATOR, nextMidnight,
   startExpedition, claimExpedition, buyItem, sellItem,
   plotPrice, buyPlot, upgradeBarn, barnUpgradeStatus, sortPetsForSlot,
@@ -286,6 +286,7 @@ function farmRender(state) {
     <div class="farm-toolbar">
       <span class="muted">🪙 ${num(coinsOf(state))}${fert > 0 ? ` · 🧪 ปุ๋ย ${fert}` : ''}</span>
       <span class="farm-toolbar-btns">
+        ${waterablePlots(state).length > 0 ? `<button class="btn btn-sm" data-action="water-all">💧 รดน้ำทั้งหมด (${waterablePlots(state).length})</button>` : ''}
         ${readyCount > 0 ? `<button class="btn btn-primary btn-sm" data-action="harvest-all">🧺 เก็บเกี่ยวทั้งหมด (${readyCount})</button>` : ''}
         ${readyCount > 0 ? `<button class="btn btn-sm" data-action="harvest-replant">🧺🔁 เก็บแล้วปลูกซ้ำ</button>` : ''}
         ${replantable > 1 ? `<button class="btn btn-sm" data-action="replant-all">🔁 ปลูกซ้ำทุกแปลงว่าง (${replantable})</button>` : ''}
@@ -434,6 +435,7 @@ function farmBind(rootEl) {
   delegate(rootEl, {
     plant: d => openSeedPicker(idx(d)),
     water: d => run(s => waterPlot(s, idx(d))),
+    'water-all': () => run(s => waterAll(s)),
     fertilize: d => run(s => fertilize(s, idx(d))),
     helper: d => pickHelper(idx(d), Number(d.slot) || 0),
     unassign: d => run(s => unassignPet(s, idx(d), d.slot === undefined ? null : Number(d.slot))),

@@ -24,6 +24,7 @@ import {
   breedPreview, breed, putFamilyEggInIncubator, familyEggHatchMs, BREED_UNLOCK_LEVEL, BREED_MIN_STAGE, BREED_MIN_HEARTS, FAMILY_EGG_MAX,
 } from '../breeding.js';
 import { COATS, getCoat, coatOf } from '../data/coats.js';
+import { limitedOf } from '../data/limited.js';
 import { getAccessory, ACC_SLOTS } from '../data/accessories.js';
 import { journalDays } from '../journal.js';
 import { listPhotos, getPhotoUrl, deletePhoto, downloadPhoto, photoFilename } from '../album.js';
@@ -88,6 +89,9 @@ const DIET_TH = {
 };
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
+/** V12: the Limited chip (empty for every other pet). */
+const limitedTag = pet => (limitedOf(pet) ? `${limitedOf(pet).icon} <span class="pet-limited-tag">${limitedOf(pet).badge}</span>` : '');
+
 function run(fn) {
   const r = update(fn);
   if (!r) return r;
@@ -348,6 +352,7 @@ function renderPetCard(pet, state) {
   if (sleeping) cls.push('is-sleeping');
   if (pet.sick) cls.push('is-sick');
   if (pet.shiny) cls.push('is-shiny');
+  if (limitedOf(pet)) cls.push('is-limited');
   if (notIdle && !sleeping) cls.push('is-busy');
 
   return `<article class="${cls.join(' ')}" data-pet-id="${e(pet.id)}" style="--rar:${rarColor}">
@@ -370,6 +375,7 @@ function renderPetCard(pet, state) {
       <span>${sp ? e(sp.nameTh) : ''}</span>
       ${sp ? rarityBadge(sp) : ''}
       ${pet.shiny ? '<span class="pet-shiny-tag">✨ ไชนี่</span>' : ''}
+      ${limitedTag(pet)}
       ${traitBadge(sp)}
     </div>
     <div class="pet-status">${statusLabel(pet, state)}</div>
@@ -400,12 +406,12 @@ function renderNursery(state) {
     return `<div class="nursery-row${pet.shiny ? ' is-shiny' : ''}" data-pet-id="${e(pet.id)}" style="--rar:${sp ? RARITIES[sp.rarity].color : '#8e9aa6'}">
       <span class="nursery-emoji" aria-hidden="true">${petEmoji(pet)}<i class="nursery-zzz">💤</i></span>
       <div class="nursery-info">
-        <div class="nursery-name"><b>${e(petName(pet))}</b> ${sp ? rarityBadge(sp) : ''}${pet.shiny ? ' <span class="pet-shiny-tag">✨ ไชนี่</span>' : ''}</div>
+        <div class="nursery-name"><b>${e(petName(pet))}</b> ${sp ? rarityBadge(sp) : ''}${pet.shiny ? ' <span class="pet-shiny-tag">✨ ไชนี่</span>' : ''} ${limitedTag(pet)}</div>
         <div class="nursery-sub muted">${sp ? e(sp.nameTh) : ''} · ${pers.emoji} ${pers.nameTh} ${traitBadge(sp)}</div>
         <div class="nursery-acts">
           <button type="button" class="btn btn-sm btn-primary" data-action="nursery-adopt" data-pet-id="${e(pet.id)}"${yardFull ? ' disabled title="ลานเต็ม — สลับกับน้องในลานแทนนะ"' : ''}>🏡 รับเข้าลาน</button>
           <button type="button" class="btn btn-sm" data-action="nursery-swap" data-pet-id="${e(pet.id)}">🔄 สลับกับน้องในลาน…</button>
-          <button type="button" class="btn btn-sm btn-ghost" data-action="nursery-rehome" data-pet-id="${e(pet.id)}">💌 ส่งไปบ้านใหม่</button>
+          ${limitedOf(pet) ? '' : `<button type="button" class="btn btn-sm btn-ghost" data-action="nursery-rehome" data-pet-id="${e(pet.id)}">💌 ส่งไปบ้านใหม่</button>`}
         </div>
       </div></div>`;
   }).join('');
@@ -435,7 +441,7 @@ function nurserySheetHtml(pet, state, opts = {}) {
       <div class="pet-actions b3-acts b3-acts-3">
         <button type="button" class="btn btn-sm btn-primary pet-act" data-b3="nursery-adopt" data-pet-id="${e(pet.id)}"${yardFull ? ' disabled title="ลานเต็ม"' : ''}>🏡 รับเข้าลาน</button>
         <button type="button" class="btn btn-sm pet-act" data-b3="nursery-swap" data-pet-id="${e(pet.id)}">🔄 สลับกับน้องในลาน…</button>
-        <button type="button" class="btn btn-sm btn-ghost pet-act" data-b3="nursery-rehome" data-pet-id="${e(pet.id)}">💌 ส่งไปบ้านใหม่</button>
+        ${limitedOf(pet) ? '' : `<button type="button" class="btn btn-sm btn-ghost pet-act" data-b3="nursery-rehome" data-pet-id="${e(pet.id)}">💌 ส่งไปบ้านใหม่</button>`}
       </div></div>`;
 }
 
@@ -1095,12 +1101,13 @@ function openDetails(petId) {
   const bond = bondProgress(pet);
 
   const html = `<div class="pet-detail">
-    <div class="pet-detail-top${pet.shiny ? ' is-shiny' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
+    <div class="pet-detail-top${pet.shiny ? ' is-shiny' : ''}${limitedOf(pet) ? ' is-limited' : ''}" style="--rar:${RARITIES[sp.rarity].color}">
       <span class="pet-detail-emoji pet-emoji">${sp.emoji}</span>
       ${pet.shiny ? '<span class="pet-sparkle" aria-hidden="true">✨</span>' : ''}
       <div>
         <div class="pet-detail-species">${e(sp.nameTh)} ${rarityBadge(sp)}</div>
         <div class="muted">${hab.emoji} ถิ่น${hab.nameTh}${pet.shiny ? ' · ✨ ไชนี่ (พลัง x1.1)' : ''}</div>
+        ${limitedOf(pet) ? `<div class="pet-limited-line">${limitedTag(pet)} ${e(limitedOf(pet).nameTh)} — ${e(limitedOf(pet).desc)}</div>` : ''}
       </div>
     </div>
     <p class="pet-detail-desc">${e(sp.desc)}</p>
@@ -1133,7 +1140,7 @@ function openDetails(petId) {
       <input type="text" class="pet-rename-input" maxlength="16" value="${e(petName(pet))}" aria-label="ชื่อน้อง">
       <button type="button" class="btn btn-sm btn-primary" data-action="rename-save">บันทึก</button>
     </div>
-    <div class="pet-release">
+    <div class="pet-release"${limitedOf(pet) ? ' hidden' : ''}>
       <button type="button" class="btn btn-sm btn-ghost pet-release-btn" data-action="release-ask"${busy ? ' disabled title="น้องกำลังทำงานอยู่"' : ''}>💌 ส่งไปบ้านใหม่ 🏡</button>
       <div class="pet-release-confirm" hidden>
         <p>ส่ง <b>${e(petName(pet))}</b> ไปบ้านใหม่จริงๆ หรือ? จะไม่สามารถเอากลับมาได้ (ได้ ${RELEASE_COINS} 🪙 + ผงดาว ${rehomeDust(pet)} ✨) ของขวัญที่น้องถืออยู่จะถูกเก็บให้ก่อน และน้องอาจส่งโปสการ์ดมาหา 💌</p>

@@ -17,6 +17,7 @@
 
 import { MODEL_SPECS } from '../data/models.js';
 import { getCoat, coatOf } from '../data/coats.js';
+import { limitedOf } from '../data/limited.js';
 
 export const STAGE_SCALE = [0.7, 0.85, 1.0, 1.15];
 export const LEGENDARY_SCALE = 1.25;
@@ -269,7 +270,9 @@ export function buildPetModel(T, pet, species, opts = {}) {
   const rarity = (species && species.rarity) || 'common';
   if (!spec) return buildBillboard(T, (species && species.emoji) || '❓', { stage, shiny, rarity });
   const coat = shiny ? 'base' : coatOf(pet);   // shiny wins: a shiny pet ignores its coat in 3D
-  const tpl = template(T, spec, shiny, id, opts.toonGradient || null, coat);
+  const ltd = limitedOf(pet);                  // V12: a Limited pet swaps the shiny palette for its own (own template key)
+  const tpl = ltd ? template(T, { ...spec, shinyPalette: ltd.palette }, true, id + '~' + ltd.id, opts.toonGradient || null)
+    : template(T, spec, shiny, id, opts.toonGradient || null, coat);
   const root = tpl.root.clone(true); // Mesh.clone shares geometry + material: no new buffers
   const find = n => root.getObjectByName(n) || null;
   const eyes = find('eyes');

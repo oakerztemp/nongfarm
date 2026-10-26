@@ -37,7 +37,7 @@ export function limitedPet(limitedId, t = now()) {
     stats: { hunger: 100, happy: 100, energy: 100, clean: 100 },
     poop: 0, sick: false, zeroSince: null, zeroMs: 0, poopTimer: null, lastFedAt: 0,
     bond: 0, bondDay: null, bondToday: 0, giftDay: null,
-    status: 'idle', task: null, station: null, bornAt: t,
+    status: 'idle', task: null, station: null, bornAt: t, playedAt: t,
   };
 }
 

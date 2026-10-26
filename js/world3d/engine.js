@@ -1085,12 +1085,21 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     let height = 0;
     let baseDist = 12;
     let baseDistT = 12;
+    // V18 close-up (the play mode): a free camera pose outside the orbit limits, blended in and out by k (eased toward kT)
+    const close = { k: 0, kT: 0, pos: { x: 0, y: 2, z: 4 }, look: { x: 0, y: 0.5, z: 0 } };
 
     function updateCamera() {
       target.x = pan.x; target.z = pan.z;
       const p = orbitPosition(view.yaw, view.pitch, baseDist * view.zoom, target);
-      camera.position.set(p.x, p.y, p.z);
-      camera.lookAt(target.x, target.y, target.z);
+      if (close.k > 0.0005) {
+        const s = close.k * close.k * (3 - 2 * close.k);
+        const L = (a, b) => a + (b - a) * s;
+        camera.position.set(L(p.x, close.pos.x), L(p.y, close.pos.y), L(p.z, close.pos.z));
+        camera.lookAt(L(target.x, close.look.x), L(target.y, close.look.y), L(target.z, close.look.z));
+      } else {
+        camera.position.set(p.x, p.y, p.z);
+        camera.lookAt(target.x, target.y, target.z);
+      }
       camera.position.x += shakeOffset.x; camera.position.y += shakeOffset.y; camera.position.z += shakeOffset.z;
     }
 
@@ -1143,7 +1152,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     function isEasing() {
       return Math.abs(view.yaw - view.yawT) > 0.0005 || Math.abs(view.pitch - view.pitchT) > 0.0005 ||
         Math.abs(view.zoom - view.zoomT) > 0.0005 || Math.abs(baseDist - baseDistT) > 0.005 || !!yardAnim || wild.animating ||
-        Math.abs(pan.x - panT.x) > 0.001 || Math.abs(pan.z - panT.z) > 0.001 || weatherBusy;
+        Math.abs(pan.x - panT.x) > 0.001 || Math.abs(pan.z - panT.z) > 0.001 || weatherBusy || Math.abs(close.k - close.kT) > 0.001;
     }
 
     function downgrade() {
@@ -1184,6 +1193,8 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       view.zoom += (view.zoomT - view.zoom) * k;
       baseDist += (baseDistT - baseDist) * k;
       pan.x += (panT.x - pan.x) * k; pan.z += (panT.z - pan.z) * k;
+      close.k += (close.kT - close.k) * (1 - Math.exp(-dt * 3.2));
+      if (Math.abs(close.k - close.kT) <= 0.001) close.k = close.kT;
       if (!isEasing()) { view.yaw = view.yawT; view.pitch = view.pitchT; view.zoom = view.zoomT; baseDist = baseDistT; pan.x = panT.x; pan.z = panT.z; }
       updateYardAnim(dt);
       wild.update(dt);
@@ -1600,6 +1611,16 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         if (v.pan) { const c = clampPan(Number(v.pan.x) || 0, Number(v.pan.z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; }
       },
       getView: () => ({ yaw: view.yawT, pitch: view.pitchT, zoom: view.zoomT, pan: { x: panT.x, z: panT.z } }),
+      /** V18 close-up: fly the camera to `pos` looking at `look` (world units; call every frame to follow a moving pet). */
+      setCloseUp({ pos, look } = {}) {
+        if (pos) Object.assign(close.pos, pos);
+        if (look) Object.assign(close.look, look);
+        close.kT = 1;
+      },
+      /** V18: back to the normal orbit camera (eased). */
+      clearCloseUp() { close.kT = 0; },
+      /** 0 = normal camera .. 1 = fully in the close-up. */
+      closeUpAmount: () => close.k,
       /** Camera target offset on the ground, clamped to the current island radius (eased). */
       setPan(x = 0, z = 0) { const c = clampPan(Number(x) || 0, Number(z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; },
       getPan: () => ({ x: panT.x, z: panT.z }),

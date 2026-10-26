@@ -7,7 +7,7 @@ import { test, assert, assertEq, withFakeNow } from './harness.js';
 import { createNewState, addItem, countItem } from '../js/state.js';
 import { todayKey, now, randInt } from '../js/util.js';
 import {
-  tickPets, hatchReady, putEggInIncubator, feedPet, cleanPet, playWithPet, healPet, toggleSleep,
+  tickPets, hatchReady, putEggInIncubator, feedPet, cleanPet, playWithPet, healPet, toggleSleep, playSession, lonelyLevel, giveToy,
   canWork, getWorkPower, collectYard, yardRates, yardItemTable, YARD_CAP_MS,
 } from '../js/pets.js';
 import { SPECIES } from '../js/data/species.js';
@@ -57,7 +57,7 @@ function catchUp(s, from, to) {
   while (t < to) {
     const step = Math.min(MIN, to - t);
     t += step;
-    tickPets(s, step, { offline: true });
+    tickPets(s, step, { offline: true, t });
     const waiting = s.pets.filter(p => p.station && p.status !== 'working');
     tickFarm(s, t);
     dispatched += waiting.filter(p => p.status === 'working').length;
@@ -397,7 +397,7 @@ function session(s, bot, cadence) {
   for (const pet of s.pets) {
     if (pet.sick) {
       if (countItem(s, 'care_medicine') < 1 && s.player.coins >= 120) buyItem(s, 'care_medicine', 1);
-      healPet(s, pet.id);
+      if (healPet(s, pet.id).ok) bot.heals++;
     }
     if (pet.status === 'sleeping' && pet.stats.energy >= 70) toggleSleep(s, pet.id);
     for (let k = 0; k < 2 && pet.stats.hunger < 60; k++) {
@@ -405,7 +405,15 @@ function session(s, bot, cadence) {
       if (!feedPet(s, pet.id, 'food_kibble').ok) break;
     }
     if (pet.poop > 0 || pet.stats.clean < 40) cleanPet(s, pet.id);
-    if (pet.stats.happy < 50 && pet.stats.energy > 30 && pet.status === 'idle') playWithPet(s, pet.id);
+    // V18: a player plays when happy is low or the pet misses them (a play session, score 0 = the old quick play);
+    // the toy bot never plays but gives a toy once the pet misses it; the neglect bot does neither
+    const lonely = lonelyLevel(pet);
+    if (bot.play === 'toy') {
+      if (lonely >= 1 && pet.status === 'idle' && !pet.sick) {
+        if (countItem(s, 'care_toy') < 1 && s.player.coins >= 80) buyItem(s, 'care_toy', 1);
+        if (giveToy(s, pet.id).ok) bot.toys++;
+      }
+    } else if (bot.play !== 'none' && (pet.stats.happy < 50 || lonely >= 1) && pet.stats.energy > 30 && pet.status === 'idle') playSession(s, pet.id, 0);
     if (pet.status === 'idle' && pet.stats.energy < 30) toggleSleep(s, pet.id);
   }
 
@@ -558,7 +566,7 @@ function runSim(profile, seed, opts = {}) {
     try {
       const s = createNewState();
       if (opts.gift) assert(claimMail(s, 'welcome_celestial').ok, 'the bot takes the V12 welcome gift');
-      const bot = { noFest: !!opts.noFest, fest: { gained: {}, total: 0, logins: 0, tasks: 0, items: [], spent: 0, crafted: 0, floated: 0, mat: {}, leak: 0 }, earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, cook: !!opts.cook, cooked: 0, dishesFed: 0, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, layLog: [], by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
+      const bot = { noFest: !!opts.noFest, fest: { gained: {}, total: 0, logins: 0, tasks: 0, items: [], spent: 0, crafted: 0, floated: 0, mat: {}, leak: 0 }, earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, cook: !!opts.cook, play: opts.play || 'play', heals: 0, toys: 0, cooked: 0, dishesFed: 0, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, layLog: [], by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
       let last = T0;
       let lastRowAt = T0;
@@ -1319,6 +1327,33 @@ test('econ V11 gate 2: with festival play ON vs OFF the income per hour stays wi
   globalThis.__econFest = out;
 });
 
+const resultsPlay = {};
+async function playRuns(name, play) {   // V18: 'none' = never plays nor gives toys, 'toy' = only toys; over the festival seeds
+  const runs = [];
+  for (const seed of FEST_SEEDS) {
+    const key = `${name}|${play}|${seed}`;
+    if (!resultsPlay[key]) resultsPlay[key] = await runSim(name, seed, { start: START, play });
+    runs.push(resultsPlay[key]);
+  }
+  return runs;
+}
+
+test('econ V18 gate: a player who never plays gets clearly more sick pets; toys instead of play keep pets well and cost at most 10% of income (means of 4 seeds); the normal bot never lets a pet sulk', async () => {
+  const out = [];
+  for (const name of ['3h', 'realistic']) {
+    const normal = await festRuns(name, 'march', true), none = await playRuns(name, 'none'), toy = await playRuns(name, 'toy');
+    const heals = rs => mean(rs.map(r => r.bot.heals));
+    assert(heals(none) >= heals(normal) + 2, `${name}: never playing should make pets sick more often (${heals(none).toFixed(1)} heals vs ${heals(normal).toFixed(1)})`);
+    assert(heals(toy) <= heals(normal) + 1, `${name}: toys should keep pets well (${heals(toy).toFixed(1)} heals vs ${heals(normal).toFixed(1)})`);
+    assert(mean(toy.map(r => r.bot.toys)) >= 3, `${name}: the toy bot really gives toys`);
+    const ratio = mean(toy.map(r => r.perHour)) / mean(normal.map(r => r.perHour));
+    assert(ratio >= 0.9, `${name}: toys cost ${(100 * (1 - ratio)).toFixed(1)}% of income (> 10%)`);
+    for (const r of normal) for (const p of r.state.pets) assert(lonelyLevel(p, r.state.lastTick) < 2, `${name}: the normal bot let ${p.speciesId} sulk`);
+    out.push(`${name}: heals ${heals(normal).toFixed(1)} normal / ${heals(none).toFixed(1)} never-play / ${heals(toy).toFixed(1)} toys; toys ${mean(toy.map(r => r.bot.toys)).toFixed(0)}, income ${(100 * (ratio - 1)).toFixed(1)}%`);
+  }
+  console.log('[econ-sim] V18 play: ' + out.join(' | '));
+});
+
 async function cookRuns(name) {   // V16: cooking ON over the festival seeds (the OFF side is festRuns(name, 'march', true): same config, cooking off)
   const runs = [];
   for (const seed of FEST_SEEDS) {
@@ -1371,7 +1406,7 @@ test('econ V12/V14 gate: the Limited welcome pet (taken on minute one) and the L
     for (const x of on.rows) assert(x.yardShare <= 0.2, `${name} day ${x.day}: yard is ${(100 * x.yardShare).toFixed(1)}% of income with the gift (> 20%)`);
     for (const tier of ['M', 'L', 'XL']) {
       const base = V6_BASELINE_TIER_DAYS[name][tier], got = on.tierDay[tier];
-      assert(got != null && got >= base * (1 - TIER_TOLERANCE) && got <= base * (1 + TIER_TOLERANCE), `${name} (gift): tier ${tier} on day ${got}, baseline ${base}`);
+      assert(got != null && got >= base * (1 - TIER_TOLERANCE) && got <= base * (1 + TIER_TOLERANCE), `${name} (gift): tier ${tier} on day ${got}, baseline ${base} (no gift: day ${off.tierDay[tier]})`);
     }
     out.push(`${name}: day-14 ${Math.round(d14(on).perHour)}/h with gift vs ${Math.round(d14(off).perHour)}/h (${(d14(on).perHour / d14(off).perHour).toFixed(3)}x); whole run ${Math.round(on.perHour)} vs ${Math.round(off.perHour)}; tiers M ${on.tierDay.M} L ${on.tierDay.L} XL ${on.tierDay.XL} (without ${off.tierDay.M}/${off.tierDay.L}/${off.tierDay.XL})`);
   }

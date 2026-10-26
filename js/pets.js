@@ -36,6 +36,12 @@ const SLEEP_DECAY = 0.5;          // other decays while sleeping
 const POOP_EVERY_MS = 2 * HOUR;   // after eating
 const MAX_POOP = 3;
 const SICK_AFTER_MS = 2 * HOUR;   // hunger or clean stuck at 0
+// V18 คิดถึง / น้อยใจ (CONTRACT_V18 §1): hours since the last real play (or a toy)
+export const MISS_AFTER_MS = 24 * HOUR;       // level 1 🥺 คิดถึง
+export const SULK_AFTER_MS = 48 * HOUR;       // level 2 😢 น้อยใจ
+const LONELY_HAPPY_DECAY = [1, 1.25, 1.5];
+const HEARTSICK_AFTER_MS = 3 * HOUR;          // level 2 and happy <= 10 this long -> sick
+export const PLAY_SCORE_MAX = 10;             // play-session points that still add happy (+2 each)
 const SHINY_CHANCE = 0.03;
 export const RELEASE_COINS = 10;
 const SHINY_COST = 100;           // stardust
@@ -530,11 +536,11 @@ export function stationStatus(state, pet) {
 }
 
 // ── Tick ────────────────────────────────────────────────────────────────────
-export function tickPets(state, dtMs, { offline = false } = {}) {
+export function tickPets(state, dtMs, { offline = false, t = now() } = {}) {   // t: the time this step ends (catch-up replays past steps)
   const dt = Math.max(0, dtMs || 0);
   if (dt > 0) {
     const bf = bestFriendMap(state);   // happiness decays x0.8 while the best friend is home too (friends.js owns the rule)
-    for (const pet of state.pets) tickOnePet(pet, dt, offline, friendDecayMult(state, pet, bf));
+    for (const pet of state.pets) tickOnePet(pet, dt, offline, friendDecayMult(state, pet, bf), t);
     try { tickFriends(state, dt, { offline }); } catch (e) { console.error('tickFriends failed', e); }
   }
   if (dt > 0) tickYard(state, dt);
@@ -547,7 +553,7 @@ function tirelessFactor(pet) {
   return tr && tr.id === 'tireless' ? Math.max(0.3, 1 - 0.3 * tr.scale) : 1;
 }
 
-function tickOnePet(pet, dt, offline, happyMult = 1) {
+function tickOnePet(pet, dt, offline, happyMult = 1, t = now()) {
   const h = dt / HOUR;
   const decay = offline ? OFFLINE_DECAY : 1;
   const p = PERSONALITIES[pet.personality] || PERSONALITIES.cheerful;
@@ -556,10 +562,13 @@ function tickOnePet(pet, dt, offline, happyMult = 1) {
   const st = pet.stats;
 
   st.hunger -= RATE.hunger * h * decay * calm * p.hungerDecay;
-  st.happy -= RATE.happy * h * decay * calm * p.happyDecay * (pet.sick ? 2 : 1) * happyMult;
+  const lonely = lonelyLevel(pet, t);
+  st.happy -= RATE.happy * h * decay * calm * p.happyDecay * (pet.sick ? 2 : 1) * happyMult * LONELY_HAPPY_DECAY[lonely];
   st.clean -= (RATE.clean + RATE.cleanPerPoop * pet.poop) * h * decay * calm;
 
   if (pet.status === 'working' || pet.status === 'expedition') {
+    // V18: busy pets don't count the time without play (a stationed worker can't come to play); only time at home does
+    if (Number.isFinite(pet.playedAt)) pet.playedAt = Math.min(t, pet.playedAt + dt);
     st.energy -= RATE.energyWork * h * decay * p.energyDrain * tirelessFactor(pet);
   } else if (sleeping) {
     st.energy += RATE.energySleep * h;
@@ -581,7 +590,7 @@ function tickOnePet(pet, dt, offline, happyMult = 1) {
   if (st.hunger <= 0 || st.clean <= 0) {
     if (pet.zeroSince == null) pet.zeroSince = now();
     pet.zeroMs = (pet.zeroMs || 0) + dt;
-    if (!pet.sick && pet.zeroMs >= SICK_AFTER_MS) {
+    if (!pet.sick && pet.zeroMs >= SICK_AFTER_MS / (lonely === 2 ? 2 : 1)) {   // V18: a sulking pet falls ill twice as fast
       pet.sick = true;
       if (sleeping) pet.status = 'idle';
       const msg = `🤒 ${nong(pet)} ไม่สบายแล้ว ต้องรักษาด้วยยา`;
@@ -590,6 +599,19 @@ function tickOnePet(pet, dt, offline, happyMult = 1) {
   } else {
     pet.zeroSince = null;
     pet.zeroMs = 0;
+  }
+
+  // V18 ป่วยใจ: sulking (level 2) with happy <= 10 for 3 h in a row
+  if (lonely === 2 && st.happy <= 10 && !pet.sick) {
+    pet.heartsickMs = (pet.heartsickMs || 0) + dt;
+    if (pet.heartsickMs >= HEARTSICK_AFTER_MS) {
+      pet.sick = true;
+      pet.heartsickMs = 0;
+      if (sleeping) pet.status = 'idle';
+      if (!offline) notify(`🤒 ${nong(pet)} น้อยใจจนไม่สบาย 😢 รักษาแล้วเล่นด้วยกันนะ`, 'warn');
+    }
+  } else if (lonely < 2 || st.happy > 10) {
+    pet.heartsickMs = 0;
   }
 
   // Fully rested pets wake up by themselves.
@@ -672,6 +694,7 @@ export function hatchReady(state, slotIndex) {
     task: null,
     station: null,
     bornAt: t,
+    playedAt: t,
   };
   if (genes) Object.assign(pet, { coat: genes.coat, family: genes.family, breedReadyAt: 0 });
   if (toNursery) state.nursery.push({ pet, hatchedAt: t }); else state.pets.push(pet);
@@ -775,6 +798,45 @@ export function feedPet(state, petId, itemId) {
   return r;
 }
 
+/** V18: why this pet can't start a play session right now (a Thai sentence), or null. Checked before the play mode opens. */
+export function playBlocker(state, petId) {
+  const pet = getPet(state, petId);
+  const blocked = careBlocker(pet, { allowWorking: false });
+  if (blocked) return blocked;
+  if (pet.sick) return 'น้องไม่สบาย ไปรักษาก่อนนะ';
+  if (pet.stats.energy < 10) return 'น้องเหนื่อยเกินไป ให้พักก่อนนะ';
+  return null;
+}
+
+/** V18: 0 fine, 1 🥺 คิดถึง (24 h without play or a toy), 2 😢 น้อยใจ (48 h). Nursery babies sleep through it. */
+export function lonelyLevel(pet, t = now()) {
+  if (!pet || pet.status === 'nursery') return 0;
+  const since = t - (Number.isFinite(pet.playedAt) ? pet.playedAt : t);
+  return since >= SULK_AFTER_MS ? 2 : since >= MISS_AFTER_MS ? 1 : 0;
+}
+
+/**
+ * V18 a real play session (the zoomed-in play mode, js/ui/playGame.js): resets คิดถึง, happy +20 (+2 per point, at most
+ * PLAY_SCORE_MAX points), bond +3 (+1 per 5 points, at most +2; the daily bond cap still applies). Allowed with full happy.
+ */
+export function playSession(state, petId, score = 0) {
+  const pet = getPet(state, petId);
+  const blocked = playBlocker(state, petId);
+  if (blocked) return fail(blocked);
+  const pts = Math.max(0, Math.min(PLAY_SCORE_MAX, Math.floor(Number(score) || 0)));
+  const p = PERSONALITIES[pet.personality] || PERSONALITIES.cheerful;
+  const wasLonely = lonelyLevel(pet);
+  pet.stats.happy = clamp(pet.stats.happy + (20 + 2 * pts) * p.playHappy, 0, 100);
+  pet.stats.energy = clamp(pet.stats.energy - 8, 0, 100);
+  pet.playedAt = now();
+  pet.heartsickMs = 0;
+  addPetXp(state, petId, 2 + Math.floor(pts / 3));
+  bumpStat(state, 'played');
+  addBond(state, petId, 3 + Math.min(2, Math.floor(pts / 5)));
+  const mood = wasLonely === 2 ? ' หายน้อยใจแล้ว 💞' : wasLonely === 1 ? ' หายคิดถึงแล้ว 💕' : '';
+  return { ok: true, msg: `🎾 เล่นกับ${nong(pet)}สนุกมาก! ได้ ${pts} แต้ม${mood}`, score: pts };
+}
+
 export function playWithPet(state, petId) {
   const pet = getPet(state, petId);
   const blocked = careBlocker(pet, { allowWorking: false });
@@ -788,6 +850,8 @@ export function playWithPet(state, petId) {
   addPetXp(state, petId, 2);
   bumpStat(state, 'played');
   addBond(state, petId, 3);
+  pet.playedAt = now();
+  pet.heartsickMs = 0;
   return ok(`🎾 ${nong(pet)} เล่นสนุกมาก! สุขเพิ่มขึ้น`);
 }
 
@@ -959,13 +1023,15 @@ export function giveToy(state, petId) {
   const blocked = careBlocker(pet, { allowWorking: false });
   if (blocked) return fail(blocked);
   if (pet.sick) return fail('น้องไม่สบาย ไปรักษาก่อนนะ');
-  if (pet.stats.happy >= 99.5) return fail('น้องมีความสุขเต็มแล้ว');
+  if (pet.stats.happy >= 99.5 && !lonelyLevel(pet)) return fail('น้องมีความสุขเต็มแล้ว');   // V18: a pet that misses you still wants the toy
   if (!removeItem(state, 'care_toy', 1)) return fail('ไม่มีของเล่นในกระเป๋า (ซื้อได้ที่ร้านค้า)');
   const p = PERSONALITIES[pet.personality] || PERSONALITIES.cheerful;
   pet.stats.happy = clamp(pet.stats.happy + 40 * p.playHappy, 0, 100);
   addPetXp(state, petId, 2);
   bumpStat(state, 'played');
   addBond(state, petId, 4);
+  pet.playedAt = now();   // V18: a toy keeps คิดถึง away when there is no time to play
+  pet.heartsickMs = 0;
   return ok(`🧸 ${nong(pet)} ได้ของเล่นใหม่ ดีใจสุดๆ!`);
 }
 
@@ -1069,6 +1135,7 @@ export function adoptFromNursery(state, petId) {
   const pet = n[i].pet;
   n.splice(i, 1);
   pet.status = 'idle';
+  pet.playedAt = now();   // V18: babies slept in the crib, คิดถึง starts counting in the yard
   pet.task = null;
   pet.station = null;
   state.pets.push(pet);
@@ -1096,6 +1163,7 @@ export function swapWithNursery(state, nurseryPetId, yardPetId) {
   n[i] = { pet: out, hatchedAt: now() };
   baby.status = 'idle';
   baby.task = null;
+  baby.playedAt = now();
   baby.station = null;
   state.pets.push(baby);
   const got = giftParts(gift.coins, gift.items);

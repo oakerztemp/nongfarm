@@ -154,6 +154,9 @@ function sanitiseMail(s) {
     const t = p.treat;
     p.treat = isObj(t) && getRecipe(t.id) && Number.isFinite(t.until) ? { id: t.id, until: Math.min(t.until, now() + TREAT_MS) } : null;
     p.favDishKnown = p.favDishKnown === true;
+    // V18: playedAt a finite ms no later than now (a missing one starts counting now), heartsickMs a finite >= 0
+    p.playedAt = Number.isFinite(p.playedAt) ? Math.min(p.playedAt, now()) : now();
+    p.heartsickMs = Number.isFinite(p.heartsickMs) && p.heartsickMs > 0 ? p.heartsickMs : 0;
   }
   ensureMail(s);
 }
@@ -196,6 +199,8 @@ function petDefaults(t) {
     breedReadyAt: 0,                   // v8: ms; this pet can breed again once now() >= breedReadyAt
     treat: null,                       // V16: { id: dish id, until: ms } the 😋 look after a dish (js/pets.js feedPet), cosmetic only
     favDishKnown: false,               // V16: the player has fed this pet its species' favourite dish
+    playedAt: t,                       // V18: last real play or toy (js/pets.js lonelyLevel); an old save starts counting at load
+    heartsickMs: 0,                    // V18: time spent sulking with happy <= 10 (3 h -> sick)
   };
 }
 

@@ -15,7 +15,7 @@ import { getSpecies } from '../data/species.js';
 import { getEgg } from '../data/eggs.js';
 import { getItem } from '../data/items.js';
 import {
-  getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop,
+  getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop, playSession, playBlocker, lonelyLevel,
   hatchReady, foodEffect, petGift, yardPreview, collectPetGift, collectYard, nurseryPets, NURSERY_SLOTS,
   strokePet, wearOf, wearAccessory, takeOffAccessory,
 } from '../pets.js';
@@ -37,6 +37,7 @@ import { activeFestival, LOY_ID } from '../festival.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
 import { limitedOf } from '../data/limited.js';
+import { startPlayGame, PLAY_MS } from './playGame.js';
 
 /** 🎂 today is the pet's N-month birthday: { isToday, months } (js/birthday.js). */
 const bdayOf = pet => birthdayInfo(pet);
@@ -1505,12 +1506,16 @@ export function mountBarn3d(host, ctx) {
 
   // ── interactions ───────────────────────────────────────────────────────
   function onTapGround() {
-    if (photo) return;
+    if (photo || playing) return;
     if (selected || selectedCrib) closeSheet();
   }
 
   function onTap(id) {
     if (disposed || photo) return;
+    if (playing) {   // V18: tapping the pet while playing = a little bounce + a heart
+      if (id === playing.A.id) { react(playing.A, 'hop', { dur: 0.7, hops: 1, height: 0.3 }); fx.heart(world, headPos(playing.A)); }
+      return;
+    }
     if (id.startsWith('cake-')) { onPetTap(id.slice(5)); return; }
     if (id === 'bowl') { notify('🍽️ ถาดอาหาร — เลือกอาหารจากถาดด้านล่าง แล้วแตะน้องที่อยากให้กิน', 'info'); return; }
     if (id.startsWith('nest-')) { onNestTap(Number(id.slice(5))); return; }
@@ -1635,7 +1640,100 @@ export function mountBarn3d(host, ctx) {
     });
   }
 
+  // ── V18 เล่นกับน้อง: the camera flies in close, toys pop up around the pet (js/ui/playGame.js), the score goes to playSession ──
+  let playing = null;   // { A, dir: { x, z }, game }
+
+  function startPlay(petId) {
+    const A = actors.get(petId);
+    if (!A || playing || photo || hatching || disposed) return;
+    const why = playBlocker(getState(), petId);
+    if (why) { notify(why, 'warn'); react(A, 'no'); return; }
+    closeSheet();
+    // the close-up camera stands on the yard-centre side of the pet (a pet by the fence would otherwise hide behind it);
+    // a pet near the middle is seen from the side the player was already looking from
+    const toMid = Math.hypot(A.x, A.z);
+    const dx = toMid > 0.9 ? -A.x : camPos.x - A.x, dz = toMid > 0.9 ? -A.z : camPos.z - A.z, len = Math.hypot(dx, dz) || 1;
+    playing = { A, dir: { x: dx / len, z: dz / len }, game: null };
+    A.hold = 9999;
+    A.pinned = true;
+    begin(A, { type: 'idle', dur: 999 });
+    host.classList.add('b3-playing');
+    world.boost(PLAY_MS + 4000);
+    const pet = getPet(getState(), petId);
+    playing.game = startPlayGame({
+      host,
+      title: `🎾 เล่นกับ${pet ? petName(pet) : 'น้อง'}`,
+      spread: Math.min(170, Math.max(110, host.clientWidth * 0.3)),
+      anchor: () => {
+        if (!playing) return null;
+        const p = world.worldToScreen({ x: A.x, y: A.y + Math.max(0.5, A.model.height) * 0.55, z: A.z });
+        return { x: p.x, y: p.y };
+      },
+      onHit: (n, el, combo) => {
+        if (!playing) return;
+        const h = headPos(A);
+        if (n % 2) react(A, 'hop', { dur: 0.75, hops: 1, height: 0.38 }); else react(A, 'wave', { dur: 0.9 });
+        fx.emojiPop(world, h, el.textContent || '💕');
+        if (combo && combo % 5 === 0) { fx.sparkle(world, A.id); fx.confetti(world, h, 10); }
+        else if (n % 3 === 0) fx.heart(world, h);
+      },
+      onEnd: (score, counted) => endPlay(score, counted),
+    });
+  }
+
+  function endPlay(score, counted = true) {
+    const p = playing;
+    if (!p) return;
+    playing = null;
+    host.classList.remove('b3-playing');
+    world.clearCloseUp();
+    unhidePlayShot();
+    const A = p.A;
+    A.pinned = false;
+    A.hold = 1.5;
+    begin(A, { type: 'idle', dur: 1 });   // the play pose was a 999 s idle: let the pet go back to its day
+    if (disposed || !alive(A.id)) return;
+    if (!counted) { notify('ยังไม่ทันได้เล่นเลย น้องยังอยากเล่นอยู่นะ 🥺', 'info'); react(A, 'no'); refreshUi(); return; }
+    const r = ctx.run(s => playSession(s, A.id, score));
+    if (r && r.ok) {
+      react(A, 'play', { dur: 2.4 });
+      later(500, () => alive(A.id) && fx.heart(world, headPos(A)));
+      if (score >= 10) later(300, () => alive(A.id) && fx.confetti(world, headPos(A), 16));
+    }
+    refreshUi();
+  }
+
+  /** Every frame while playing: the pet faces the camera side it was played from, the close-up follows it. */
+  function stepPlay() {
+    const p = playing;
+    if (!p) return;
+    const A = p.A;
+    if (!actors.has(A.id) || A.hidden) { p.game.stop(); return; }
+    A.heading = Math.atan2(p.dir.x, p.dir.z);
+    const h = Math.max(0.5, A.model.height);
+    const aspect = world.camera.aspect || 1;   // a tall phone screen sees less sideways: step back so the pet still fits
+    const dist = Math.max(1.6, h * 2.1 + A.model.radius * 1.3) * Math.max(1, 0.95 / aspect);
+    const cx = A.x + p.dir.x * dist, cz = A.z + p.dir.z * dist;
+    world.setCloseUp({
+      pos: { x: cx, y: A.y + h * 0.8 + 0.35, z: cz },
+      look: { x: A.x, y: A.y + h * 0.5, z: A.z },
+    });
+    // other pets standing between the camera and the played pet step out of the shot (hidden, restored when play ends)
+    for (const B of actors.values()) {
+      if (B === A || B.hidden) continue;
+      const ux = B.x - cx, uz = B.z - cz, t = Math.max(0, Math.min(1, (ux * -p.dir.x + uz * -p.dir.z) / dist));
+      const near = t < 0.97 && Math.hypot(ux + p.dir.x * dist * t, uz + p.dir.z * dist * t) < B.model.radius + 0.45;
+      if (near !== !!B.playHide) { B.playHide = near; B.holder.visible = !near; }
+    }
+  }
+
+  /** Brings back every pet the close-up had moved out of the shot. */
+  function unhidePlayShot() {
+    for (const B of actors.values()) if (B.playHide) { B.playHide = false; if (!B.hidden) B.holder.visible = true; }
+  }
+
   function careAction(kind, petId) {
+    if (kind === 'play') { startPlay(petId); return; }   // V18: play is the zoomed-in play mode now
     const A = actors.get(petId);
     const fns = { play: playWithPet, bath: cleanPet, toy: giveToy, heal: healPet, sleep: toggleSleep, gift: claimGift };
     const fn = fns[kind];
@@ -4009,6 +4107,15 @@ export function mountBarn3d(host, ctx) {
         A.puffAt = 10 + Math.random() * 8;
         if ((A.pet.speciesId === 'dragon' || A.pet.speciesId === 'dragonhead') && A.act.type === 'idle' && !A.spawn) breathPuff(A);
       }
+      // V18 คิดถึง / น้อยใจ: now and then a 🥺 / 😢 above a pet that misses play
+      const lone = lonelyLevel(A.pet);
+      if (lone && A.pet.status !== 'sleeping' && !A.spawn && !(playing && playing.A === A)) {
+        A.lonelyAt = (A.lonelyAt ?? 4 + Math.random() * 6) - dt;
+        if (A.lonelyAt < 0) {
+          A.lonelyAt = (lone === 2 ? 7 : 11) + Math.random() * 6;
+          fx.emojiPop(world, headPos(A), lone === 2 ? '😢' : '🥺');
+        }
+      }
       // V16 😋 อิ่มอร่อย: while a dish treat lasts, now and then a heart pops and the pet bounces (a look only)
       if (A.pet.treat && A.pet.treat.until > now() && A.pet.status !== 'sleeping' && !A.spawn) {
         A.treatAt = (A.treatAt ?? 3 + Math.random() * 4) - dt;
@@ -4034,6 +4141,7 @@ export function mountBarn3d(host, ctx) {
     animateCribs(t, dt);
     stepDecor(dt, t);
     stepLimitedAuras(t);
+    stepPlay();
     stepPops(dt);
     stepHatch(dt);
     stepBreed(dt);
@@ -4076,6 +4184,7 @@ export function mountBarn3d(host, ctx) {
       if (disposed || on === isOn) return;
       isOn = !!on;
       if (!isOn) announceHatch(); // the world pauses: do not keep the player waiting for the toast
+      if (!isOn && playing) playing.game.stop();   // V18: a hidden yard ends the play round (counted only if it ran 8 s)
       world.setActive(isOn);
       if (isOn) sync(getState());
     },
@@ -4085,6 +4194,7 @@ export function mountBarn3d(host, ctx) {
     breedScene(aId, bId) { return breedScene(aId, bId); },
     dispose() {
       if (disposed) return;
+      if (playing) playing.game.stop();   // V18: before disposed is set, so a round that ran long enough still counts
       endBreed();
       if (hatching) { // toggled to the list / left mid-ceremony: never lose the news
         announceHatch();

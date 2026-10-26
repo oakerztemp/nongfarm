@@ -17,7 +17,7 @@ export function catchUp(state, toMs) {
   while (t < toMs) {
     const step = Math.min(STEP_MS, toMs - t);
     t += step;
-    guarded(() => tickPets(state, step, { offline: true }));
+    guarded(() => tickPets(state, step, { offline: true, t }));   // V18: the replayed time, so คิดถึง grows during the replay
     guarded(() => tickFarm(state, t));
   }
 }
@@ -29,7 +29,7 @@ export function advance(state, toMs) {
   if (replayed) {
     catchUp(state, toMs);
   } else if (gap > 0) {
-    guarded(() => tickPets(state, gap, { offline: false }));
+    guarded(() => tickPets(state, gap, { offline: false, t: toMs }));
     guarded(() => tickFarm(state, toMs));
   }
   state.lastTick = toMs;

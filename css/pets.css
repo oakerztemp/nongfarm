@@ -749,3 +749,36 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .sp-coats { display: flex; flex-wrap: wrap; gap: 6px; }
 .sp-coat-chip { font-size: 0.85rem; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-2); }
 .sp-coat-chip.is-unknown { opacity: 0.55; }
+
+/* ───────── V18 play mode (zoomed-in mini-game) + คิดถึง/น้อยใจ ───────── */
+.b3-playing .b3-top, .b3-playing .b3-sheet, .b3-playing .b3-tray, .b3-playing .b3-labels, .b3-playing .b3-hint { display: none !important; }
+.pg { position: absolute; inset: 0; z-index: 30; pointer-events: none; }
+.pg-bar { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; align-items: center; gap: 8px; pointer-events: auto;
+  padding: 6px 8px 6px 12px; border-radius: 99px; background: color-mix(in srgb, var(--surface) 88%, transparent); box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+.pg-title { font-weight: 700; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-score { font-weight: 700; white-space: nowrap; }
+.pg-close { width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 1rem; }
+.pg-time { position: absolute; top: 58px; left: 16px; right: 16px; height: 6px; border-radius: 99px; background: rgba(255,255,255,.35); overflow: hidden; }
+.pg-time-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #ff8fd0, #ffd36b); transition: width .1s linear; }
+.pg-hint { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-weight: 700; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.5); animation: pg-fade 3s ease 1s forwards; }
+.pg-field { position: absolute; inset: 0; }
+.pg-toy { position: absolute; transform: translate(-50%, -50%) scale(0.2); width: 56px; height: 56px; border: 0; border-radius: 50%; cursor: pointer; pointer-events: auto;
+  font-size: 30px; line-height: 1; background: radial-gradient(circle, rgba(255,255,255,.95) 0 55%, rgba(255,255,255,.35) 56%); box-shadow: 0 3px 12px rgba(0,0,0,.2);
+  animation: pg-in .25s ease-out forwards; touch-action: manipulation; font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.pg-toy.is-hit { animation: pg-hit .26s ease-out forwards; }
+.pg-toy.is-miss { animation: pg-miss .22s ease-in forwards; }
+@keyframes pg-in { to { transform: translate(-50%, -50%) scale(1); } }
+@keyframes pg-hit { to { transform: translate(-50%, -90%) scale(1.5); opacity: 0; } }
+@keyframes pg-miss { to { transform: translate(-50%, -50%) scale(0.3); opacity: 0; } }
+@keyframes pg-fade { to { opacity: 0; } }
+.pg-stage { position: relative; height: min(56vh, 360px); display: grid; place-items: center; border-radius: 16px;
+  background: radial-gradient(circle at 50% 60%, color-mix(in srgb, var(--accent) 22%, var(--surface)) 0%, var(--surface-2) 75%); overflow: hidden; }
+.pg-stage .pg-bar { top: 6px; }
+.pg-stage .pg-bar .pg-title:empty { flex: 1; }
+.pg-stage .pg-close { display: none; }   /* the window's own ✕ ends the game there */
+.pg-pet { font-size: min(34vw, 140px); line-height: 1; }
+.pg-pet.is-bounce { animation: pg-bounce .45s ease; }
+@keyframes pg-bounce { 30% { transform: translateY(-18px) scale(1.06, .94); } 60% { transform: translateY(0) scale(.96, 1.04); } }
+.pet-lonely-tag { font-weight: 700; color: #6a8ad8; white-space: nowrap; }
+.pet-lonely-tag.is-sulk { color: #d8577a; }
+@media (prefers-reduced-motion: reduce) { .pg-toy, .pg-pet.is-bounce, .pg-hint { animation-duration: .01ms !important; } }

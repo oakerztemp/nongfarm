@@ -722,3 +722,17 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 @media (prefers-reduced-motion: reduce) {
   .pet-card.is-limited, .pet-detail-top.is-limited, .nursery-row.is-limited { animation: none; }
 }
+
+/* ───────── V16 kitchen ───────── */
+.kitchen { display: grid; gap: 8px; }
+.kit-note { margin: 0 0 4px; }
+.kit-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.kit-row.is-locked { opacity: 0.55; }
+.kit-emoji { font-size: 1.9rem; line-height: 1; }
+.kit-info { min-width: 0; }
+.kit-desc { font-size: 0.8rem; }
+.kit-parts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.kit-part { font-size: 0.78rem; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--border); white-space: nowrap; }
+.kit-part.is-ok { border-color: var(--primary); }
+.pet-treat-tag { font-weight: 700; color: #e0579a; white-space: nowrap; }
+.pet-favdish small { font-weight: 400; }

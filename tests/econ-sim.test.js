@@ -24,6 +24,7 @@ import { COATS } from '../js/data/coats.js';
 import { canBreed, breed, breedCost, breedPreview, putFamilyEggInIncubator, habitatSpeciesChances, FAMILY_EGG_MAX, BREED_UNLOCK_LEVEL, BREED_COOLDOWN_MS, BREED_COST_MULT, BREED_FRIEND_MULT } from '../js/breeding.js';
 import { STARDUST_BY_RARITY, RELEASE_COINS, rehomeDust, rehomePet, yardOutput } from '../js/pets.js';
 import { claimMail } from '../js/mail.js';
+import { cook, kitchenList } from '../js/kitchen.js';
 import {
   tickFarm, plantSeed, waterPlot, assignPet, unassignPet, stationPet, unstationPet, harvestAll, startExpedition, claimExpedition, buyItem, sellItem,
   buyPlot, plotPrice, upgradeBarn, barnUpgradePrice, barnUpgradeCost, barnUpgradeStatus, upgradeIncubator, incubatorUpgradePrice,
@@ -326,6 +327,23 @@ function session(s, bot, cadence) {
 
   // 2. harvest everything ready, then deliver orders we can
   harvestAll(s, false);
+
+  // 2a. V16: a cooking bot (right after the harvest, before orders and sales) makes one dish a day (best unlocked recipe it can afford) and feeds it to the hungriest pet
+  if (bot.cook && bot.cookDay !== todayKey()) {
+    const can = kitchenList(s).filter(x => x.ok).pop();
+    if (can && cook(s, can.recipe.id).ok) {
+      // the crops / forage went into the pot instead of the market: book them as earned at sell value, so the cooking bot never looks
+      // poorer than it is (income ratio stays conservative) and the yard share is not inflated by a smaller coin income
+      const value = can.parts.reduce((t, p) => t + (p.item.sell || 0) * p.need, 0);
+      bot.earned += value;
+      bot.by.cook = (bot.by.cook || 0) + value;
+      bot.cookDay = todayKey();
+      bot.cooked++;
+      const pet = s.pets.filter(p => p.status === 'idle' && p.stats.hunger < 90).sort((a, b) => a.stats.hunger - b.stats.hunger)[0];
+      if (pet && feedPet(s, pet.id, can.recipe.id).ok) bot.dishesFed++;
+    }
+  }
+
   for (const o of openOrders(s)) {
     const r = completeOrder(s, o.id);
     if (r.ok) { bot.earned += o.reward.coins; bot.by.orders += o.reward.coins; }
@@ -540,7 +558,7 @@ function runSim(profile, seed, opts = {}) {
     try {
       const s = createNewState();
       if (opts.gift) assert(claimMail(s, 'welcome_celestial').ok, 'the bot takes the V12 welcome gift');
-      const bot = { noFest: !!opts.noFest, fest: { gained: {}, total: 0, logins: 0, tasks: 0, items: [], spent: 0, crafted: 0, floated: 0, mat: {}, leak: 0 }, earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, layLog: [], by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
+      const bot = { noFest: !!opts.noFest, fest: { gained: {}, total: 0, logins: 0, tasks: 0, items: [], spent: 0, crafted: 0, floated: 0, mat: {}, leak: 0 }, earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, cook: !!opts.cook, cooked: 0, dishesFed: 0, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, layLog: [], by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
       let last = T0;
       let lastRowAt = T0;
@@ -600,6 +618,8 @@ async function resultNoFest(name) {
   if (!resultsNoFest[name]) resultsNoFest[name] = await runSim(name, 20260302, { noFest: true });
   return resultsNoFest[name];
 }
+
+const resultsCook = {};
 
 const resultsGift = {};
 async function resultGift(name) {   // same bot + seed, the V12 Limited welcome pet taken on minute one
@@ -1297,6 +1317,46 @@ test('econ V11 gate 2: with festival play ON vs OFF the income per hour stays wi
   console.log('[econ-sim] V11 festivals ON vs OFF: ' + out.join(' | '));
   globalThis.__econFingerprint = out.map(x => x.replace(/ seed0:.*/, '')).join('|');
   globalThis.__econFest = out;
+});
+
+async function cookRuns(name) {   // V16: cooking ON over the festival seeds (the OFF side is festRuns(name, 'march', true): same config, cooking off)
+  const runs = [];
+  for (const seed of FEST_SEEDS) {
+    const key = `${name}|cook|${seed}`;
+    if (!resultsCook[key]) resultsCook[key] = await runSim(name, seed, { start: START, cook: true });
+    runs.push(resultsCook[key]);
+  }
+  return runs;
+}
+
+test('econ V16 gate: cooking ON vs OFF (mean of 4 seeds) keeps income within +3% (cooked ingredients booked at sell value), yard income within +5% (means), the yard <= 20% every day (standard seed), day-14 <= 4500/h, yard tiers within +-25% of the OFF means and never faster than the V6 baseline, and the bot really cooks', async () => {
+  // The hard guarantee is the static shop-rate rule in tests/v16.test.js (a dish fills / cheers no cheaper than the shop).
+  // A single seed drifts by several % whenever one choice changes (other hatches, other pets), so ON and OFF are compared as means.
+  // The cooking bot books the ingredients it cooks as earned (at sell value), so the share rule stays the plain 20%.
+  const out = [];
+  for (const name of ['3h', 'realistic']) {
+    const on = await cookRuns(name), off = await festRuns(name, 'march', true);
+    const d14 = r => r.rows.find(x => x.day === 14) || r.rows[r.rows.length - 1];
+    const cooked = on.reduce((t, r) => t + r.bot.cooked, 0), fed = on.reduce((t, r) => t + r.bot.dishesFed, 0);
+    assert(cooked >= 3 * on.length && fed >= 3 * on.length, `${name}: the bot cooked ${cooked} dishes and fed ${fed} over ${on.length} runs`);
+    const ratio = mean(on.map(r => r.perHour)) / mean(off.map(r => r.perHour));
+    const yardRatio = mean(on.map(r => r.by.yard)) / mean(off.map(r => r.by.yard));
+    assert(ratio <= 1.03, `${name}: ${Math.round(mean(on.map(r => r.perHour)))} coins/h cooking vs ${Math.round(mean(off.map(r => r.perHour)))} (${(100 * (ratio - 1)).toFixed(2)}%, > +3%)`);
+    assert(yardRatio <= 1.05, `${name}: yard income ${(100 * (yardRatio - 1)).toFixed(2)}% with cooking (> +5%)`);
+    for (const r of on) assert(d14(r).perHour <= 4500, `${name}: day-14 ${Math.round(d14(r).perHour)} coins/h (> 4500 gate)`);
+    // the 20% rule per day on the standard seed, as every earlier gate: on the other seeds day 1 is one or two pets and swings with which
+    // pet hatched (seed 7 day 1 is 21.6% cooking vs 13.2% not, and stays there with dish happy cut to plain food: it is the hatch, not the dish)
+    for (const x of on[0].rows) assert(x.yardShare <= 0.2, `${name} day ${x.day}: yard is ${(100 * x.yardShare).toFixed(1)}% with cooking (> 20%)`);
+    for (const tier of ['M', 'L', 'XL']) {   // as V11: means vs the OFF means, the standard seed vs the V6 baseline
+      const base = V6_BASELINE_TIER_DAYS[name][tier], mOn = mean(on.map(r => r.tierDay[tier])), mOff = mean(off.map(r => r.tierDay[tier]));
+      assert(Number.isFinite(mOn) && mOn >= mOff * (1 - TIER_TOLERANCE) && mOn <= mOff * (1 + TIER_TOLERANCE), `${name} (cooking): tier ${tier} on day ${mOn.toFixed(2)} vs ${mOff.toFixed(2)} OFF (means)`);
+      // cooking can only slow the yard down (the first sessions' crops go into the pot): no faster than the V6 baseline allows
+      assert(on[0].tierDay[tier] >= base * (1 - TIER_TOLERANCE), `${name} (cooking, standard seed): tier ${tier} on day ${on[0].tierDay[tier]}, faster than the baseline ${base} allows`);
+    }
+    out.push(`${name}: ${(100 * (ratio - 1)).toFixed(2)}% income, ${(100 * (yardRatio - 1)).toFixed(2)}% yard, ${cooked} dishes cooked / ${fed} fed over ${on.length} seeds`);
+  }
+  console.log('[econ-sim] V16 cooking ON vs OFF: ' + out.join(' | '));
+  globalThis.__econCook = out;
 });
 
 test('econ V12/V14 gate: the Limited welcome pet (taken on minute one) and the Lv.5 legendary egg keep day-14 income <= 1.10x and <= 4500/h, the yard <= 20% every day and the yard tiers within +-25% of the V6 baseline', async () => {

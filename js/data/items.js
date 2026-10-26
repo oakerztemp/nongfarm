@@ -3,6 +3,7 @@
 // buy === null  -> not sold in the shop;  sell === null -> cannot be sold.
 import { CROPS } from './crops.js';
 import { EGGS } from './eggs.js';
+import { RECIPES } from './recipes.js';
 
 export const ITEMS = {};
 
@@ -116,6 +117,11 @@ const CARE = [
 ];
 for (const [id, emoji, nameTh, buy, unlockLevel, desc] of CARE) {
   add({ id, emoji, nameTh, type: 'care', buy, sell: Math.floor(buy / 2), unlockLevel, desc });
+}
+
+// ---- V16 dishes (cooked in the kitchen, js/kitchen.js): never bought, never sold ----
+for (const r of RECIPES) {
+  add({ id: r.id, emoji: r.emoji, nameTh: r.nameTh, type: 'dish', buy: null, sell: null, unlockLevel: r.unlockLevel, food: r.food, desc: r.desc });
 }
 
 // ---- eggs (merged from eggs.js) ----

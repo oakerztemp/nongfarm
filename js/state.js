@@ -6,6 +6,7 @@ import { getSpecies, HABITATS } from './data/species.js';
 import { COAT_IDS } from './data/coats.js';
 import { SYSTEM_MAILS, MAIL_MAX, getMailDef } from './data/mail.js';
 import { LIMITED_PETS } from './data/limited.js';
+import { getRecipe, TREAT_MS } from './data/recipes.js';
 import { FESTIVAL_IDS, SHOP_ITEM_IDS, TASK_POOL, LANTERN_MAX, KRATHONG_MAX, LOGIN_MAX, TASKS_PER_FESTIVAL, LEDGER_MAX, SEEN_DAYS_MAX, FLOAT_DAYS_MAX } from './data/festivals.js';
 
 // v7: accessory ids are validated against js/data/accessories.js (owned by the data author). It is loaded with a tolerant
@@ -48,7 +49,7 @@ const STAT_KEYS = [
   'hatched', 'fed', 'played', 'cleaned', 'released',
   'planted', 'harvested', 'helped',
   'expeditionsStarted', 'expeditionsClaimed',
-  'ordersDone', 'sold', 'bought', 'yardCollected', 'bred',
+  'ordersDone', 'sold', 'bought', 'yardCollected', 'bred', 'cooked',
 ];
 const newStats = () => Object.fromEntries(STAT_KEYS.map(k => [k, 0]));
 
@@ -132,6 +133,12 @@ function sanitiseMail(s) {
   for (const m of s.mail) if (!s.mailSent.includes(m.id)) s.mailSent.push(m.id);
   const pets = [...s.pets, ...(Array.isArray(s.nursery) ? s.nursery.map(e => isObj(e) && e.pet) : [])];
   for (const p of pets) if (isObj(p) && p.limited !== undefined && !LIMITED_PETS[p.limited]) delete p.limited;
+  for (const p of pets) {   // V16: treat = a known dish with a finite end no later than one treat from now; favDishKnown a boolean
+    if (!isObj(p)) continue;
+    const t = p.treat;
+    p.treat = isObj(t) && getRecipe(t.id) && Number.isFinite(t.until) ? { id: t.id, until: Math.min(t.until, now() + TREAT_MS) } : null;
+    p.favDishKnown = p.favDishKnown === true;
+  }
   ensureMail(s);
 }
 
@@ -171,6 +178,8 @@ function petDefaults(t) {
     coat: 'base',                      // v8: coat id (js/data/coats.js); a missing one is base
     family: null,                      // v8: bred pets only: { gen, a: { name, speciesId }, b: { name, speciesId } }
     breedReadyAt: 0,                   // v8: ms; this pet can breed again once now() >= breedReadyAt
+    treat: null,                       // V16: { id: dish id, until: ms } the 😋 look after a dish (js/pets.js feedPet), cosmetic only
+    favDishKnown: false,               // V16: the player has fed this pet its species' favourite dish
   };
 }
 

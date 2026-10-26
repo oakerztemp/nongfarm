@@ -12,6 +12,7 @@ import { hashId, favoriteSpot, FAV_LABEL, STROKE_MIN_MS } from './petBehaviour.j
 import { getAccessory } from './data/accessories.js';
 import { COAT_IDS } from './data/coats.js';
 import { limitedOf } from './data/limited.js';
+import { TREAT_MS, favoriteDish } from './data/recipes.js';
 import { rollFamilyGenes } from './breeding.js';
 import { journalEvent } from './journal.js';
 import { festivalEvent, festivalPostcardTemplates } from './festival.js';
@@ -244,7 +245,8 @@ export function claimGift(state, petId) {
   if (pet.giftDay === todayKey()) return fail('วันนี้รับของขวัญจากน้องไปแล้ว พรุ่งนี้มาใหม่นะ');
   const sp = getSpecies(pet.speciesId);
   if (!sp) return fail('ไม่พบข้อมูลสายพันธุ์');
-  const pool = Object.values(ITEMS).filter(it => it.food && it.type !== 'egg' &&
+  // V16: dishes only come from the kitchen (a gifted dish would skip its ingredient cost and level)
+  const pool = Object.values(ITEMS).filter(it => it.food && it.type !== 'egg' && it.type !== 'dish' &&
     (it.id === sp.favorite || ((it.sell || 0) <= 60 && (it.food.tags || []).some(t => sp.diet.includes(t)))));
   if (!pool.length) return fail('น้องยังไม่มีของขวัญให้');
   const got = {};
@@ -747,8 +749,22 @@ export function feedPet(state, petId, itemId) {
   addBond(state, petId, favorite ? 5 : 2);
   if (favorite) festivalEvent(state, 'feed', { petId });
 
-  const note = favorite ? ' ของโปรดเลย! ⭐' : match ? ' ถูกปากมาก' : ' กินพอได้ (ไม่ใช่อาหารถนัด)';
-  return ok(`${item.emoji} ${nong(pet)} กิน${item.nameTh}${note}`);
+  // V16 dish: a look only (😋 treat glow) + the species' favourite dish discovery; bond stays as for any food (CONTRACT_V16 §1)
+  let favDish = false;
+  if (item.type === 'dish') {
+    pet.treat = { id: item.id, until: now() + TREAT_MS };
+    const fav = favoriteDish(getSpecies(pet.speciesId));
+    favDish = !!fav && fav.id === item.id;
+    if (favDish && !pet.favDishKnown) {
+      pet.favDishKnown = true;
+      journalEvent(state, 'favDish', { petId, acc: item.nameTh });
+    }
+  }
+
+  const note = favDish ? ' เมนูโปรดเลย! 💕' : favorite ? ' ของโปรดเลย! ⭐' : match ? ' ถูกปากมาก' : ' กินพอได้ (ไม่ใช่อาหารถนัด)';
+  const r = ok(`${item.emoji} ${nong(pet)} กิน${item.nameTh}${note}${item.type === 'dish' ? ' 😋' : ''}`);
+  if (item.type === 'dish') Object.assign(r, { dish: item.id, favDish });
+  return r;
 }
 
 export function playWithPet(state, petId) {

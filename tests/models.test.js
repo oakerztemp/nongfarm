@@ -33,10 +33,10 @@ function vertexColors(m, eyes = false) {
 const drawCalls = m => { let n = 0; m.root.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; };
 const build = (id, over = {}) => buildPetModel(THREE, { speciesId: id, stage: 2, shiny: false, ...over }, getSpecies(id));
 
-test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends, the 13 bug friends and the 12 savanna friends', () => {
+test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends, the 13 bug friends, the 12 savanna friends and the 9 polar friends', () => {
   assertEq(FARM.length, 21, 'farm species count');
   for (const sp of FARM) assert(hasModel(sp.id), 'no model for ' + sp.id);
-  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug' || getSpecies(id).habitat === 'savanna', 'unexpected spec for ' + id);
+  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug' || getSpecies(id).habitat === 'savanna' || getSpecies(id).habitat === 'polar', 'unexpected spec for ' + id);
   for (const id of LEGEND_IDS) assert(hasModel(id), 'no model for ' + id);
 });
 
@@ -122,16 +122,16 @@ test('models: shiny shifts the palette and exposes an anchor for sparkles', () =
 });
 
 test('models: billboard fallback for species without a spec; billboard shape matches', () => {
-  const penguin = getSpecies('penguin');
-  assertEq(hasModel('penguin'), false, 'penguin has no model');
-  const m = buildPetModel(THREE, { speciesId: 'penguin', stage: 2 }, penguin);
+  const penguin = getSpecies('dodo');   // a mystic species: the polar friends all have models since V16
+  assertEq(hasModel('dodo'), false, 'dodo has no model');
+  const m = buildPetModel(THREE, { speciesId: 'dodo', stage: 2 }, penguin);
   assertEq(m.kind, 'billboard', 'kind');
   assert(m.root.isGroup && m.body.isGroup, 'root/body groups');
   assert(m.height > 0 && m.radius > 0, 'size');
   let sprites = 0;
   m.root.traverse(o => { if (o.isSprite) sprites++; });
   assertEq(sprites, 1, 'one sprite');
-  const m2 = buildPetModel(THREE, { speciesId: 'penguin', stage: 3, shiny: true }, penguin);
+  const m2 = buildPetModel(THREE, { speciesId: 'dodo', stage: 3, shiny: true }, penguin);
   assertEq(m2.root.scale.x, 1.15, 'billboard stage scale');
   assert(!!m2.parts.crown, 'billboard crown');
   const t1 = kitStats(THREE).textures;
@@ -317,7 +317,7 @@ test('models: the stage-3 crown rides on the head, just above the head-top ancho
       assert(Math.hypot(c2.x - a2.x, c2.z - a2.z) / k < 0.3, `${id} crown stays on the rotated head`);
     }
   }
-  for (const sid of ['trex', 'beluga', 'lizard']) {   // billboards: centred above the sprite
+  for (const sid of ['trex', 'dodo', 'lizard']) {   // billboards: centred above the sprite
     const m = buildPetModel(THREE, { stage: 3 }, getSpecies(sid));
     assertEq([m.parts.crown.position.x, m.parts.crown.position.z], [0, 0], sid + ' billboard crown centred');
     const dy = m.parts.crown.position.y - m.anchor.position.y;
@@ -1191,7 +1191,7 @@ test('coats: shiny wins over the coat; templates are shared per coat; no extra d
     assert([...materials(m.root)].every(x => materials(p.root).has(x)), coat + ': same shared materials');
   }
   // billboards (species without a spec) never tint: just the emoji
-  const bb = buildPetModel(THREE, { speciesId: 'penguin', stage: 2, coat: 'mint' }, getSpecies('penguin'));
+  const bb = buildPetModel(THREE, { speciesId: 'dodo', stage: 2, coat: 'mint' }, getSpecies('dodo'));
   assertEq(bb.kind, 'billboard', 'a coated billboard is just the emoji');
 });
 
@@ -1371,4 +1371,182 @@ test('savanna: 20 savanna pets in one yard stay inside the scene budget (sum <= 
   for (let i = 0; i < 20; i++) { const m = buildL(SAVANNA_IDS[i % SAVANNA_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
   assert(calls <= 20 * 7, 'savanna yard of 20 pets: ' + calls + ' calls');
   console.log(`[models] 20 savanna pets = ${calls} model draw calls, ${trisSum} tris`);
+});
+
+// ── V16 §4: the 9 polar friends ─────────────────────────────────────────────
+const POLAR = { penguin: 'common', seal: 'common', snowhare: 'common', husky: 'uncommon', siberiancat: 'uncommon', snowram: 'uncommon', beluga: 'rare', yak: 'epic', arcticwolf: 'epic' };
+const POLAR_IDS = Object.keys(POLAR);
+const POLAR_BUDGET = { tris: 1500, calls: 7 };
+
+test('polar: every habitat-polar species except the polar bear has a spec (the bear keeps its V13 model + stays legendary); rarity table matches species.js', () => {
+  const pol = SPECIES.filter(s => s.habitat === 'polar' && s.id !== 'polarbear');
+  assertEq(pol.map(s => s.id).sort(), POLAR_IDS.slice().sort(), 'the 9 polar friends');
+  for (const id of POLAR_IDS) {
+    assert(hasModel(id), 'no model for ' + id);
+    assertEq(getSpecies(id).rarity, POLAR[id], id + ' rarity');
+    assert(!LEGEND_IDS.includes(id), id + ' is not a legendary');
+  }
+  assert(hasModel('polarbear') && LEGEND_IDS.includes('polarbear'), 'the polar bear was already there and stays legendary');
+});
+
+test('polar: 9 models build; budgets (<= 1500 tris + 7 draw calls), finite, standing on the ground', () => {
+  const rows = [];
+  for (const id of POLAR_IDS) {
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assertEq(m.kind, 'model', id);
+      assert(m.root.isGroup && m.body.isGroup && m.head && m.head.isGroup && m.body.parent === m.root, id + ' groups');
+      const t = tris(m.root), calls = drawCalls(m) - (stage === 3 ? 1 : 0);   // the crown sprite is an extra call for masters only
+      assert(t <= POLAR_BUDGET.tris, `${id} has ${t} triangles (budget ${POLAR_BUDGET.tris})`);
+      assert(calls <= POLAR_BUDGET.calls, `${id} uses ${calls} draw calls (budget ${POLAR_BUDGET.calls})`);
+      assert(Number.isFinite(m.height) && m.height > 0.4 && m.height < 2.6, `${id} height ${m.height}`);
+      assert(Number.isFinite(m.radius) && m.radius > 0.15 && m.radius < 1.5, `${id} radius ${m.radius}`);
+      m.root.updateMatrixWorld(true);
+      let bad = 0;
+      m.root.traverse(o => {
+        for (const v of [o.position, o.scale, o.quaternion]) for (const k of ['x', 'y', 'z']) if (!Number.isFinite(v[k])) bad++;
+        if (o.isMesh) for (const x of o.matrixWorld.elements) if (!Number.isFinite(x)) bad++;
+      });
+      assertEq(bad, 0, id + ' NaN transforms');
+      const box = new THREE.Box3().setFromObject(m.root);
+      assert(Math.abs(box.min.y) < 0.05, `${id} stage ${stage}: feet at y=${box.min.y}`);
+      if (stage === 2) rows.push(`${id} ${t}t/${calls}c`);
+    }
+    assertEq(buildL(id).legendary, false, id + ' is not legendary');
+  }
+  console.log('[models] polar: ' + rows.join(', '));
+});
+
+test('polar: the shared toon material + one eye material only (the beluga adds the shared water bubble); merged geometry cached per species and shiny; hand-tuned chibi eyes + blush', () => {
+  const mats = new Set();
+  for (const id of POLAR_IDS) {
+    if (id !== 'beluga') materials(buildL(id).root, mats);
+    const a = buildL(id), b = buildL(id, { stage: 0 });
+    for (const n of ['bodyMesh', 'headMesh']) assert(geoOf(a, n) === geoOf(b, n), `${id} ${n} not shared`);
+    assert(geoOf(buildL(id, { shiny: true }), 'bodyMesh') !== geoOf(a, 'bodyMesh'), id + ' shiny has its own buffers');
+    assertEq(tris(buildL(id).root), tris(buildL(id, { shiny: true }).root), id + ' shiny keeps the geometry');
+    // CHIBI_TUNED: the V14 chibify pass must skip them, so the spec's own eyes are what is built
+    const e = MODEL_SPECS[id].eyes;
+    assert(e.s >= 0.17 && e.s <= 0.21 && e.tall >= 1.3, `${id}: sparkly chibi eyes (s ${e.s}, tall ${e.tall})`);
+    assert(MODEL_SPECS[id].blush !== false, id + ' has a blush');
+  }
+  const toon = [...mats].filter(x => x.isMeshToonMaterial);
+  assertEq(toon.length, 1, 'one shared toon material for all 8 land friends');
+  assertEq([...mats].filter(x => !x.isMeshToonMaterial).length, 1, 'plus the eye material');
+  const bel = buildL('beluga');
+  assertEq([...materials(bel.root)].filter(x => x.isMeshToonMaterial).length, 1, 'beluga: the same toon material');
+  assertEq([...materials(bel.root)].filter(x => !x.isMeshToonMaterial).length, 2, 'beluga: eye material + the bubble');
+  assert(bel.parts.bubble && bel.parts.bubble.name === 'bubble', 'beluga floats in a water bubble');
+  for (const id of POLAR_IDS.filter(i => i !== 'beluga')) assert(!buildL(id).parts.bubble, id + ' has no bubble');
+});
+
+test('polar: standard animated parts (head, eyes, anchor, tail) exist; wings only on the penguin', () => {
+  for (const id of POLAR_IDS) {
+    const m = buildL(id);
+    assert(m.head && m.parts.eyes.length === 1 && m.anchor && m.anchor.parent === m.head, id + ' head / eyes / anchor');
+    assert(m.parts.tail && m.parts.tail.isGroup, id + ' tail pivot');
+    assertEq(m.parts.trunk, null, id + ' has no trunk pivot');
+  }
+  const pen = buildL('penguin');
+  assert(pen.parts.wingL && pen.parts.wingR && pen.parts.wingL.parent === pen.body, 'penguin flippers are wing pivots');
+  pen.parts.wingL.rotation.z += 0.5;
+  pen.root.updateMatrixWorld(true);
+  assert(new THREE.Box3().setFromObject(pen.root).min.toArray().every(Number.isFinite), 'penguin flippers can flap');
+});
+
+test('polar: signature parts are really there (penguin flippers + white belly + orange feet, seal flippers + whiskers + no legs, snow hare ears, husky mask + curled tail, siberian cat fluff, snow ram curled horns + wool, beluga melon, yak horns + fur skirt, arctic wolf ears + ruff)', () => {
+  const size = (m, n) => bboxOf(m, n).getSize(new THREE.Vector3());
+  const sp = id => MODEL_SPECS[id];
+  // penguin: white belly + face patch, orange beak and feet, dark flipper wings
+  const pen = buildL('penguin');
+  assert(hasColor(pen, 'bodyMesh', '#fcfeff') && hasColor(pen, 'headMesh', '#fcfeff'), 'penguin: white belly + face');
+  assert(hasColor(pen, 'headMesh', '#ffb347') && hasColor(pen, 'bodyMesh', '#ffb347'), 'penguin: orange beak + feet');
+  assert(sp('penguin').legs.type === 'webbed' && sp('penguin').extras.some(e => e.t === 'wings'), 'penguin: webbed feet + flippers');
+  assert(pen.height > buildL('seal').height, 'penguin stands upright, taller than the seal');
+  // seal: no legs, long low body, flippers + tail flippers, white whiskers
+  const sea = buildL('seal');
+  assertEq(sp('seal').legs.type, 'none', 'seal: no legs');
+  assert(sp('seal').extras.some(e => e.t === 'flippers') && sp('seal').extras.some(e => e.t === 'whiskers' && e.n >= 3), 'seal: flippers + whiskers');
+  assert(hasColor(sea, 'bodyMesh', '#8fa3be') && hasColor(sea, 'tailMesh', '#8fa3be') && size(sea, 'bodyMesh').z > 0.9, 'seal: flippers + tail flippers, long body');
+  assert(sea.height < 0.8, 'seal lies low: ' + sea.height);
+  // snow hare: long ears (taller than the head), pink inner ears, big hind feet
+  const har = buildL('snowhare');
+  har.root.updateMatrixWorld(true);
+  const earTop = new THREE.Box3().setFromObject(har.parts.earL).max.y;   // the ears are animated pivots, not part of the merged head mesh
+  assert(earTop > sp('snowhare').head.y + sp('snowhare').head.r * 2 && sp('snowhare').ears.s >= 1, 'snow hare: long ears far above the head: ' + earTop);
+  assert(sp('snowhare').ears.inner === '#ffc2d0' && sp('snowhare').ears.type === 'long', 'snow hare: pink inner ears');
+  // husky: white face mask on a grey head, upright ears, a bushy tail curled up over the back with a pale tip
+  const hus = buildL('husky');
+  assert(hasColor(hus, 'headMesh', '#f6f9fc') && hasColor(hus, 'headMesh', '#8f9db3'), 'husky: white mask on a grey head');
+  assert(hasColor(hus, 'tailMesh', '#8f9db3') && hasColor(hus, 'tailMesh', '#f6f9fc') && sp('husky').tail.lift > 1, 'husky: curled tail with a white tip');
+  assert(sp('husky').ears.type === 'cat' && sp('husky').ears.up >= 0.6, 'husky: upright ears');
+  // siberian cat: fluffy - cheek tufts, neck ruff and a big plume tail, tabby stripes
+  const sib = buildL('siberiancat');
+  assert(size(sib, 'tailMesh').length() > 0.4 && sp('siberiancat').tail.blob >= 1.2, 'siberian cat: plume tail: ' + size(sib, 'tailMesh').toArray());
+  assert(sp('siberiancat').extras.some(e => e.t === 'cheeks') && sp('siberiancat').extras.some(e => e.t === 'wool'), 'siberian cat: cheek tufts + neck ruff');
+  assert(hasColor(sib, 'bodyMesh', '#b8a58a'), 'siberian cat: tabby stripes');
+  // snow ram: big curled horns on the head, thick white wool on the body
+  const ram = buildL('snowram');
+  assert(hasColor(ram, 'headMesh', '#d9c9a6') && sp('snowram').extras.some(e => e.t === 'blobs' && e.list.some(b => b.g === 'curl')), 'snow ram: curled horns');
+  assert(size(ram, 'headMesh').x > sp('snowram').head.r * 2 * 1.2, 'snow ram: horns stick out past the head: ' + size(ram, 'headMesh').x);
+  assert(hasColor(ram, 'bodyMesh', '#fbfcfe') && sp('snowram').extras.find(e => e.t === 'wool').n >= 8, 'snow ram: woolly body');
+  // beluga: white whale with a melon forehead, flippers + fluke, in a bubble
+  const bel = buildL('beluga');
+  assertEq(sp('beluga').legs.type, 'none', 'beluga: no legs');
+  assert(hasColor(bel, 'bodyMesh', '#eaf3fa') && hasColor(bel, 'headMesh', '#f7fbff') && hasColor(bel, 'bodyMesh', '#d3e4f2'), 'beluga: white + pale blue flippers');
+  assert(sp('beluga').extras.some(e => e.t === 'blobs' && e.on === 'head') && sp('beluga').extras.some(e => e.t === 'smile'), 'beluga: melon + smile');
+  assert(bel.parts.tail && size(bel, 'tailMesh').x > 0.3, 'beluga: tail fluke');
+  // yak: wide cream horns, a fur skirt hanging off the flanks, a hump, cream socks
+  const yak = buildL('yak');
+  assert(hasColor(yak, 'headMesh', '#f4e8cc') && sp('yak').extras.some(e => e.t === 'horns' && e.s >= 1), 'yak: big pale horns');
+  assert(hasColor(yak, 'bodyMesh', '#6e5044') && hasColor(yak, 'bodyMesh', '#efe2cc'), 'yak: fur skirt + cream socks');
+  assert(hasColor(yak, 'headMesh', '#5e4538') && hasColor(yak, 'tailMesh', '#5e4538'), 'yak: shaggy forelock + tail tuft');
+  assert(yak.radius >= buildL('snowhare').radius, 'yak is sturdier than the hare');
+  // arctic wolf: tall pointy ears, cheek + neck ruff, plume tail
+  const wol = buildL('arcticwolf');
+  assert(sp('arcticwolf').ears.type === 'cat' && sp('arcticwolf').ears.up >= 0.8 && sp('arcticwolf').ears.s >= 0.7, 'arctic wolf: tall pointy ears');
+  assert(bboxOf(wol, 'headMesh').max.y > sp('arcticwolf').head.r * 1.4, 'arctic wolf: ears above the head');
+  assert(size(wol, 'tailMesh').length() > 0.4 && sp('arcticwolf').extras.some(e => e.t === 'cheeks') && sp('arcticwolf').extras.some(e => e.t === 'wool'), 'arctic wolf: plume tail + ruff');
+  assert(hasColor(wol, 'headMesh', '#f8fbff') && hasColor(wol, 'bodyMesh', '#f1f6fb'), 'arctic wolf: white coat');
+});
+
+test('polar: shiny = curated palettes (each palette really hits the model; eyes never shift; no hue-rotated fallback)', () => {
+  for (const id of POLAR_IDS) {
+    const spec = MODEL_SPECS[id], pal = spec.shinyPalette;
+    assert(pal && Object.keys(pal).length >= 2, id + ' has a curated palette');
+    for (const k of Object.keys(pal)) assert(k === k.toLowerCase() && /^#[0-9a-f]{6}$/.test(k) && /^#[0-9a-f]{6}$/.test(pal[k]), `${id}: palette key ${k}`);
+    const normal = buildL(id), shiny = buildL(id, { shiny: true });
+    assertEq([shiny.shiny, shiny.shinyStyle], [true, 'palette'], id + ' flag');
+    const cn = vertexColors(normal), cs = vertexColors(shiny);
+    const hit = Object.keys(pal).filter(k => cn.has(hexKey(k)));
+    assert(hit.length >= 2, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
+    for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
+    assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
+    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
+    const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
+    for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
+  }
+});
+
+test('polar: stage scale + crown still work (master crown rides the head); masters stay inside the call budget + 1', () => {
+  for (const id of POLAR_IDS) {
+    for (let st = 0; st < 4; st++) {
+      const m = buildL(id, { stage: st });
+      assertEq(m.root.scale.x, STAGE_SCALE[st], `${id} scale at stage ${st}`);
+      assertEq(!!m.parts.crown, st === 3, `${id} crown at stage ${st}`);
+    }
+    const master = buildL(id, { stage: 3 });
+    assert(master.parts.crown.parent === master.head, id + ' crown on the head');
+    assert(drawCalls(master) <= POLAR_BUDGET.calls + 1, `${id} master calls ${drawCalls(master)}`);
+    assert(master.height > buildL(id, { stage: 2 }).height, id + ' master is bigger');
+  }
+});
+
+test('polar: 20 polar pets in one yard stay inside the scene budget (sum <= 20 x 7)', () => {
+  let calls = 0, trisSum = 0;
+  for (let i = 0; i < 20; i++) { const m = buildL(POLAR_IDS[i % POLAR_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
+  assert(calls <= 20 * 7, 'polar yard of 20 pets: ' + calls + ' calls');
+  console.log(`[models] 20 polar pets = ${calls} model draw calls, ${trisSum} tris`);
 });

@@ -1620,7 +1620,12 @@ export function mountBarn3d(host, ctx) {
       if (r && r.ok) {
         react(A, 'eat', { dur: 1.7, then: AA => {
           fx.heart(world, headPos(AA));
-          if (favorite) { fx.sparkle(world, AA.id); AA.hold = 0; react(AA, 'hop', { dur: 1.4, hops: 3 }); }
+          if (r.favDish) {   // V16: the species' favourite dish: a little party
+            fx.sparkle(world, AA.id); fx.confetti(world, headPos(AA), 18); fx.emojiPop(world, headPos(AA), '💕');
+            AA.hold = 0; react(AA, 'hop', { dur: 1.8, hops: 4, height: 0.42 });
+          } else if (r.dish) { fx.emojiPop(world, headPos(AA), '😋'); AA.hold = 0; react(AA, 'hop', { dur: 1.2, hops: 2 }); }
+          else if (favorite) { fx.sparkle(world, AA.id); AA.hold = 0; react(AA, 'hop', { dur: 1.4, hops: 3 }); }
+          if (r.dish) AA.treatAt = 4;
         } });
         if (!(getState().inventory[itemId] > 0)) armedFood = null;
       } else {
@@ -2742,6 +2747,7 @@ export function mountBarn3d(host, ctx) {
     if (hatching || decorMode) { endGreet(); return; }
     greet.t += dt;
     if (greet.t > 7 && greet.arrived >= greet.ids.length) advanceGreet();   // nobody tapped: move on by itself
+    if (!greet) return;   // V16 fix: the last line just ended the greeting (it crashed the 3D yard into the list view)
     // the bubble floats over the pet the line is about (else over the middle of the row)
     const line = greet && greet.lines[greet.i];
     const A = actors.get((line && line.petId && greet.ids.includes(line.petId)) ? line.petId : greet.ids[Math.floor(greet.ids.length / 2)]);
@@ -4002,6 +4008,16 @@ export function mountBarn3d(host, ctx) {
       if (A.puffAt < 0) {
         A.puffAt = 10 + Math.random() * 8;
         if ((A.pet.speciesId === 'dragon' || A.pet.speciesId === 'dragonhead') && A.act.type === 'idle' && !A.spawn) breathPuff(A);
+      }
+      // V16 😋 อิ่มอร่อย: while a dish treat lasts, now and then a heart pops and the pet bounces (a look only)
+      if (A.pet.treat && A.pet.treat.until > now() && A.pet.status !== 'sleeping' && !A.spawn) {
+        A.treatAt = (A.treatAt ?? 3 + Math.random() * 4) - dt;
+        if (A.treatAt < 0) {
+          A.treatAt = 6 + Math.random() * 6;
+          fx.emojiPop(world, headPos(A), Math.random() < 0.5 ? '💕' : '😋');
+          if (!lowTier()) fxo('sparkle', world, A.id);
+          if (A.act.type === 'idle' && A.hold <= 0) react(A, 'hop', { dur: 0.9, hops: 2, height: 0.3 });
+        }
       }
       A.sparkleAt -= dt;
       if (A.sparkleAt < 0) {

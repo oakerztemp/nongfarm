@@ -1709,12 +1709,181 @@ export const MODEL_SPECS = {
     shinyPalette: { '#f6d083': '#d9c4ff', '#fff1d2': '#f6f0ff', '#6e4a3a': '#7a4fd1', '#ffb3c1': '#ffd9ec' },
   },
 
+  // ───────── V16 §4: polar (ขั้วโลก) ─────────
+  // Same chibi recipe as the savanna friends: big head, sparkly eyes (s 0.17-0.21, tall >= 1.3), blush, soft colours, short chubby legs, short snouts. All of them are in CHIBI_TUNED (hand tuned).
+  // Budget <= 1500 tris / <= 7 draw calls. Fixed (non-shifting) colours: nostrils / noses, whiskers, eyes.
+
+  penguin: {   // upright navy egg + big white belly, orange feet + beak, little flipper wings
+    body: { w: 0.36, h: 0.42, d: 0.34, color: '#5b6c9a', belly: { color: '#fcfeff', s: 0.84, dz: 0.3, dy: -0.04 } },
+    legs: { type: 'webbed', h: 0.06, r: 0.03, color: '#ffb347', x: 0.4 },
+    head: { r: 0.3, w: 1.08, h: 0.95, d: 0.98, y: 0.82, z: 0.04, color: '#5b6c9a' },
+    eyes: { s: 0.2, gap: 0.5, el: 0.1, tall: 1.35 },
+    blush: '#ff9fb4',
+    snout: { type: 'beak', color: '#ffb347', w: 0.17, len: 0.28, el: -0.2 },
+    tail: { type: 'puff', s: 0.07, color: '#5b6c9a', y: 0.1 },
+    extras: [
+      { t: 'mask', color: '#fcfeff', rx: 0.78, ry: 0.5, rz: 0.55, y: -0.14, z: 0.42 },
+      { t: 'wings', color: '#4a5a86', s: 0.32, x: 0.98, y: 0.3, d: 0.7, h: 1.0, rest: 0.25 },
+    ],
+    shinyPalette: { '#5b6c9a': '#ffc26b', '#4a5a86': '#f0a640', '#fcfeff': '#fff6d8', '#ffb347': '#ff7ab8' },
+  },
+
+  seal: {   // round grey-blue sausage lying on the ice, whiskers, flippers + tail flippers, no legs
+    body: { w: 0.4, h: 0.3, d: 0.52, color: '#aebfd6', belly: { color: '#f2f6fb', s: 0.8, dz: 0.18, dy: -0.12 } },
+    legs: { type: 'none' },
+    head: { r: 0.33, w: 1.08, h: 0.95, d: 1.0, y: 0.4, z: 0.4, color: '#aebfd6' },
+    eyes: { s: 0.21, gap: 0.5, el: 0.12, tall: 1.4 },
+    blush: '#ff9fb4',
+    snout: { type: 'muzzle', color: '#f2f6fb', w: 0.4, h: 0.28, d: 0.24, el: -0.3, nose: '#3a2a2e', noseS: 0.14, noseY: 0.62, lo: true },
+    tail: { type: 'fluke', s: 0.22, len: 0.12, rot: 0, y: -0.2, z: 0.95, color: '#8fa3be', lobe: '#8fa3be' },
+    extras: [
+      { t: 'whiskers', color: '#ffffff', len: 0.5, n: 3, az: 0.3, el: -0.18 },
+      { t: 'flippers', color: '#8fa3be', s: 0.42, x: 0.95, y: 0.3, z: 0.3 },
+      { t: 'spots', color: '#8a9ebb', g: 'disc', th: 1, list: [
+        { on: 'body', az: 0.7, el: 0.95, s: 0.38 }, { on: 'body', az: -0.8, el: 0.9, s: 0.34 }, { on: 'body', az: 2.4, el: 0.85, s: 0.38 },
+        { on: 'body', az: 1.5, el: 0.55, s: 0.28 }, { on: 'body', az: -1.6, el: 0.55, s: 0.3 },
+      ] },
+    ],
+    shinyPalette: { '#aebfd6': '#f6c3d8', '#8fa3be': '#e79ab8', '#8a9ebb': '#e08aaa', '#f2f6fb': '#fff3f8' },
+  },
+
+  snowhare: {   // fluffy white bunny, long ears, big cheeks, big hind feet
+    body: { w: 0.34, h: 0.32, d: 0.38, color: '#f6fafe', lo: true, belly: { color: '#fcfeff', s: 0.8, dz: 0.2, lo: true } },
+    legs: { type: 'stub', h: 0.1, r: 0.075, color: '#eef4fa' },
+    head: { r: 0.32, w: 1.1, h: 0.96, d: 0.97, y: 0.64, z: 0.2, color: '#f6fafe' },
+    eyes: { s: 0.2, gap: 0.5, el: 0.1, tall: 1.4 },
+    blush: '#ffa3bb',
+    ears: { type: 'long', s: 1.15, az: 0.45, el: 0.95, up: 0.5, flare: 0.12, color: '#eef4fa', inner: '#ffc2d0' },
+    snout: { type: 'nose', color: '#ff9bb0', s: 0.08, el: -0.12 },
+    tail: { type: 'puff', s: 0.12, color: '#fcfeff', y: 0.2 },
+    extras: [
+      { t: 'cheeks', color: '#fcfeff', s: 0.3, lo: true },
+      { t: 'whiskers', color: '#cfd8e6', len: 0.45, n: 2, az: 0.28, el: -0.18 },
+      { t: 'blobs', color: '#eef4fa', mirror: true, list: [{ g: 'sphP', p: [0.17, 0.1, -0.12], s: [0.07, 0.07, 0.15] }] },
+      { t: 'spots', color: '#c9d6e6', g: 'disc', th: 1, list: [{ on: 'head', az: 0, el: 1.0, s: 0.2 }] },
+    ],
+    shinyPalette: { '#f6fafe': '#d7f0ff', '#eef4fa': '#bfe3fa', '#fcfeff': '#f0fbff', '#ffc2d0': '#ffe08a', '#c9d6e6': '#9fd0f0' },
+  },
+
+  husky: {   // grey-and-white sled dog: white face mask, upright ears, curled bushy tail
+    body: { w: 0.37, h: 0.32, d: 0.46, color: '#8f9db3', lo: true, belly: { color: '#f6f9fc', s: 0.8, dz: 0.2, lo: true } },
+    legs: { type: 'stub', h: 0.12, r: 0.08, color: '#f6f9fc' },
+    head: { r: 0.33, w: 1.08, h: 0.97, d: 0.97, y: 0.66, z: 0.3, color: '#8f9db3' },
+    eyes: { s: 0.2, gap: 0.5, el: 0.14, tall: 1.35 },
+    blush: '#ffa0b4',
+    ears: { type: 'cat', s: 0.58, az: 0.62, el: 0.75, up: 0.7, color: '#7d8ba3', inner: '#ffc2cf', static: true },
+    snout: { type: 'muzzle', color: '#f6f9fc', w: 0.44, h: 0.32, d: 0.26, el: -0.3, nose: MUZZLE_NOSE, noseS: 0.14, noseY: 0.62, lo: true },
+    tail: { type: 'long', n: 4, len: 0.42, r: 0.075, taper: 0.05, lift: 1.25, curve: 0.65, blob: 1.5, y: 0.35, color: '#8f9db3', colors: ['#8f9db3', '#8f9db3', '#c5cfdd', '#f6f9fc'] },
+    extras: [
+      { t: 'mask', color: '#f6f9fc', rx: 0.72, ry: 0.5, rz: 0.72, y: -0.3, z: 0.26 },
+      { t: 'spots', color: '#f6f9fc', g: 'disc', th: 1, list: [{ on: 'head', az: 0.5, el: 0.62, s: 0.14 }, { on: 'head', az: -0.5, el: 0.62, s: 0.14 }, { on: 'head', az: 0, el: 0.95, s: 0.12 }] },
+      { t: 'cheeks', color: '#f6f9fc', s: 0.26, lo: true },
+      { t: 'whiskers', color: '#ffffff', len: 0.4, n: 2, az: 0.3, el: -0.22 },
+    ],
+    shinyPalette: { '#8f9db3': '#d3a8f0', '#7d8ba3': '#b88ae0', '#c5cfdd': '#e8d2f8', '#f6f9fc': '#fff6ff', '#ffc2cf': '#ffe08a' },
+  },
+
+  siberiancat: {   // very fluffy cream tabby: neck ruff, cheek tufts, giant plume tail
+    body: { w: 0.36, h: 0.32, d: 0.4, color: '#ddd0bc', lo: true, belly: { color: '#fbf6ee', s: 0.8, dz: 0.22, lo: true } },
+    legs: { type: 'stub', h: 0.1, r: 0.085, color: '#fbf6ee' },
+    head: { r: 0.33, w: 1.14, h: 0.95, d: 0.95, y: 0.62, z: 0.24, color: '#ddd0bc', lo: true },
+    eyes: { s: 0.21, gap: 0.52, el: 0.12, tall: 1.4 },
+    blush: '#ff9fb0',
+    ears: { type: 'cat', s: 0.58, az: 0.7, el: 0.72, up: 0.6, color: '#c9b79d', inner: '#ffc2cf', static: true },
+    snout: { type: 'muzzle', color: '#fbf6ee', w: 0.3, h: 0.22, d: 0.2, el: -0.3, nose: '#ff8fa3', noseS: 0.1, noseY: 0.6, lo: true },
+    tail: { type: 'long', n: 4, len: 0.55, r: 0.085, taper: 0.03, lift: 0.55, curve: 0.38, blob: 1.25, y: 0.25, color: '#ddd0bc', colors: ['#ddd0bc', '#cdbba2', '#ddd0bc', '#fbf6ee'] },
+    extras: [
+      { t: 'cheeks', color: '#fbf6ee', s: 0.32, lo: true },
+      { t: 'wool', color: '#fbf6ee', n: 0, head: [[0, -0.7, 0.35, 0.34], [0.38, -0.62, 0.3, 0.26], [-0.38, -0.62, 0.3, 0.26]] },
+      { t: 'whiskers', color: '#ffffff', len: 0.5, n: 2, az: 0.36, el: -0.25 },
+      { t: 'spots', color: '#b8a58a', list: [
+        { on: 'body', az: 0, el: 1.1, s: 0.42, sx: 1.7, sy: 0.4 }, { on: 'body', az: 0.35, el: 0.7, s: 0.4, sx: 1.7, sy: 0.4 },
+        { on: 'head', az: 0, el: 1.0, s: 0.3, sx: 0.5, sy: 1.5 },
+      ] },
+    ],
+    shinyPalette: { '#ddd0bc': '#c9bdf2', '#cdbba2': '#b0a2e6', '#c9b79d': '#a898e0', '#b8a58a': '#9a88d6', '#fbf6ee': '#f6f2ff', '#ffc2cf': '#ffe08a' },
+  },
+
+  snowram: {   // woolly white ram: big curled horns, dark hooves, small ears
+    body: { w: 0.42, h: 0.34, d: 0.44, color: '#fbfcfe', lo: true },
+    legs: { type: 'stub', h: 0.13, r: 0.06, color: '#6e7788' },
+    head: { r: 0.3, w: 1.0, h: 1.0, d: 1.0, y: 0.64, z: 0.32, color: '#efe3d0', lo: true },
+    eyes: { s: 0.2, gap: 0.5, el: 0.1, tall: 1.4 },
+    blush: '#ff9fb0',
+    ears: { type: 'side', s: 0.55, az: 1.3, el: 0.25, color: '#efe3d0', inner: false, flare: 0.3 },
+    snout: { type: 'nose', color: '#e58a9a', s: 0.085, el: -0.25 },
+    tail: { type: 'puff', s: 0.1, color: '#fbfcfe', y: 0.2 },
+    extras: [
+      { t: 'wool', color: '#fbfcfe', n: 8, s: 0.78, head: [[0, 0.98, 0.0, 0.4], [0.36, 0.88, -0.02, 0.28], [-0.36, 0.88, -0.02, 0.28]] },
+      { t: 'blobs', color: '#d9c9a6', on: 'head', mirror: true, list: [
+        { g: 'curl', p: [0.31, 0.32, 0.0], s: 0.2, r: [0, 1.5, 0.1] },
+      ] },
+    ],
+    shinyPalette: { '#fbfcfe': '#dff3ff', '#efe3d0': '#ffe9c4', '#6e7788': '#4f86b8', '#d9c9a6': '#f2b84a', '#ffc2cf': '#ffe08a' },
+  },
+
+  beluga: {   // white whale in a bubble: round melon forehead, little smile, flippers, fluke
+    body: { w: 0.35, h: 0.32, d: 0.52, color: '#eaf3fa', belly: { color: '#fcfeff', s: 0.82, dz: 0.14, dy: -0.1 } },
+    legs: { type: 'none' },
+    head: { r: 0.34, w: 1.0, h: 0.95, d: 1.0, y: 0.42, z: 0.34, color: '#f7fbff' },
+    eyes: { s: 0.19, gap: 0.62, el: 0.02, tall: 1.4 },
+    blush: '#ffb0c4',
+    snout: { type: 'flatbeak', color: '#f7fbff', w: 0.52, h: 0.2, d: 0.3, el: -0.32 },
+    tail: { type: 'fluke', s: 0.34, len: 0.26, rot: 0.25, y: 0.05, z: 0.92, color: '#eaf3fa', lobe: '#d3e4f2' },
+    extras: [
+      { t: 'blobs', color: '#f7fbff', on: 'head', list: [{ g: 'sphM', p: [0, 0.17, 0.3], s: [0.26, 0.14, 0.17] }] },
+      { t: 'smile', color: '#6b7a96', w: 0.1, el: -0.42, az: 0.4, tilt: 0.4 },
+      { t: 'flippers', color: '#d3e4f2', s: 0.36 },
+    ],
+    bubble: { r: 0.5, pitch: 0.1 },
+    shinyPalette: { '#eaf3fa': '#ffe7b0', '#f7fbff': '#fff6d8', '#d3e4f2': '#f6cc7a', '#fcfeff': '#fffaf0' },
+  },
+
+  yak: {   // shaggy dark-brown ox: long fur skirt, wide horns, fluffy forelock, cream muzzle
+    body: { w: 0.5, h: 0.42, d: 0.56, color: '#8a6a5c', lo: true },
+    legs: { type: 'stub', h: 0.1, r: 0.11, color: '#efe2cc', x: 0.55 },
+    head: { r: 0.36, w: 1.06, h: 0.93, d: 0.97, y: 0.62, z: 0.5, color: '#7a5a4e' },
+    eyes: { s: 0.19, gap: 0.6, el: 0.04, tall: 1.4 },
+    blush: '#ff9f9f',
+    ears: { type: 'floppy', s: 0.5, az: 1.2, el: 0.2, color: '#7a5a4e', flare: 0.5, inner: false },
+    snout: { type: 'muzzle', color: '#e6d3bf', w: 0.56, h: 0.4, d: 0.28, el: -0.34, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', len: 0.34, r: 0.05, lift: 0.2, curve: 0.15, color: '#8a6a5c', tuft: '#5e4538', y: 0.45 },
+    extras: [
+      { t: 'horns', color: '#f4e8cc', s: 1.3, az: 1.05, el: 0.3, dir: [0.8, 1, -0.1], segs: 3, bend: 0.45, thick: 1.25, axis: 'x' },
+      { t: 'wool', color: '#5e4538', n: 0, head: [[0, 0.9, 0.08, 0.38], [0.42, 0.72, 0.0, 0.26], [-0.42, 0.72, 0.0, 0.26]] },
+      { t: 'blobs', color: '#6e5044', list: [
+        { g: 'sphL', p: [0.3, 0.22, 0.0], s: [0.15, 0.2, 0.46] }, { g: 'sphL', p: [-0.3, 0.22, 0.0], s: [0.15, 0.2, 0.46] },
+        { g: 'sphL', p: [0, 0.6, 0.1], s: [0.27, 0.15, 0.26] },
+      ] },
+      { t: 'beard', color: '#5e4538', len: 0.45 },
+    ],
+    shinyPalette: { '#8a6a5c': '#9fb4e8', '#7a5a4e': '#8aa0dc', '#6e5044': '#7088cc', '#5e4538': '#5066b4', '#efe2cc': '#fff0c8', '#f4e8cc': '#ffd36b' },
+  },
+
+  arcticwolf: {   // pure-white fluffy wolf: tall pointy ears, cheek + neck ruff, big plume tail
+    body: { w: 0.38, h: 0.33, d: 0.48, color: '#f1f6fb', lo: true, belly: { color: '#fcfeff', s: 0.8, dz: 0.2, lo: true } },
+    legs: { type: 'stub', h: 0.13, r: 0.08, color: '#e6eef6' },
+    head: { r: 0.33, w: 1.08, h: 0.97, d: 1.0, y: 0.68, z: 0.34, color: '#f8fbff' },
+    eyes: { s: 0.19, gap: 0.5, el: 0.13, tall: 1.4 },
+    blush: '#ffa8bc',
+    ears: { type: 'cat', s: 0.78, az: 0.6, el: 0.78, up: 0.9, color: '#e6eef6', inner: '#ffc2cf', static: true },
+    snout: { type: 'muzzle', color: '#fcfeff', w: 0.4, h: 0.3, d: 0.3, el: -0.3, nose: MUZZLE_NOSE, noseS: 0.14, noseY: 0.62, lo: true },
+    tail: { type: 'long', n: 4, len: 0.52, r: 0.085, taper: 0.03, lift: 0.1, curve: 0.25, blob: 1.25, y: 0.3, color: '#f1f6fb', colors: ['#f1f6fb', '#e6eef6', '#f1f6fb', '#d3dff0'] },
+    extras: [
+      { t: 'cheeks', color: '#fcfeff', s: 0.3, lo: true },
+      { t: 'wool', color: '#fcfeff', n: 0, head: [[0, -0.72, 0.3, 0.34], [0.38, -0.62, 0.25, 0.26], [-0.38, -0.62, 0.25, 0.26]] },
+      { t: 'spots', color: '#dbe6f2', g: 'disc', th: 1, list: [{ on: 'body', az: 0.4, el: 1.0, s: 0.7, sx: 1.4 }, { on: 'head', az: 0, el: 1.0, s: 0.16 }] },
+      { t: 'whiskers', color: '#ffffff', len: 0.4, n: 2, az: 0.3, el: -0.22 },
+    ],
+    shinyPalette: { '#f1f6fb': '#e4d4ff', '#f8fbff': '#f1e8ff', '#e6eef6': '#cdb6f4', '#d3dff0': '#b49ae8', '#dbe6f2': '#c4aaf0', '#ffc2cf': '#9fe0f0' },
+  },
+
 };
 
 // ───────── V14: the V13 chibi recipe for every model ─────────
 // The 11 legendaries (V13), the long-legged horse / llama / deer (V14) and the 12 savanna friends (V15) are tuned by hand; every other spec gets the same recipe here, in place:
 // sparkly eyes (larger, a little taller), a slightly bigger head, shorter muzzles / snouts / beaks. Blush stays as each spec set it.
-const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer', 'lizard', 'camel', 'bactrian', 'zebra', 'kangaroo', 'bison', 'crocodile', 'elephant', 'giraffe', 'hippo', 'rhino', 'leopard']);
+const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer', 'lizard', 'camel', 'bactrian', 'zebra', 'kangaroo', 'bison', 'crocodile', 'elephant', 'giraffe', 'hippo', 'rhino', 'leopard', 'penguin', 'seal', 'snowhare', 'husky', 'siberiancat', 'snowram', 'beluga', 'yak', 'arcticwolf']);
 export const CHIBI = { eyeMult: 1.25, eyeMax: 0.21, eyeTall: 1.3, headMult: 1.06, snoutMult: 0.8, beakMult: 0.85 };
 
 function chibify(spec) {

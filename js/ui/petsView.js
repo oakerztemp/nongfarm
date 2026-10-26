@@ -25,6 +25,8 @@ import {
 } from '../breeding.js';
 import { COATS, getCoat, coatOf } from '../data/coats.js';
 import { limitedOf } from '../data/limited.js';
+import { kitchenList, cook } from '../kitchen.js';
+import { favoriteDish } from '../data/recipes.js';
 import { getAccessory, ACC_SLOTS } from '../data/accessories.js';
 import { journalDays } from '../journal.js';
 import { listPhotos, getPhotoUrl, deletePhoto, downloadPhoto, photoFilename } from '../album.js';
@@ -89,6 +91,15 @@ const DIET_TH = {
 };
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
+/** V16: "😋 อิ่มอร่อย" while a dish treat lasts. */
+const treatTag = pet => (pet.treat && pet.treat.until > now() ? '<span class="pet-treat-tag" title="เพิ่งได้กินเมนูพิเศษ">😋 อิ่มอร่อย</span>' : '');
+/** V16: the species' favourite dish, a riddle until this pet has eaten it. */
+function favDishLineHtml(pet) {
+  const fav = favoriteDish(getSpecies(pet.speciesId));
+  if (!fav) return '';
+  return `<div class="b3-station pet-favdish">🍽️ เมนูโปรด: ${pet.favDishKnown ? `${fav.emoji} ${e(fav.nameTh)}` : '??? <small class="muted">(ลองทำอาหารในครัว 🍳 ป้อนดูสิ)</small>'}</div>`;
+}
+
 /** V12: the Limited chip (empty for every other pet). */
 const limitedTag = pet => (limitedOf(pet) ? `${limitedOf(pet).icon} <span class="pet-limited-tag">${limitedOf(pet).badge}</span>` : '');
 
@@ -376,6 +387,7 @@ function renderPetCard(pet, state) {
       ${sp ? rarityBadge(sp) : ''}
       ${pet.shiny ? '<span class="pet-shiny-tag">✨ ไชนี่</span>' : ''}
       ${limitedTag(pet)}
+      ${treatTag(pet)}
       ${traitBadge(sp)}
     </div>
     <div class="pet-status">${statusLabel(pet, state)}</div>
@@ -555,6 +567,37 @@ function openMailbox() {
 }
 
 /** 📔 บันทึก: the diary, newest day first, in a cute handwritten style (CSS only). */
+/** V16 🍳 ครัว: recipes with what the bag holds; cooking re-draws the list in place. */
+function kitchenHtml(state) {
+  const rows = kitchenList(state).map(({ recipe: r, locked, parts, ok }) => {
+    const have = countItem(state, r.id);
+    const chips = parts.map(p => `<span class="kit-part${p.have >= p.need ? ' is-ok' : ''}">${p.item ? p.item.emoji : '❓'} ${p.item ? e(p.item.nameTh) : ''} ${Math.min(p.have, p.need)}/${p.need}</span>`).join('');
+    return `<div class="kit-row${locked ? ' is-locked' : ''}">
+      <span class="kit-emoji" aria-hidden="true">${r.emoji}</span>
+      <div class="kit-info"><b>${e(r.nameTh)}</b>${have ? ` <span class="badge">มี x${have}</span>` : ''}
+        <div class="muted kit-desc">${e(r.desc)} · 😋 อิ่มอร่อย 3 ชม.</div>
+        ${locked ? `<div class="muted">🔒 ปลดล็อกที่เลเวล ${r.unlockLevel}</div>` : `<div class="kit-parts">${chips}</div>`}</div>
+      <button type="button" class="btn btn-sm${ok ? ' btn-primary' : ''}" data-cook="${e(r.id)}"${ok ? '' : ' disabled'}>🍳 ทำ</button>
+    </div>`;
+  }).join('');
+  return `<div class="kitchen"><p class="muted kit-note">เอาผลผลิตจากไร่กับของป่ามาทำเมนูพิเศษ แล้วลากไปป้อนน้องในลาน น้องจะอิ่มอร่อย 😋 และถ้าเจอเมนูโปรดจะดีใจมาก 💕</p>${rows}</div>`;
+}
+
+function openKitchen() {
+  openModal({
+    title: '🍳 ครัวน้องๆ',
+    html: kitchenHtml(getState()),
+    onMount(body) {
+      body.addEventListener('click', ev => {
+        const btn = ev.target.closest('[data-cook]');
+        if (!btn || btn.disabled) return;
+        run(s => cook(s, btn.dataset.cook));
+        body.innerHTML = kitchenHtml(getState());
+      });
+    },
+  });
+}
+
 function openJournal() {
   const days = journalDays(getState());
   const dayLabel = d => { try { return new Date(`${d}T12:00:00`).toLocaleDateString('th-TH', { weekday: 'short', day: 'numeric', month: 'short' }); } catch { return d; } };
@@ -735,8 +778,9 @@ function mailBtnHtml(state) {
   return `<button type="button" class="yard-mail${unread ? ' has-new' : ''}" data-action="open-mail" aria-label="โปสการ์ดจากบ้านใหม่${unread ? ` (ใหม่ ${unread})` : ''}">💌${unread ? `<b class="yard-mail-n">${unread}</b>` : ''}</button>`;
 }
 
-/** 📔 บันทึก and 🖼️ อัลบั้ม chips on the yard header. */
+/** 🍳 ครัว, 📔 บันทึก and 🖼️ อัลบั้ม chips on the yard header. */
 const memoryBtnsHtml = () =>
+  '<button type="button" class="yard-mail yard-memo" data-action="open-kitchen" title="ครัว" aria-label="ครัวทำอาหารให้น้อง">🍳</button>' +
   '<button type="button" class="yard-mail yard-memo" data-action="open-journal" title="บันทึกน้อง" aria-label="บันทึกน้อง">📔</button>' +
   '<button type="button" class="yard-mail yard-memo" data-action="open-album" title="อัลบั้ม" aria-label="อัลบั้มรูป">🖼️</button>';
 
@@ -843,7 +887,7 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
       ${pet.family ? `<div class="b3-reveal-family">💞 ลูกของ ${e(pet.family.a.name)} กับ ${e(pet.family.b.name)}</div>` : ''}
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
   const br = breedStatus(state, pet);
-  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}${familyLineHtml(pet)}
+  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}${familyLineHtml(pet)}${favDishLineHtml(pet)}
       <div class="b3-sheet-line"><span class="pet-status">${statusLabel(pet, state)}</span>
         <span class="pet-hearts" title="ความผูกพัน ${bond.hearts}/5">${heartsHtml(bond.hearts)}</span></div>
       <div class="b3-stats">
@@ -1134,6 +1178,7 @@ function openDetails(petId) {
     <h4 class="pet-detail-h">อาหาร</h4>
     <div class="pet-detail-diet">${dietChips(sp)} <span class="pet-fav">⭐ ของโปรด: ${favoriteLabel(sp)}</span></div>
     ${familyLineHtml(pet)}
+    ${favDishLineHtml(pet)}
     ${(() => { const b = breedStatus(state, pet); return `<div class="pet-detail-breed"><button type="button" class="btn btn-sm${b.ok ? ' btn-primary' : ''}" data-action="breed"${b.ok ? '' : ' disabled'}>💞 หาคู่</button> <small class="muted">${b.text}</small></div>`; })()}
     <h4 class="pet-detail-h">ตั้งชื่อ</h4>
     <div class="pet-rename">
@@ -1232,6 +1277,7 @@ function bindBarn(root) {
     'open-mail': () => openMailbox(),
     'open-festival': () => openFestival(),
     'open-journal': () => openJournal(),
+    'open-kitchen': () => openKitchen(),
     'open-album': () => { openAlbum(); },
     'greet-next': () => {
       if (!listGreet) return;

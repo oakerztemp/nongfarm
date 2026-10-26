@@ -265,7 +265,7 @@ test('models V5: curated shiny palettes (sapphire dragon, golden lion, white-gol
   assert(!has(buildL('dragon'), '#3a7bff'), 'normal dragon is gold');
   assert(has(buildL('lion', { shiny: true }), '#ffd34a'), 'golden lion');
   assert(has(buildL('panda', { shiny: true }), '#d9a437'), 'gold panda patches');
-  assert(has(buildL('unicorn', { shiny: true }), '#cdbcff'), 'galaxy unicorn');
+  assert(has(buildL('unicorn', { shiny: true }), '#e9e0ff'), 'lavender unicorn (V13 chibi model)');
   for (const id of LEGEND_IDS) assert(MODEL_SPECS[id].shinyPalette, id + ' has a curated shinyPalette');
   assertEq([...vertexColors(buildL('dragon', { shiny: true }), true)].join('|'), [...vertexColors(buildL('dragon'), true)].join('|'), 'eyes keep their colour');
   // farm fallback: hue shift is at most 60 degrees

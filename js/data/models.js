@@ -246,18 +246,18 @@ export const MODEL_SPECS = {
     extras: [{ t: 'mane', color: '#3f2c24', n: 5, s: 0.12, endZ: 0.0 }],
   },
 
-  racehorse: {
-    body: { w: 0.34, h: 0.34, d: 0.6, color: '#e6a93f', y: 0.5 },
-    legs: { type: 'long', h: 0.3, r: 0.055, color: '#d99a30', hoof: '#fff4d6', x: 0.6, z: 0.66 },
-    neck: { r: 0.14, top: 0.85, z: 0.5 },
-    head: { r: 0.24, w: 0.88, h: 1.0, d: 1.25, y: 1.04, z: 0.64 },
-    eyes: { s: 0.13, gap: 0.62, el: 0.12 },
-    blush: false,
-    ears: { type: 'cat', s: 0.5, az: 0.5, el: 0.8, up: 0.65, inner: false },
-    snout: { type: 'muzzle', color: '#d99a30', w: 0.56, h: 0.48, d: 0.45, lo: true, el: -0.4, nose: false, nostrils: true },
-    tail: { type: 'fluffy', w: 0.07, h: 0.3, d: 0.08, dy: -0.22, dz: 0.03, rot: 0.2, color: '#fff3c4', y: 0.55 },
+  racehorse: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
+    body: { w: 0.37, h: 0.35, d: 0.5, color: '#f2bb55', y: 0.4 },
+    legs: { type: 'long', h: 0.22, r: 0.075, color: '#f2bb55', hoof: '#fff4d6', x: 0.58, z: 0.62 },
+    neck: { r: 0.15, top: 0.85, z: 0.45 },
+    head: { r: 0.3, w: 0.95, h: 0.95, d: 1.08, y: 0.93, z: 0.6 },
+    eyes: { s: 0.21, gap: 0.55, el: 0.06, tall: 1.35 },
+    blush: '#ff9f8a',
+    ears: { type: 'cat', s: 0.5, az: 0.5, el: 0.8, up: 0.65, inner: '#ffc6a8' },
+    snout: { type: 'muzzle', color: '#fff1cf', w: 0.48, h: 0.34, d: 0.24, lo: true, el: -0.42, nose: false, nostrils: true },
+    tail: { type: 'fluffy', w: 0.1, h: 0.32, d: 0.11, dy: -0.2, dz: 0.03, rot: 0.2, color: '#fff3c4', y: 0.42 },
     extras: [
-      { t: 'mane', color: '#fff3c4', n: 4, s: 0.12, endZ: 0.0 },
+      { t: 'mane', colors: ['#fff3c4', '#ffe08a', '#fff8dc'], n: 6, s: 0.21, endZ: -0.1, lo: true },
       { t: 'spots', color: '#ffffff', list: [{ on: 'head', az: 0, el: 0.45, s: 0.22, sx: 0.5, sy: 2.2 }] },
       { t: 'vest', color: '#d9453a', len: 0.45, dz: 0.0, patch: false },
     ],
@@ -308,32 +308,34 @@ export const MODEL_SPECS = {
   // ───────── legendary / epic showcase (V5) ─────────
   // shinyPalette: curated { '#from': '#to' }; colours not listed stay unchanged when shiny.
 
-  dragon: {
-    body: { w: 0.4, h: 0.37, d: 0.54, color: '#4fbf6a', belly: { color: '#ffe08a', s: 0.82, dz: 0.24 } },
-    legs: { type: 'stub', h: 0.12, r: 0.085, color: '#3fa85a' },
-    head: { r: 0.3, w: 0.96, h: 0.92, d: 1.2, y: 0.88, z: 0.4 },
-    eyes: { s: 0.15, gap: 0.55, el: 0.16 },
-    snout: { type: 'pointy', color: '#74d68a', w: 0.32, h: 0.27, d: 1.05, el: -0.2, nose: '#2f7a46' },
-    tail: { type: 'long', n: 5, len: 0.95, r: 0.085, lift: 0.1, curve: 0.08, taper: 0.12, flame: true, color: '#4fbf6a', y: 0.12 },
+  dragon: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
+    body: { w: 0.4, h: 0.37, d: 0.54, color: '#7fdc9a', belly: { color: '#fff1c4', s: 0.82, dz: 0.24 } },
+    legs: { type: 'stub', h: 0.12, r: 0.085, color: '#6ccb8a' },
+    head: { r: 0.35, w: 0.96, h: 0.92, d: 1.0, y: 0.9, z: 0.4 },
+    eyes: { s: 0.21, gap: 0.55, el: 0.1, tall: 1.35 },
+    blush: '#ff9fb8',
+    snout: { type: 'pointy', color: '#a5ecb7', w: 0.36, h: 0.28, d: 0.55, el: -0.24, nose: '#4fae6c' },
+    tail: { type: 'long', n: 5, len: 0.95, r: 0.085, lift: 0.1, curve: 0.08, taper: 0.12, flame: true, color: '#7fdc9a', y: 0.12 },
     crownLift: 0.08,
     extras: [
-      { t: 'horns', color: '#fff1c4', s: 1.05, az: 0.42, el: 0.85, dir: [0.25, 1, -0.85], segs: 3, bend: 0.3, thick: 0.95 },
-      { t: 'batwings', color: '#ffd98a', bone: '#3fa85a', s: 1.1, x: 0.65, y: 0.7, rest: 0.2, sweep: 0.35 },
-      { t: 'spikes', color: '#ffe08a', n: 6, s: 0.13, from: 0.75, to: -0.85 },
+      { t: 'horns', color: '#fff6dc', s: 0.75, az: 0.42, el: 0.85, dir: [0.25, 1, -0.85], segs: 3, bend: 0.3, thick: 0.95 },
+      { t: 'batwings', color: '#ffd0a8', bone: '#6ccb8a', s: 0.62, x: 0.65, y: 0.7, rest: 0.45, sweep: 0.35 },
+      { t: 'spikes', color: '#ffc6d9', n: 6, s: 0.13, from: 0.75, to: -0.85 },
     ],
     shinyPalette: {
-      '#4fbf6a': '#3a7bff', '#3fa85a': '#2a5fd6', '#ffe08a': '#d8f0ff', '#74d68a': '#7ab4ff', '#ffd98a': '#b8a0ff',
-      '#fff1c4': '#e8fbff', '#2f7a46': '#1e3fa0', '#ff7a1a': '#46c8ff', '#ffd84a': '#d8fbff',
+      '#7fdc9a': '#3a7bff', '#6ccb8a': '#2a5fd6', '#fff1c4': '#d8f0ff', '#a5ecb7': '#7ab4ff', '#ffd0a8': '#b8a0ff',
+      '#fff6dc': '#e8fbff', '#4fae6c': '#1e3fa0', '#ffc6d9': '#d8f0ff', '#ff7a1a': '#46c8ff', '#ffd84a': '#d8fbff',
     },
   },
 
-  dragonhead: {
+  dragonhead: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
     body: { w: 0.34, h: 0.3, d: 0.4, color: '#5fd0a8', belly: { color: '#fff3c0', s: 0.8, dz: 0.24 } },
     legs: { type: 'stub', h: 0.1, r: 0.075, color: '#4fbf98' },
     head: { r: 0.36, w: 1.1, h: 0.96, d: 0.98, y: 0.7, z: 0.2 },
-    eyes: { s: 0.17, gap: 0.55, el: 0.12 },
+    eyes: { s: 0.21, gap: 0.55, el: 0.08, tall: 1.35 },
+    blush: '#ff9fb8',
     ears: { type: 'cat', s: 0.45, az: 0.95, el: 0.5, up: 0.1, flare: 0.5, color: '#4fbf98', inner: '#ffd0e0', static: true },
-    snout: { type: 'pointy', color: '#9be8c8', w: 0.3, h: 0.25, d: 0.5, el: -0.2, nose: '#e878a8' },
+    snout: { type: 'pointy', color: '#9be8c8', w: 0.34, h: 0.26, d: 0.32, el: -0.2, nose: '#e878a8' },
     tail: { type: 'long', n: 3, len: 0.42, r: 0.07, lift: 0.2, curve: 0.2, taper: 0.12, flame: true, color: '#5fd0a8', y: 0.1 },
     extras: [
       { t: 'horns', color: '#fff3c0', s: 0.42, az: 0.4, el: 0.9, dir: [0.2, 1, -0.5], segs: 2, bend: 0.3 },
@@ -346,30 +348,32 @@ export const MODEL_SPECS = {
     },
   },
 
-  mammoth: {
-    body: { w: 0.5, h: 0.46, d: 0.6, color: '#9aa9c4' },
-    legs: { type: 'stub', h: 0.14, r: 0.115, color: '#7e8eab' },
-    head: { r: 0.36, w: 1.05, h: 0.95, d: 0.9, y: 0.82, z: 0.42 },
-    eyes: { s: 0.12, gap: 0.6, el: 0.2 },
-    ears: { type: 'round', s: 0.6, az: 1.1, el: 0.45, up: 0.1, color: '#8294b4', inner: '#d0dcf2', static: true },
-    tail: { type: 'puff', s: 0.1, color: '#7e8eab', y: 0.2 },
+  mammoth: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
+    body: { w: 0.5, h: 0.46, d: 0.6, color: '#b4c2dc' },
+    legs: { type: 'stub', h: 0.14, r: 0.115, color: '#9cabc8' },
+    head: { r: 0.38, w: 1.05, h: 0.95, d: 0.9, y: 0.82, z: 0.42 },
+    eyes: { s: 0.17, gap: 0.55, el: 0.06, tall: 1.35 },
+    blush: '#ffb0c8',
+    ears: { type: 'round', s: 0.6, az: 1.1, el: 0.45, up: 0.1, color: '#a3b2cf', inner: '#ffd6e4', static: true },
+    tail: { type: 'puff', s: 0.1, color: '#9cabc8', y: 0.2 },
     extras: [
-      { t: 'wool', color: '#9aa9c4', n: 9, s: 0.55, head: [[0, 0.95, 0.15, 0.55], [0.4, 0.88, 0.1, 0.4], [-0.4, 0.88, 0.1, 0.4]] },
-      { t: 'trunk', color: '#8294b4', len: 1.9, r: 0.24, el: -0.2, n: 4, bend: 0.5 },
-      { t: 'tusks', color: '#f7efd8', s: 1.4, az: 0.55, el: -0.35, segs: 3, bend: 0.55 },
+      { t: 'wool', color: '#b4c2dc', n: 9, s: 0.55, head: [[0, 0.95, 0.15, 0.55], [0.4, 0.88, 0.1, 0.4], [-0.4, 0.88, 0.1, 0.4]] },
+      { t: 'trunk', color: '#a3b2cf', len: 1.35, r: 0.22, el: -0.2, n: 4, bend: 0.5 },
+      { t: 'tusks', color: '#f7efd8', s: 1.05, az: 0.55, el: -0.35, segs: 3, bend: 0.55 },
     ],
     shinyPalette: {
-      '#9aa9c4': '#a8e6d4', '#7e8eab': '#6cc7b5', '#8294b4': '#7ed3c0', '#d0dcf2': '#e4fff6', '#f7efd8': '#ffe08a',
+      '#b4c2dc': '#a8e6d4', '#9cabc8': '#6cc7b5', '#a3b2cf': '#7ed3c0', '#ffd6e4': '#e4fff6', '#f7efd8': '#ffe08a',
     },
   },
 
-  lion: {
+  lion: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
     body: { w: 0.38, h: 0.33, d: 0.5, color: '#e8a652', belly: { color: '#ffe3b0', s: 0.8, dz: 0.22 } },
     legs: { type: 'stub', h: 0.12, r: 0.09, color: '#e8a652' },
-    head: { r: 0.29, w: 1.05, h: 0.96, d: 0.95, y: 0.7, z: 0.36 },
-    eyes: { s: 0.13, gap: 0.5, el: 0.15 },
+    head: { r: 0.32, w: 1.05, h: 0.96, d: 0.95, y: 0.7, z: 0.36 },
+    eyes: { s: 0.18, gap: 0.5, el: 0.12, tall: 1.35 },
+    blush: '#ff9f9f',
     ears: { type: 'round', s: 0.5, az: 0.75, el: 0.7, up: 0.3, color: '#e8a652', inner: '#ffb3c1', static: true },
-    snout: { type: 'muzzle', color: '#ffe3b0', w: 0.46, h: 0.34, d: 0.38, el: -0.3, nose: '#d9788a', noseS: 0.13, noseY: 0.6, lo: true },
+    snout: { type: 'muzzle', color: '#ffe3b0', w: 0.46, h: 0.34, d: 0.3, el: -0.3, nose: '#d9788a', noseS: 0.13, noseY: 0.6, lo: true },
     tail: { type: 'long', n: 3, len: 0.5, r: 0.045, lift: 0.4, curve: 0.35, color: '#e8a652', tuft: '#a85d24', y: 0.2 },
     extras: [
       { t: 'lionMane', colors: ['#a85d24', '#c9772c'], rings: [[9, 1.08, 0.56, 0], [6, 0.7, 0.5, -0.18]] },
@@ -380,11 +384,12 @@ export const MODEL_SPECS = {
     },
   },
 
-  panda: {
+  panda: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
     body: { w: 0.42, h: 0.38, d: 0.42, color: '#ffffff' },
     legs: { type: 'stub', h: 0.13, r: 0.1, color: '#2f2a30' },
-    head: { r: 0.34, w: 1.08, h: 0.96, d: 0.95, y: 0.72, z: 0.18, color: '#ffffff' },
-    eyes: { s: 0.1, gap: 0.5, el: 0.12 },
+    head: { r: 0.37, w: 1.08, h: 0.96, d: 0.95, y: 0.72, z: 0.18, color: '#ffffff' },
+    eyes: { s: 0.15, gap: 0.5, el: 0.12, tall: 1.3, ring: '#ffffff' },
+    blush: '#ffa8c0',
     ears: { type: 'round', s: 0.6, az: 0.85, el: 0.6, up: 0.25, color: '#2f2a30', inner: false, static: true },
     snout: { type: 'nose', color: '#2f2a30', s: 0.1, el: -0.12 },
     tail: { type: 'puff', s: 0.08, color: '#ffffff', y: 0.1 },
@@ -399,72 +404,73 @@ export const MODEL_SPECS = {
     shinyPalette: { '#2f2a30': '#d9a437', '#ffffff': '#fff6df' },
   },
 
-  unicorn: {
-    body: { w: 0.34, h: 0.34, d: 0.56, color: '#fff7fb', y: 0.58 },
-    legs: { type: 'long', h: 0.36, r: 0.042, color: '#f3e8f8', hoof: '#e9b830', x: 0.6, z: 0.66 },
-    neck: { r: 0.13, top: 0.8, z: 0.52 },
-    head: { r: 0.24, w: 0.88, h: 1.0, d: 1.3, y: 1.2, z: 0.74 },
-    eyes: { s: 0.15, gap: 0.62, el: 0.14 },
-    ears: { type: 'cat', s: 0.62, az: 0.5, el: 0.85, up: 0.8, inner: '#ffc0d8', static: true },
-    snout: { type: 'muzzle', color: '#ffe3ee', w: 0.56, h: 0.46, d: 0.52, el: -0.42, nose: false, nostrils: true, lo: true },
-    tail: { type: 'long', n: 5, len: 0.85, r: 0.07, blob: 1.8, lift: -0.2, curve: 0.18, tip: 2, taper: 0.06, y: 0.45, color: '#fff7fb',
-            colors: ['#ff7aa8', '#ffb35c', '#ffe66d', '#7be0a0', '#6ab7ff', '#b58cff'] },
-    crownLift: 0.1,
+  unicorn: {   // V13 chibi redesign: big head, round body, short sturdy legs, pink mane + tail, rainbow spiral horn, pink hooves
+    body: { w: 0.37, h: 0.35, d: 0.48, color: '#ffffff', y: 0.4 },
+    legs: { type: 'long', h: 0.22, r: 0.078, color: '#ffffff', hoof: '#ff8fd0', x: 0.58, z: 0.62 },
+    neck: { r: 0.15, top: 0.85, z: 0.45 },
+    head: { r: 0.3, w: 0.95, h: 0.95, d: 1.08, y: 0.93, z: 0.6 },
+    eyes: { s: 0.21, gap: 0.55, el: 0.06, tall: 1.35 },
+    blush: '#ff8fcf',
+    ears: { type: 'cat', s: 0.5, az: 0.55, el: 0.82, up: 0.7, inner: '#ffb3df', static: true },
+    snout: { type: 'muzzle', color: '#fff6fc', w: 0.48, h: 0.34, d: 0.24, el: -0.42, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', n: 5, len: 0.7, r: 0.09, blob: 2.1, lift: -0.15, curve: 0.3, tip: 2, taper: 0.08, y: 0.38, color: '#ff9ad8',
+            colors: ['#ff9ad8', '#f26ac8', '#ffc2ea', '#e455c0', '#ffb0e2'] },
+    crownLift: 0.12,
     extras: [
-      { t: 'horn', colors: ['#fff1b8', '#ffc83a'], n: 5, s: 2.0, w: 0.15, el: 1.0, fwd: 0.4 },
-      { t: 'mane', colors: ['#ff7aa8', '#ffb35c', '#ffe66d', '#7be0a0', '#6ab7ff', '#b58cff'], n: 7, s: 0.13, endZ: 0.0, lo: true },
+      { t: 'horn', colors: ['#ff6b8a', '#ffd36b', '#7be0a0', '#4cc9f0', '#8a7dff'], n: 5, s: 2.1, w: 0.2, el: 1.0, fwd: 0.3 },
+      { t: 'mane', colors: ['#ff9ad8', '#f26ac8', '#ffc2ea', '#e455c0', '#ffb0e2'], n: 6, s: 0.21, endZ: -0.1, lo: true },
     ],
-    shinyPalette: {
-      '#fff7fb': '#cdbcff', '#f3e8f8': '#b9a8f0', '#e9b830': '#8ad8ff', '#ffe3ee': '#ead9ff', '#ffc0d8': '#a890ff',
-      '#fff1b8': '#e8f7ff', '#ffc83a': '#8fd0ff',
-      '#ff7aa8': '#7a5cff', '#ffb35c': '#c15cff', '#ffe66d': '#ff7ad9', '#7be0a0': '#4cc9f0', '#6ab7ff': '#3f6bff', '#b58cff': '#8a5cff',
+    shinyPalette: {   // lavender body, sky-blue mane (the rainbow horn stays)
+      '#ffffff': '#e9e0ff', '#fbeefa': '#dcd0ff', '#ff8fd0': '#7ad7ff', '#fff6fc': '#f1ebff', '#ffb3df': '#b8a8ff',
+      '#ff9ad8': '#8fd0ff', '#f26ac8': '#6aa8ff', '#ffc2ea': '#c8ecff', '#e455c0': '#7a7dff', '#ffb0e2': '#a8d8ff',
     },
   },
 
   // ───────── V6: the four remaining legendaries ─────────
 
-  humpback: {
-    body: { w: 0.5, h: 0.46, d: 0.82, color: '#3f5f86', belly: { color: '#e8f1f8', s: 0.8, dz: 0.14, dy: -0.1 } },
+  humpback: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
+    body: { w: 0.5, h: 0.46, d: 0.82, color: '#6b93c8', belly: { color: '#e8f1f8', s: 0.8, dz: 0.14, dy: -0.1 } },
     legs: { type: 'none' },
     head: { r: 0.4, w: 1.0, h: 0.9, d: 1.15, y: 0.5, z: 0.42 },
-    eyes: { s: 0.1, gap: 0.9, el: -0.02 },
-    snout: { type: 'flatbeak', color: '#e8f1f8', w: 0.78, h: 0.2, d: 0.62, el: -0.32 },
-    tail: { type: 'fluke', name: 'fluke', s: 0.52, len: 0.5, rot: 0.25, color: '#3f5f86', lobe: '#2f4a70', y: 0.05, z: 0.92 },
+    eyes: { s: 0.15, gap: 0.82, el: 0.04, tall: 1.3 },
+    blush: '#ffb0c8',
+    snout: { type: 'flatbeak', color: '#e8f1f8', w: 0.78, h: 0.17, d: 0.45, el: -0.32 },
+    tail: { type: 'fluke', name: 'fluke', s: 0.52, len: 0.5, rot: 0.25, color: '#6b93c8', lobe: '#5577aa', y: 0.05, z: 0.92 },
     extras: [
       { t: 'flippers', color: '#e8f1f8', s: 0.5 },
-      { t: 'spikes', color: '#2f4a70', n: 1, s: 0.2, from: -0.35, to: -0.35 },
+      { t: 'spikes', color: '#5577aa', n: 1, s: 0.2, from: -0.35, to: -0.35 },
       { t: 'spout', el: 1.12 },
     ],
-    shinyPalette: { '#3f5f86': '#2fd0c8', '#e8f1f8': '#fff3d6', '#2f4a70': '#1f9e9a' },
+    shinyPalette: { '#6b93c8': '#2fd0c8', '#e8f1f8': '#fff3d6', '#5577aa': '#1f9e9a' },
   },
 
-  eagle: {
-    body: { w: 0.36, h: 0.4, d: 0.34, color: '#7a5230', belly: { color: '#c9a27a', s: 0.8, dz: 0.26 } },
+  eagle: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
+    body: { w: 0.36, h: 0.4, d: 0.34, color: '#9a6a40', belly: { color: '#c9a27a', s: 0.8, dz: 0.26 } },
     legs: { type: 'bird', h: 0.16, r: 0.036, color: '#f2c14a', x: 0.34 },
-    head: { r: 0.27, h: 0.98, z: 0.1, color: '#fff8ea' },
-    eyes: { s: 0.13, gap: 0.62, el: 0.12 },
+    head: { r: 0.3, h: 0.98, z: 0.1, color: '#fff8ea' },
+    eyes: { s: 0.17, gap: 0.62, el: 0.12, tall: 1.35 },
     blush: '#ffb08a',
-    snout: { type: 'beak', color: '#f2b84a', w: 0.22, len: 0.42, el: -0.1 },
+    snout: { type: 'beak', color: '#f2b84a', w: 0.2, len: 0.3, el: -0.1 },
     extras: [
-      { t: 'batwings', color: '#7a5230', colors: ['#5a3b20', '#7a5230', '#5a3b20', '#7a5230', '#f5e6c8'], bone: '#5a3b20', s: 1.0, x: 0.85, y: 0.6, z: 0.0, rest: 0.3, sweep: 0.2, arm: 0.35, armDir: [1, 0.25, -0.1], thin: 0.03,
+      { t: 'batwings', color: '#9a6a40', colors: ['#7a5230', '#9a6a40', '#7a5230', '#9a6a40', '#f5e6c8'], bone: '#7a5230', s: 0.72, x: 0.85, y: 0.6, z: 0.0, rest: 0.3, sweep: 0.2, arm: 0.35, armDir: [1, 0.25, -0.1], thin: 0.03,
         fingers: [[1, 0.2, 0.15, 0.95, 0.36], [1, 0.1, -0.1, 1.0, 0.36], [0.95, 0.0, -0.35, 0.95, 0.36], [0.85, -0.1, -0.6, 0.82, 0.36], [0.7, -0.15, -0.85, 0.65, 0.34]] },
       { t: 'fan', colors: ['#fff8ea', '#ffffff'], n: 5, s: 0.38, spread: 0.55, lean: 0.55, y: 0.25, z: 0.85, wd: 0.2 },
     ],
     shinyPalette: {
-      '#7a5230': '#3a5fd9', '#5a3b20': '#2a3fa0', '#c9a27a': '#8fb8ff', '#fff8ea': '#fff6d0', '#f5e6c8': '#ffe08a',
+      '#9a6a40': '#3a5fd9', '#7a5230': '#2a3fa0', '#c9a27a': '#8fb8ff', '#fff8ea': '#fff6d0', '#f5e6c8': '#ffe08a',
       '#f2c14a': '#ffd34a', '#f2b84a': '#ffb020', '#ffffff': '#fff6d0', '#ffb08a': '#ffd9a0',
     },
   },
 
-  beetle: {
+  beetle: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
     body: { w: 0.4, h: 0.3, d: 0.5, color: '#22222f' },
     legs: { type: 'stub', h: 0.1, r: 0.05, color: '#22222f', x: 0.6, z: 0.5 },
-    head: { r: 0.24, w: 1.0, h: 0.9, d: 0.95, y: 0.38, z: 0.5, color: '#1b6b62' },
-    eyes: { s: 0.17, gap: 0.62, el: 0.1 },
+    head: { r: 0.27, w: 1.0, h: 0.9, d: 0.95, y: 0.44, z: 0.5, color: '#1b6b62' },
+    eyes: { s: 0.21, gap: 0.62, el: 0.14, tall: 1.35 },
     blush: '#ff9ab0',
     extras: [
       { t: 'shells', colors: ['#18b5a0', '#7a4fd1', '#e9b830'], y: 0.78, z: 0.42 },
-      { t: 'horn', colors: ['#22222f', '#4a4a62'], n: 4, s: 2.3, w: 0.26, el: 0.75, fwd: 1.1 },
+      { t: 'horn', colors: ['#22222f', '#4a4a62'], n: 4, s: 1.8, w: 0.24, el: 0.75, fwd: 1.1 },
       { t: 'horns', color: '#22222f', s: 0.8, az: 0.3, el: 0.7, dir: [0.35, 1, 0.5], segs: 2, bend: 0.3, thick: 0.35 },
       { t: 'puffs', color: '#22222f', list: [['body', 0.25, 0.06, 0.0, 0.065], ['body', -0.25, 0.06, 0.0, 0.065]] },
     ],
@@ -473,17 +479,17 @@ export const MODEL_SPECS = {
     },
   },
 
-  polarbear: {
+  polarbear: {   // V13 chibi pass: bigger head + sparkly eyes, blush, shorter snout, softer colours
     body: { w: 0.46, h: 0.4, d: 0.5, color: '#f4f8fc' },
     legs: { type: 'stub', h: 0.13, r: 0.11, color: '#e9f1f8' },
-    head: { r: 0.36, w: 1.05, h: 0.95, d: 1.0, y: 0.8, z: 0.3, color: '#fbfdff' },
-    eyes: { s: 0.1, gap: 0.52, el: 0.12 },
-    blush: '#bfdcff',
+    head: { r: 0.39, w: 1.05, h: 0.95, d: 1.0, y: 0.8, z: 0.3, color: '#fbfdff' },
+    eyes: { s: 0.15, gap: 0.52, el: 0.1, tall: 1.35 },
+    blush: '#ffc6d9',
     ears: { type: 'round', s: 0.42, az: 0.85, el: 0.6, up: 0.25, color: '#f4f8fc', inner: '#c9def0', static: true },
-    snout: { type: 'muzzle', color: '#ffffff', w: 0.42, h: 0.3, d: 0.36, el: -0.28, nose: '#2f2a30', noseS: 0.15, noseY: 0.6, lo: true },
+    snout: { type: 'muzzle', color: '#ffffff', w: 0.42, h: 0.3, d: 0.3, el: -0.28, nose: '#2f2a30', noseS: 0.12, noseY: 0.6, lo: true },
     tail: { type: 'puff', s: 0.09, color: '#f4f8fc', y: 0.2 },
     extras: [{ t: 'collar', color: '#4a9bff', bell: '#bfe3ff' }],
-    shinyPalette: { '#f4f8fc': '#ffe9b0', '#fbfdff': '#fff4d0', '#e9f1f8': '#f6d98a', '#c9def0': '#ffcf8a', '#4a9bff': '#ff7ab8', '#bfe3ff': '#fff1a8', '#bfdcff': '#ffd0a0' },
+    shinyPalette: { '#f4f8fc': '#ffe9b0', '#fbfdff': '#fff4d0', '#e9f1f8': '#f6d98a', '#c9def0': '#ffcf8a', '#4a9bff': '#ff7ab8', '#bfe3ff': '#fff1a8', '#ffc6d9': '#ffd0a0' },
   },
 
   // ───────── V8 §5: forest (ป่าใหญ่) ─────────

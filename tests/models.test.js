@@ -33,10 +33,10 @@ function vertexColors(m, eyes = false) {
 const drawCalls = m => { let n = 0; m.root.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; };
 const build = (id, over = {}) => buildPetModel(THREE, { speciesId: id, stage: 2, shiny: false, ...over }, getSpecies(id));
 
-test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends and the 11 sky friends', () => {
+test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends and the 13 bug friends', () => {
   assertEq(FARM.length, 21, 'farm species count');
   for (const sp of FARM) assert(hasModel(sp.id), 'no model for ' + sp.id);
-  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky', 'unexpected spec for ' + id);
+  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug', 'unexpected spec for ' + id);
   for (const id of LEGEND_IDS) assert(hasModel(id), 'no model for ' + id);
 });
 
@@ -940,6 +940,190 @@ test('sky: 20 sky pets in one yard stay inside the scene budget (sum <= 20 x 7)'
   for (let i = 0; i < 20; i++) { const m = buildL(SKY_IDS[i % SKY_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
   assert(calls <= 20 * 7, 'sky yard of 20 pets: ' + calls + ' calls');
   console.log(`[models] 20 sky pets = ${calls} model draw calls, ${trisSum} tris`);
+});
+
+// ── V11 §5: the 13 bug friends ──────────────────────────────────────────────
+const BUG = {
+  bee: 'common', butterfly: 'common', ladybug: 'common', ant: 'common', caterpillar: 'common', earthworm: 'common', snail: 'common',
+  cricket: 'uncommon', fly: 'uncommon', cockroach: 'rare', mosquito: 'rare', spider: 'epic', scorpion: 'epic',
+};
+const BUG_IDS = Object.keys(BUG);
+const bugBudget = id => (BUG[id] === 'common' || BUG[id] === 'uncommon' ? { tris: 1000, calls: 6 } : { tris: 1600, calls: 7 });
+const centre = o => { o.updateWorldMatrix(true, true); return new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3()); };
+/** World-space shift of a pivot's bounding-box centre when its rotation[axis] += v (the sign claims B relies on). */
+const shift = (id, part, axis, v) => { const m = buildL(id); const p = m.parts[part]; const a = centre(p); p.rotation[axis] += v; return centre(p).sub(a); };
+
+test('bugs: every habitat-bug species except the beetle has a spec; the rarity table matches species.js', () => {
+  const bug = SPECIES.filter(s => s.habitat === 'bug' && s.id !== 'beetle');
+  assertEq(bug.map(s => s.id).sort(), BUG_IDS.slice().sort(), 'the 13 bug friends');
+  for (const id of BUG_IDS) { assert(hasModel(id), 'no model for ' + id); assertEq(getSpecies(id).rarity, BUG[id], id + ' rarity'); }
+  assert(hasModel('beetle'), 'the beetle was already there');
+});
+
+test('bugs: 13 models build; budgets (common/uncommon <= 1.0k tris + 6 calls, rare/epic <= 1.6k + 7), finite, standing on the ground', () => {
+  const rows = [];
+  for (const id of BUG_IDS) {
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assertEq(m.kind, 'model', id);
+      assert(m.root.isGroup && m.body.isGroup && m.head && m.head.isGroup && m.body.parent === m.root, id + ' groups');
+      const t = tris(m.root), calls = drawCalls(m) - (stage === 3 ? 1 : 0);
+      const b = bugBudget(id);
+      assert(t <= b.tris, `${id} has ${t} triangles (budget ${b.tris})`);
+      assert(calls <= b.calls, `${id} uses ${calls} draw calls (budget ${b.calls})`);
+      assert(Number.isFinite(m.height) && m.height > 0.3 && m.height < 2.4, `${id} height ${m.height}`);
+      assert(Number.isFinite(m.radius) && m.radius > 0.2 && m.radius < 1.4, `${id} radius ${m.radius}`);
+      m.root.updateMatrixWorld(true);
+      let bad = 0;
+      m.root.traverse(o => {
+        for (const v of [o.position, o.scale, o.quaternion]) for (const k of ['x', 'y', 'z']) if (!Number.isFinite(v[k])) bad++;
+        if (o.isMesh) for (const x of o.matrixWorld.elements) if (!Number.isFinite(x)) bad++;
+      });
+      assertEq(bad, 0, id + ' NaN transforms');
+      const box = new THREE.Box3().setFromObject(m.root);
+      assert(Math.abs(box.min.y) < 0.05, `${id} stage ${stage}: feet at y=${box.min.y}`);
+      if (stage === 2) rows.push(`${id} ${t}t/${calls}c`);
+    }
+    assertEq(buildL(id).legendary, false, id + ' is not legendary');
+  }
+  console.log('[models] bug: ' + rows.join(', '));
+});
+
+test('bugs: the shared toon material + one eye material only; merged geometry cached per species and shiny', () => {
+  const mats = new Set();
+  for (const id of BUG_IDS) {
+    materials(buildL(id).root, mats);
+    const a = buildL(id), b = buildL(id, { stage: 0 });
+    for (const n of ['bodyMesh', 'headMesh']) assert(geoOf(a, n) === geoOf(b, n), `${id} ${n} not shared`);
+    assert(geoOf(buildL(id, { shiny: true }), 'bodyMesh') !== geoOf(a, 'bodyMesh'), id + ' shiny has its own buffers');
+    assertEq(tris(buildL(id).root), tris(buildL(id, { shiny: true }).root), id + ' shiny keeps the geometry');
+  }
+  assertEq([...mats].filter(x => x.isMeshToonMaterial).length, 1, 'one shared toon material for all 13');
+  assertEq([...mats].filter(x => !x.isMeshToonMaterial).length, 1, 'plus the eye material');
+});
+
+test('bugs: standard parts exist per pet and can be driven (eyes, head, anchor; wings / shells, tail, antennae, claws, spider legs, snail shell as documented)', () => {
+  const WINGS = ['bee', 'butterfly', 'ladybug', 'cricket', 'fly', 'cockroach', 'mosquito'];
+  const TAIL = ['bee', 'caterpillar', 'earthworm', 'scorpion'];
+  const EARS = ['ant', 'caterpillar', 'snail', 'cockroach', 'mosquito', 'scorpion'];
+  for (const id of BUG_IDS) {
+    const m = buildL(id);
+    assertEq(m.parts.eyes.length, 1, id + ' merged eyes');
+    assert(m.parts.eyes[0].parent === m.head && m.anchor && m.anchor.parent === m.head && m.anchor.position.y > 0.1, id + ' eyes + anchor on the head');
+    assertEq(!!m.parts.wingL && !!m.parts.wingR, WINGS.includes(id), id + ' wing pivots');
+    assertEq(!!m.parts.tail, TAIL.includes(id), id + ' tail pivot');
+    assertEq(!!m.parts.earL && !!m.parts.earR, EARS.includes(id), id + ' earL / earR pivots');
+    assertEq(!!m.parts.shell, id === 'snail', id + ' shell pivot');
+    assertEq(!!m.parts.legL && !!m.parts.legR, id === 'spider', id + ' leg pivots');
+    for (const k of ['wingL', 'wingR', 'tail', 'earL', 'earR', 'shell', 'legL', 'legR']) {
+      const p = m.parts[k];
+      if (!p) continue;
+      assert(p.children.some(c => c.isMesh), `${id}.${k} has geometry`);
+      assert(buildL(id).parts[k] !== p, `${id}.${k} is per pet (clone)`);
+    }
+    if (m.parts.wingL) assert(m.parts.wingL.position.x > 0 && m.parts.wingR.position.x < 0, id + ' wings: L is +x, R is -x');
+    m.head.rotation.y = 0.5; m.parts.eyes[0].scale.y = 0.1;
+    for (const k of ['wingL', 'tail', 'earL', 'shell', 'legL']) if (m.parts[k]) m.parts[k].rotation.x += 0.3;
+    m.root.updateMatrixWorld(true);
+    assert(Number.isFinite(new THREE.Box3().setFromObject(m.root).max.y), id + ' finite when driven');
+    assertEq([m.parts.fluke, m.parts.bubble, m.parts.trunk, m.parts.tailTip], [null, null, null, null], id + ' has no water / mammoth parts');
+  }
+});
+
+test('bugs: the rotation signs written in the models.js comment are true (wings, shells, tail, antennae, claws, spider legs, snail shell)', () => {
+  for (const id of ['bee', 'butterfly', 'ladybug', 'cricket', 'fly', 'cockroach', 'mosquito']) {
+    const l = shift(id, 'wingL', 'z', 0.4), r = shift(id, 'wingR', 'z', -0.4);
+    assert(l.y > 0.01 && r.y > 0.01, `${id}: wingL.z += a and wingR.z -= a raise the tips (${l.y.toFixed(3)}, ${r.y.toFixed(3)})`);
+    assert(shift(id, 'wingL', 'z', -0.4).y < 0.005, id + ': the opposite sign lowers the wing');
+  }
+  assert(shift('bee', 'tail', 'x', 0.4).y > 0.01, 'bee tail.x += raises the stinger');
+  assert(shift('bee', 'tail', 'y', 0.4).x < -0.01, 'bee tail.y += swings the tip to the right (-x)');
+  assert(shift('caterpillar', 'tail', 'y', 0.4).x < -0.01 && shift('earthworm', 'tail', 'y', 0.4).x < -0.01, 'worm tails: +y swings to -x');
+  assert(shift('scorpion', 'tail', 'x', 0.4).z > 0.05, 'scorpion tail.x += curls it forward');
+  assert(shift('scorpion', 'tail', 'y', 0.4).x > 0.05, 'scorpion tail.y += swings the stinger to +x');
+  for (const id of ['ant', 'caterpillar', 'cockroach', 'mosquito', 'snail']) {
+    const f = shift(id, 'earL', 'x', 0.4);
+    assert(f.z > 0.01 && f.y < 0, `${id}: earL.x += tips the antenna forward and down`);
+    assert(shift(id, 'earL', 'z', 0.4).x < -0.01 && shift(id, 'earR', 'z', -0.4).x > 0.01, `${id}: earL.z += / earR.z -= pull the antennae together`);
+  }
+  assert(shift('scorpion', 'earL', 'x', 0.4).y < -0.05 && shift('scorpion', 'earL', 'x', -0.4).y > 0.05, 'scorpion claw: x += lowers, x -= lifts');
+  assert(shift('scorpion', 'earL', 'z', 0.4).x < -0.05, 'scorpion claw: earL.z += swings inward');
+  assert(shift('spider', 'legL', 'z', 0.3).y > 0.05 && shift('spider', 'legR', 'z', -0.3).y > 0.05, 'spider legs: legL.z += / legR.z -= lift the feet');
+  assert(shift('spider', 'legL', 'x', 0.5).z < 0, 'spider legs: x += swings the feet backward');
+  assert(shift('snail', 'shell', 'x', 0.3).z > 0, 'snail shell: x += tips it forward');
+});
+
+test('bugs: signature parts are really there (stripes, spotted shells, ant antennae, snail swirl, spider legs, scorpion claws + gem, friendly cockroach / mosquito)', () => {
+  const size = (m, n) => bboxOf(m, n).getSize(new THREE.Vector3());
+  assert(hasColor(buildL('bee'), 'bodyMesh', '#5a3d2b') && hasColor(buildL('bee'), 'wingLMesh', '#e4f4ff'), 'bee: dark stripes + pale wings');
+  assert(['#ff9ad5', '#ffc4ea', '#fff2a8'].every(c => hasColor(buildL('butterfly'), 'wingLMesh', c)) && size(buildL('butterfly'), 'wingLMesh').x > 0.4, 'butterfly: big spotted wings');
+  assert(hasColor(buildL('ladybug'), 'wingLMesh', '#f0453a') && hasColor(buildL('ladybug'), 'wingLMesh', '#2a2430'), 'ladybug: red shell with black spots');
+  assert(size(buildL('ant'), 'earLMesh').length() > 0.2, 'ant: long elbowed antennae');
+  assert(['#ffbd7a', '#fff0c8', '#ff9a5c'].every(c => hasColor(buildL('snail'), 'shellMesh', c)), 'snail: swirled shell');
+  assert(size(buildL('spider'), 'legLMesh').x > 0.3 && geoOf(buildL('spider'), 'legLMesh').attributes.position.count > 100, 'spider: four legs per side');
+  assert(hasColor(buildL('scorpion'), 'tailMesh', '#7ae8ff') && size(buildL('scorpion'), 'tailMesh').y > 0.4, 'scorpion: a tall tail with a diamond');
+  for (const id of ['cockroach', 'mosquito']) {
+    const spec = MODEL_SPECS[id];
+    assert(spec.blush !== false && spec.eyes.s >= 0.2 && spec.extras.some(e => e.t === 'smile'), id + ': big eyes, blush and a smile');
+    const o = { h: 0, s: 0, l: 0 };
+    new THREE.Color(spec.body.color).getHSL(o, THREE.SRGBColorSpace);
+    assert(o.l > 0.6, `${id}: pastel body (lightness ${o.l.toFixed(2)})`);
+  }
+});
+
+test('bugs: shiny = curated palettes (each palette really hits the model; eyes never shift; no hue-rotated fallback)', () => {
+  for (const id of BUG_IDS) {
+    const spec = MODEL_SPECS[id], pal = spec.shinyPalette;
+    assert(pal && Object.keys(pal).length >= 3, id + ' has a curated palette');
+    for (const k of Object.keys(pal)) assert(k === k.toLowerCase() && /^#[0-9a-f]{6}$/.test(k) && /^#[0-9a-f]{6}$/.test(pal[k]), `${id}: palette key ${k}`);
+    const normal = buildL(id), shiny = buildL(id, { shiny: true });
+    assertEq([shiny.shiny, shiny.shinyStyle], [true, 'palette'], id + ' flag');
+    const cn = vertexColors(normal), cs = vertexColors(shiny);
+    const hit = Object.keys(pal).filter(k => cn.has(hexKey(k)));
+    assert(hit.length >= 3, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
+    for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
+    assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
+    const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
+    for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
+  }
+});
+
+test('bugs: coats recolour every bug through the shared palette (no extra calls, geometry or materials)', () => {
+  for (const id of BUG_IDS) {
+    const base = buildL(id), baseCols = vertexColors(base);
+    for (const coat of ['mint', 'midnight']) {
+      const m = buildL(id, { coat });
+      assert([...vertexColors(m)].filter(c => !baseCols.has(c)).length >= 3, `${id} ${coat}: body colours changed`);
+      assertEq(tris(m.root), tris(base.root), `${id} ${coat}: same geometry`);
+      assertEq(drawCalls(m), drawCalls(base), `${id} ${coat}: same draw calls`);
+      assert(sameSet(vertexColors(m, true), vertexColors(base, true)), `${id} ${coat}: eye colours must not change`);
+    }
+  }
+});
+
+test('bugs: stage scale + crown still work (master crown rides the head); masters stay inside the call budget + 1', () => {
+  for (const id of BUG_IDS) {
+    for (let st = 0; st < 4; st++) {
+      const m = buildL(id, { stage: st });
+      assertEq(m.root.scale.x, STAGE_SCALE[st], `${id} scale at stage ${st}`);
+      assertEq(!!m.parts.crown, st === 3, `${id} crown at stage ${st}`);
+    }
+    const master = buildL(id, { stage: 3 });
+    assert(master.parts.crown.parent === master.head, id + ' crown on the head');
+    assert(drawCalls(master) <= bugBudget(id).calls + 1, `${id} master calls ${drawCalls(master)}`);
+  }
+});
+
+test('bugs: 20 mixed pets at XL stay inside the scene budget (<= 240 calls)', () => {
+  const MIX = [...BUG_IDS, 'hamster', 'cow', 'sparrow', 'owl', 'fox', 'turtle', 'dragon'];
+  let calls = 0, trisSum = 0, bugCalls = 0;
+  for (let i = 0; i < 20; i++) { const m = buildL(MIX[i % MIX.length], { stage: 3 }); calls += drawCalls(m); trisSum += tris(m.root); }
+  for (let i = 0; i < 20; i++) bugCalls += drawCalls(buildL(BUG_IDS[i % BUG_IDS.length], { stage: 3 }));
+  assert(calls <= 240, '20 mixed XL pets: ' + calls + ' calls');
+  assert(bugCalls <= 20 * 8, '20 bug masters: ' + bugCalls + ' calls');
+  console.log(`[models] 20 mixed XL pets = ${calls} model draw calls, ${trisSum} tris; 20 XL bugs = ${bugCalls} calls`);
 });
 
 // ── V10 §2: coats (3D) ──────────────────────────────────────────────────────

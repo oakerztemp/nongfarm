@@ -1038,7 +1038,7 @@ test('migrate v4 -> v5: yard gifts split onto the pets at home, nothing lost', a
   const T = 1790100000000;
   const s = await withFakeNow(T, () => migrate(raw));
   assertEq(s.version, STATE_VERSION, 'version');
-  assertEq(STATE_VERSION, 8, 'STATE_VERSION');
+  assertEq(STATE_VERSION, 9, 'STATE_VERSION');
   // pet5 (cow, sleeping) and pet7 (pig, idle) are the only pets at home; pet5 is first -> gets the remainder + the coin fraction
   assertEq(Object.keys(s.yard.byPet).sort(), ['pet5', 'pet7'], 'only pets at home receive gifts');
   const a = s.yard.byPet.pet5, b = s.yard.byPet.pet7;
@@ -1363,7 +1363,7 @@ test('adopting a v2-shaped cache from another tab goes through migrate()', () =>
 test('migrate v5 -> v6: nothing lost, new fields default, nursery pets get favKnown too', async () => {
   const raw = await loadFixture('save_v5_midgame');
   const s = await withFakeNow(1790200000000, () => migrate(raw));
-  assertEq([s.version, STATE_VERSION], [8, 8]);
+  assertEq([s.version, STATE_VERSION], [9, 9]);
   assertEq([s.friends, s.lastGreetAt], [{}, 0]);
   assert(s.pets.length === 7 && s.pets.every(p => p.favKnown === false), 'every pet has favKnown');
   assertEq(s.nursery.length, 1);
@@ -1446,7 +1446,7 @@ test('v7 sanitising: journal cleaned, merged by day, capped at 14 days x 6 lines
   assertEq(migrate(JSON.parse(JSON.stringify(s))).journal, s.journal, 'idempotent');
 });
 
-test('save size: a maximal v8 save (20 bred pets, full wardrobe, 14 days of diary, 120 friend pairs, 2 family eggs, 3 bred incubator slots) is < 120 KB', () => {
+test('save size: a maximal v9 save (20 bred pets, full wardrobe, 14 days of diary, 120 friend pairs, 2 family eggs, 3 bred incubator slots, full festival state) is < 120 KB', () => {
   const s = createNewState();
   s.pets = Array.from({ length: 20 }, (_, i) => ({
     id: `pet${String(i).padStart(4, '0')}abcd`, speciesId: 'hamster', nickname: 'ชื่อน้องยาวๆ ' + i, shiny: i % 2 === 0, personality: 'cheerful', stage: 3, xp: 1234.5678, status: 'idle',
@@ -1460,13 +1460,19 @@ test('save size: a maximal v8 save (20 bred pets, full wardrobe, 14 days of diar
   s.incubator = [1, 2, 3].map(n => ({ eggId: 'egg_family', family: famEgg(n), startAt: 1790000000000, readyAt: 1790000900000 }));
   s.incubatorCapacity = 3;
   s.coatsSeen = { base: true, cream: true, cocoa: true, mint: true, rose: true, midnight: true };
+  s.festival = {
+    id: 'fest_loykrathong', key: 'fest_loykrathong@2026-11-17', lanterns: 999, krathongs: 5, krathong: { day: '2026-11-24', n: 5 },
+    tasks: [{ id: 'feed_fav', kind: 'feed', target: 5, progress: 5, claimed: true }, { id: 'order', kind: 'order', target: 3, progress: 3, claimed: true }, { id: 'pat', kind: 'pat', target: 10, progress: 10, claimed: true }],
+    loginDays: Array.from({ length: 7 }, (_, i) => `2026-11-${17 + i}`),
+    owned: { acc_strawhat: true, acc_leafcrown: true, acc_antenna: true, acc_floatie: true, acc_kitescarf: true, acc_beads: true, acc_beanie: true, acc_wizardhat: true, acc_chada: true, acc_sabai: true, decor_lanna_lamp: true, decor_big_krathong: true },
+  };
   s.wardrobe = { acc_bow: 99, acc_cap: 99, acc_widehat: 99, acc_tophat: 99, acc_crown: 99, acc_grad: 99, acc_bell: 99, acc_scarf: 99, acc_lei: 99, acc_butterfly: 99 };
   s.journal = Array.from({ length: 14 }, (_, d) => ({ day: `2026-10-${String(d + 1).padStart(2, '0')}`, lines: Array.from({ length: 6 }, (__, j) => ({ emoji: '🎂', text: 'น้องหมูอ้วนครบ 12 เดือนแล้ว วันนี้วันเกิดของน้อง ' + j, petId: `pet${String(j).padStart(4, '0')}abcd` })) }));
   for (let i = 0, k = 0; i < 20 && k < 120; i++) for (let j = i + 1; j < 20 && k < 120; j++, k++) s.friends[`pet${String(i).padStart(4, '0')}abcd|pet${String(j).padStart(4, '0')}abcd`] = 12.123456789;
   s.postcards = Array.from({ length: POSTCARDS_MAX }, (_, i) => ({ id: `pc${i}`, petName: 'น้องหมู', speciesId: 'pig', text: 'สวัสดีจากบ้านใหม่ ที่นี่สบายมากเลย ขอบคุณที่เลี้ยงเรานะ', at: 1790000000000 + i, read: false }));
   s.friendsMet = Array.from({ length: FRIENDS_MET_MAX }, (_, i) => `pet${String(i % 20).padStart(4, '0')}abcd|pet${String((i + 1) % 20).padStart(4, '0')}abce`);
   const kb = JSON.stringify(s).length / 1024;
-  assert(kb < 120, `maximal v8 save is ${kb.toFixed(1)} KB`);
+  assert(kb < 120, `maximal v9 save is ${kb.toFixed(1)} KB`);
   const back = migrate(JSON.parse(JSON.stringify(s)));
   assert(JSON.stringify(back).length / 1024 < 120, 'still small after migrate');
   assertEq([back.familyEggs.length, back.incubator.filter(x => x.family).length, back.pets[0].family.gen], [2, 3, 3], 'bred data survives the sanitiser');

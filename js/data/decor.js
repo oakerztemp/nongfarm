@@ -11,6 +11,16 @@ export const DECOR = [
   { id: 'sign',   emoji: '🪧', nameTh: 'ป้ายชื่อฟาร์ม',  use: 'sign', useTh: 'โชว์ชื่อฟาร์ม',    coins: 80,  items: { forage_wood: 6, forage_stone: 4 } },
 ];
 
+// V11 festival decors (CONTRACT_V11 §2): bought only with lanterns in the ลอยกระทง shop (`lanterns`), kept in state.inventoryDecor, placed like any decor, never sold.
+// A separate list: DECOR stays the coin / material build menu the UI walks, so these never appear there; getDecor sees both. `items` holds an item that does not exist (FESTIVAL_ONLY), so buildDecor() / decorBuildStatus() always report it missing: they can never be built for coins or materials.
+// `use` names an effect nobody reads as a pet behaviour (DECOR_USE in petBehaviour keys on the id), so they are pure scenery.
+export const FESTIVAL_ONLY = 'festival_lantern_only';
+export const FESTIVAL_DECOR = [
+  { id: 'decor_lanna_lamp',   emoji: '🏮', nameTh: 'โคมล้านนา', use: 'glow',  useTh: 'ส่องสว่างยามค่ำ', coins: 0, items: { [FESTIVAL_ONLY]: 1 }, festival: 'fest_loykrathong', lanterns: 10 },
+  { id: 'decor_big_krathong', emoji: '🪷', nameTh: 'กระทงยักษ์', use: 'float', useTh: 'ตั้งโชว์สวยๆ',   coins: 0, items: { [FESTIVAL_ONLY]: 1 }, festival: 'fest_loykrathong', lanterns: 10 },
+];
+export const isFestivalDecor = id => FESTIVAL_DECOR.some(d => d.id === id);
+
 export function getDecor(id) {
-  return DECOR.find(d => d.id === id) || null;
+  return DECOR.find(d => d.id === id) || FESTIVAL_DECOR.find(d => d.id === id) || null;
 }

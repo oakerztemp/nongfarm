@@ -30,8 +30,10 @@ import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, b
   configureYard, yardProps, yardTierOf, DECOR_USE,
   favoriteSpot, createStroke, handStroke, tickStroke, strokeMelt, finishActorStroke, clearStrokeState, pickGiftLabels, GIFT_LABEL_MAX,
   pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots,
-  locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot, tapReaction } from '../petBehaviour.js';
-import { createWorld, mergeStaticParts } from '../world3d/engine.js';
+  locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot, tapReaction,
+  isNightAt, HOVER_HEIGHT, antLineSpot, THREAD_ANCHOR_Y } from '../petBehaviour.js';
+import { createWorld, mergeStaticParts, WILD } from '../world3d/engine.js';
+import { activeFestival, LOY_ID } from '../festival.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
 
@@ -52,7 +54,7 @@ const HABITAT_AURA = {
   mystic: '#b388ff', sky: '#ffd54f', water: '#4dd0e1', savanna: '#ffb300',
   forest: '#66bb6a', polar: '#b3e5fc', bug: '#2ecc71', farm: '#ffca28',
 };
-const FLY_TYPES = new Set(['flyCircle', 'soar', 'batLoop']);
+const FLY_TYPES = new Set(['flyCircle', 'soar', 'batLoop', 'flutterLoop']);
 const RUN_TYPES = new Set(['gallop', 'sprint']);
 const TRAIL_TYPES = new Set(['flyCircle', 'gallop']);
 const smooth = u => { const x = Math.min(1, Math.max(0, u)); return x * x * (3 - 2 * x); };
@@ -67,6 +69,8 @@ const ease = {
 };
 const dist2 = (ax, az, bx, bz) => Math.hypot(ax - bx, az - bz);
 const isBusyStatus = s => s === 'working' || s === 'expedition';
+/** Bug actions that walk, fly or hang somewhere: a tapped pet drops them and stands still (CONTRACT_V11 §5). */
+const BUG_MOVES = new Set(['visit', 'antLine', 'dangle', 'flutterLoop', 'burrow', 'krathongWalk']);
 
 export function mountBarn3d(host, ctx) {
   host.innerHTML =
@@ -313,7 +317,7 @@ export function mountBarn3d(host, ctx) {
   world.scene.add(ring);
 
   // ── pets ───────────────────────────────────────────────────────────────
-  const modelSig = pet => `${pet.speciesId}|${pet.stage}|${pet.shiny ? 1 : 0}`;
+  const modelSig = pet => `${pet.speciesId}|${pet.stage}|${pet.shiny ? 1 : 0}|${pet.coat || 'base'}`;
 
   function buildModel(pet) {
     const sp = getSpecies(pet.speciesId);
@@ -475,7 +479,7 @@ export function mountBarn3d(host, ctx) {
       if (o !== A && o.act.type === 'party' && !o.act.host) joiners++;
       if (o === A) continue;
       const tg = (o.act.type === 'wander' || o.act.type === 'approach' || o.act.type === 'walkTo') ? o.act.target : null;
-      others.push({ id: o.id, x: o.x, z: o.z, tx: tg ? tg.x : undefined, tz: tg ? tg.z : undefined });
+      others.push({ id: o.id, x: o.x, z: o.z, tx: tg ? tg.x : undefined, tz: tg ? tg.z : undefined, sp: o.pet.speciesId });
     }
     const napRatio = awake > 0 ? napping / awake : 0;
     const fr = friendOf(A);
@@ -500,7 +504,7 @@ export function mountBarn3d(host, ctx) {
     const pet = A.pet;
     const P = A.pose || (A.pose = {});
     P.hop = 0; P.sy = 1; P.sx = 1; P.roll = 0; P.pitch = 0; P.yaw = 0; P.shake = 0;
-    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0; P.shell = 0; P.fluke = 0; P.lift = 0; P.tailUp = 0; P.leg = 0;
+    P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0; P.shell = 0; P.fluke = 0; P.lift = 0; P.tailUp = 0; P.leg = 0; P.tuck = 0; P.tailCurl = 0;
     if (A.hold > 0 && A.hold < SELECT_HOLD / 2) A.hold = Math.max(0, A.hold - dt);
     if (A.hidden) { if (A.stroke || A.strokeMelt) clearStrokeState(A); return P; } // a newborn waiting for its hatch ceremony
 
@@ -521,14 +525,17 @@ export function mountBarn3d(host, ctx) {
     const act = A.act;
     const sleeping = pet.status === 'sleeping';
     const held = A.hold > 0 && !A.greeting && act.type !== 'eat' && act.type !== 'no' && act.type !== 'hop' && act.type !== 'play' && act.type !== 'bathe';
-    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type) || act.type === 'decor' || act.type === 'party' || act.type === 'puddle' || act.type === 'shelter')) begin(A, { type: 'idle', dur: 1 });
+    if (held && (act.type === 'wander' || act.type === 'approach' || act.type === 'walkTo' || FLY_TYPES.has(act.type) || RUN_TYPES.has(act.type) || act.type === 'decor' || act.type === 'party' || act.type === 'puddle' || act.type === 'shelter' || BUG_MOVES.has(act.type))) begin(A, { type: 'idle', dur: 1 });
     if (!TRAIL_TYPES.has(A.act.type) && A.trail) stopTrail(A);
-    A.scripted = FLY_TYPES.has(A.act.type) || RUN_TYPES.has(A.act.type);
+    A.scripted = FLY_TYPES.has(A.act.type) || RUN_TYPES.has(A.act.type) || A.loco.kind === 'hover';   // flyers pass over the crowd
 
     let curlTarget = sleeping || (A.act.type === 'sleep' && A.act.nap) || (A.act.type === 'decor' && A.act.use === 'nap' && A.act.arrived) || (A.act.type === 'buddy' && A.act.mode === 'nap' && A.act.arrived) ? 1 : 0;
     if (!sleeping && pet.sick) curlTarget = 0;
     // timers, walking and "action finished -> decide()" live in petBehaviour.advanceActor (unit-tested)
-    A.speedMod = A.loco.kind === 'hop' ? Math.max(0.08, 3 * Math.max(0, Math.sin(A.phase * 0.7))) : 1;   // a frog moves in hops
+    const lk = A.loco.kind;
+    A.speedMod = lk === 'hop' ? Math.max(0.08, 3 * Math.max(0, Math.sin(A.phase * 0.7)))                 // a frog moves in hops
+      : lk === 'jump' ? Math.max(0.05, 3.4 * Math.max(0, Math.sin(A.phase * 0.8)))                      // a cricket in long jumps
+        : lk === 'inch' ? 0.12 + 1.9 * Math.max(0, Math.sin(A.phase * 0.9)) : 1;                        // a caterpillar inches along
     const moving = stroking ? false : advanceActor(A, dt, decide).moving;
 
     if (stroking) strokePose(A, P, t, dt);
@@ -540,6 +547,14 @@ export function mountBarn3d(host, ctx) {
       case 'batLoop': batLoopPose(A, P, t); break;
       case 'headTurn': headTurnPose(A, P, t); break;
       case 'fan': fanPose(A, P, t, dt); break;
+      case 'flutterLoop': driftPose(A, P, t); break;
+      case 'antLine': antLinePose(A, P, t, dt); break;
+      case 'burrow': burrowPose(A, P, t, dt); break;
+      case 'hide': hidePose(A, P, t, dt); break;
+      case 'chirp': chirpPose(A, P, t, dt); break;
+      case 'dangle': danglePose(A, P, t, dt); break;
+      case 'tailCurl': tailCurlPose(A, P, t, dt); break;
+      case 'krathongWalk': krathongPose(A, P, t, dt); break;
       case 'gallop': case 'sprint': runPose(A, P, t, dt); break;
       case 'breach': breachPose(A, P); break;
       case 'roar': roarPose(A, P, t); break;
@@ -665,6 +680,7 @@ export function mountBarn3d(host, ctx) {
       }
     }
     skyLoco(A, P, t, dt, moving);
+    bugPose(A, P, t, dt, moving);
     // part flavour (only has an effect on models that own the part)
     P.tailTip = moving ? Math.sin(A.phase * 2.2) * 0.55 : Math.sin(t * 1.6 + A.seed) * 0.16;
     if (A.act.type === 'idle' || A.act.type === 'lookAtCamera') P.trunk = Math.sin(t * 0.9 + A.seed) * 0.12;
@@ -707,6 +723,182 @@ export function mountBarn3d(host, ctx) {
       P.leg = u * 1.1; P.roll += u * (0.05 + Math.sin(t * 0.8 + A.seed) * 0.02);
       P.hop += u * 0.03; P.hYaw += u * Math.sin(t * 0.6 + A.seed) * 0.25;
     }
+  }
+
+  // ── น้องแมลง (CONTRACT_V11 §5): flyers hover, the rest crawl / march / inch / wriggle / jump in their own ways ─────────
+  const HOVER_FLAP = { bee: 56, butterfly: 13, fly: 74, mosquito: 88 };
+  const HOVER_AMP = { bee: 0.7, butterfly: 0.95, fly: 0.7, mosquito: 0.65 };
+
+  function bugPose(A, P, t, dt, moving) {
+    const kind = A.loco.kind, act = A.act;
+    switch (kind) {
+      case 'hover': { // hovers above the grass with fast wings; lands to sleep
+        const id = A.pet.speciesId, up = 1 - Math.min(1, A.curl * 1.4);
+        const base = HOVER_HEIGHT[id] || 0.6;
+        let lift = base + Math.sin(t * 2.3 + A.seed) * 0.06 + (moving ? 0.05 : 0) + P.hop * 0.4;
+        if (act.type === 'visit' && act.arrived) { // dips into the bloom, nose first
+          lift = base * 0.72 + Math.sin(act.t * 5 + A.seed) * 0.04;
+          P.pitch = 0.32; P.hPitch = 0.2;
+          if (at(act, 'v1', 0.25)) popAt(A, '🌼', 0.1, 0.1);
+        }
+        P.lift = lift * up; P.hop = 0; P.sy = 1; P.sx = 1;
+        P.pitch += (moving ? 0.18 : 0.04) * up;
+        P.roll = Math.sin(t * 1.6 + A.seed) * 0.08 + (act.type === 'flutterLoop' ? P.roll : 0);
+        P.wing = Math.sin(t * (HOVER_FLAP[id] || 50) + A.seed) * (HOVER_AMP[id] || 0.7) * up;
+        break;
+      }
+      case 'crawl': // ladybug: scuttles, or lifts off for a short flight with its shell halves open
+        if (moving && act.flutter && act.target) {
+          const d = Math.hypot(act.target.x - A.x, act.target.z - A.z);
+          const lift = smooth(act.t / 0.25) * smooth(d / 0.5);
+          P.hop = lift * (0.5 + Math.sin(t * 8) * 0.05);
+          P.wing = Math.sin(t * 46) * 1.0 * lift; P.pitch = 0.12 * lift; P.sy = 1; P.sx = 1; P.roll = Math.sin(t * 6) * 0.05 * lift;
+        } else if (moving) { P.hop = Math.abs(Math.sin(A.phase * 2.4)) * 0.012; P.roll = Math.sin(A.phase * 2.4) * 0.06; P.sy = 1; P.sx = 1; }
+        break;
+      case 'march': // ant: steady little steps
+        if (moving) { P.hop = Math.abs(Math.sin(A.phase * 3)) * 0.01; P.roll = Math.sin(A.phase * 3) * 0.035; P.yaw = Math.sin(A.phase * 1.5) * 0.05; P.sy = 1; P.sx = 1; }
+        break;
+      case 'inch': { // caterpillar: the body squash wave (arch up, stretch out)
+        const s = Math.sin(A.phase * 0.9);
+        if (moving) { P.sy = 1 + 0.22 * s; P.sx = 1 - 0.1 * s; P.pitch = -0.1 * s; P.hop = Math.max(0, s) * 0.035; P.hPitch = -0.14 * s; P.roll = 0; }
+        else { P.sy = 1 + Math.sin(t * 1.5 + A.seed) * 0.03; P.hYaw = Math.sin(t * 0.9 + A.seed) * 0.3; }
+        break;
+      }
+      case 'wriggle': // earthworm
+        if (moving) { const w = Math.sin(A.phase * 2.2); P.yaw = w * 0.35; P.roll = Math.sin(A.phase * 2.2 + 1) * 0.12; P.sx = 1 + 0.12 * w; P.sy = 1; P.hop = 0; }
+        else if (act.type !== 'burrow') { P.yaw = Math.sin(t * 2.6 + A.seed) * 0.1; P.roll = Math.sin(t * 2 + A.seed) * 0.05; }
+        break;
+      case 'snail': // slow glide, eyestalks swaying
+        if (moving) { P.hop = 0; P.sy = 1 + 0.025 * Math.sin(A.phase * 0.9); P.roll = 0; P.sx = 1 - 0.015 * Math.sin(A.phase * 0.9); }
+        P.hYaw += Math.sin(t * 1.2 + A.seed) * 0.2;
+        break;
+      case 'jump': { // cricket: long springy jumps
+        const s = Math.max(0, Math.sin(A.phase * 0.8));
+        if (moving) { P.hop = s * 0.3; P.pitch = -0.32 * s; P.sy = 0.9 + 0.22 * s; P.sx = 1.06 - 0.08 * s; P.roll = 0; P.wing = Math.sin(t * 34) * 0.25 * s; }
+        break;
+      }
+      case 'skitter': // spider: quick little steps
+        if (moving) { P.hop = Math.abs(Math.sin(A.phase * 3)) * 0.012; P.roll = Math.sin(A.phase * 3) * 0.05; P.sy = 1; P.sx = 1; }
+        break;
+      case 'scuttle': // scorpion
+        if (moving) { P.hop = 0.008; P.roll = Math.sin(A.phase * 2) * 0.04; P.tail = Math.sin(A.phase * 2) * 0.3; P.sy = 1; P.sx = 1; }
+        break;
+      default: break;
+    }
+  }
+
+  /** butterfly: drifts in a lazy figure-eight around where it was. */
+  function driftPose(A, P, t) {
+    const act = A.act, T = act.dur;
+    if (!act.init) act.init = { x: A.x, z: A.z, dir: Math.random() < 0.5 ? 1 : -1 };
+    const I = act.init;
+    const k = Math.min(smooth(act.t / 0.8), smooth((T - act.t) / 0.8));
+    const ang = act.t * 1.5 * I.dir;
+    const c = clampToYard(I.x + Math.sin(ang) * 1.0 * k, I.z + Math.sin(ang * 2) * 0.55 * k);
+    const dx = Math.cos(ang) * I.dir, dz = Math.cos(ang * 2) * 1.1 * I.dir;
+    A.x = c.x; A.z = c.z;
+    A.heading += angDiff(A.heading, Math.atan2(dx, dz)) * 0.15;
+    P.roll = -Math.cos(ang) * 0.25 * k;
+  }
+
+  /** ant in a line: follows a spot behind its leader (updated every frame), stops when the leader is out of sight. */
+  function antLinePose(A, P, t, dt) {
+    const act = A.act, L = actors.get(act.leaderId);
+    act.life = (act.life || 0) + dt;
+    if (!L || L.hidden || act.life > 9) { act.arrived = true; act.dur = 0; return; }
+    const spot = antLineSpot(L, Math.sin(L.heading), Math.cos(L.heading), act.slot || 1);
+    if (!act.arrived) { act.target = spot; return; }
+    if (Math.hypot(A.x - spot.x, A.z - spot.z) > 0.45) { act.arrived = false; act.t = 0; act.target = spot; return; }   // the leader moved on: keep marching
+    A.heading += angDiff(A.heading, L.heading) * Math.min(1, dt * 5);
+    P.hop = 0;
+  }
+
+  /** earthworm: wriggles down into the ground, pops up somewhere else nearby. */
+  function burrowPose(A, P, t, dt) {
+    const act = A.act, T = act.dur || 3.8;
+    const D = Math.max(0.3, A.model.height) * 1.15 + 0.06;
+    const depth = act.t < 0.9 ? smooth(act.t / 0.9) : act.t < 2.7 ? 1 : 1 - ease.outBack((act.t - 2.7) / 0.9);
+    P.hop = -D * depth; P.yaw = Math.sin(act.t * 15) * 0.4 * Math.min(1, depth + 0.3); P.pitch = 0.7 * Math.min(1, depth * 1.5);
+    if (at(act, 'b1', 0.15)) popAt(A, '🟤', 0, -0.1);
+    if (act.t > 1.8 && !act.moved) {
+      act.moved = true;
+      const to = act.to ? clampToYard(act.to.x, act.to.z) : { x: A.x, z: A.z };
+      A.x = to.x; A.z = to.z; A.heading = Math.random() * TAU;
+    }
+    if (at(act, 'b2', 2.75)) { popAt(A, '🟤', 0, -0.1); if (!lowTier()) fxo('sparkleAt', world, { x: A.x, y: 0.15, z: A.z }); }
+    if (act.t > T - 0.1) P.pitch = 0;
+  }
+
+  /** snail: pulls its head into the shell, then peeks out again. */
+  function hidePose(A, P, t, dt) {
+    const act = A.act, T = act.dur || 3.4;
+    const k = smooth(act.t / 0.35) * smooth((T - act.t) / 0.45);
+    P.tuck = k; P.sy = 1 - 0.08 * k;
+    if (!act.self) A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 3);
+    if (at(act, 'h1', 0.3)) popAt(A, '🐚', 0, 0.1);
+    if (at(act, 'h2', T - 0.9)) popAt(A, '👀', 0, 0.05);
+  }
+
+  /** cricket at night: rubs its wings and sends little notes up. */
+  function chirpPose(A, P, t, dt) {
+    const act = A.act, env = smooth(act.t / 0.3) * smooth((act.dur - act.t) / 0.3);
+    P.wing = Math.sin(t * 38) * 0.45 * env; P.sy = 1 + Math.sin(t * 19) * 0.02 * env; P.hPitch = -0.15 * env;
+    const n = Math.floor(act.t / 0.85);
+    if (n !== act.note) { act.note = n; popAt(A, n % 2 ? '♪' : '♫', (n % 3 - 1) * 0.12, 0.1); }
+  }
+
+  /** scorpion, idle: the tail curls up over its back (P.tailCurl 0..1, applied in petBehaviour.applyPartPose) and sways. */
+  function tailCurlPose(A, P, t, dt) {
+    const act = A.act, k = smooth(act.t / 0.5) * smooth((act.dur - act.t) / 0.5);
+    P.tailCurl = k; P.tail = Math.sin(t * 7) * 0.25 * k; P.sy = 1 + 0.03 * k;
+    A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 2.5);
+    if (at(act, 'c1', 0.55)) popAt(A, '✨', 0.1, 0.1);
+  }
+
+  // one thread line shared by every hanging spider (a single LineSegments = one draw call)
+  let thread = null;
+  const THREAD_MAX = 8;
+  function ensureThread() {
+    if (thread) return thread;
+    const geo = own(new THREE.BoxGeometry(0.018, 1, 0.018));
+    geo.translate(0, 0.5, 0);   // a unit-long silk strand growing up from the spider; one instanced mesh = one draw call for every spider
+    const mat = own(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    const line = new THREE.InstancedMesh(geo, mat, THREAD_MAX);
+    line.frustumCulled = false; line.userData.noPick = true; line.visible = false;
+    world.scene.add(line);
+    thread = { line, geo, d: new THREE.Object3D() };
+    return thread;
+  }
+
+  /** spider: walks under a tree, climbs up a silk thread, dangles and sways, then lets itself down. */
+  function danglePose(A, P, t, dt) {
+    const act = A.act;
+    if (!act.arrived) return;
+    A.heading += angDiff(A.heading, faceCam(A)) * Math.min(1, dt * 3);
+    const up = smooth(act.t / 1.1) * smooth((act.dur - act.t) / 1.1);
+    const room = Math.max(0, (act.y || THREAD_ANCHOR_Y) - Math.max(0.35, A.model.height) * 0.55 - 0.55);   // hangs on a visible strand
+    P.hop = room * up; P.roll = Math.sin(act.t * 2.2) * 0.12 * up; P.pitch = Math.sin(act.t * 1.7) * 0.05 * up;
+    act.hung = up;
+  }
+
+  function stepThread() {
+    if (!thread && ![...actors.values()].some(A => A.act.type === 'dangle')) return;
+    const T = ensureThread();
+    let n = 0;
+    for (const A of actors.values()) {
+      if (n >= THREAD_MAX || A.act.type !== 'dangle' || !A.act.arrived || !(A.act.hung > 0.02) || !A.act.anchor) continue;
+      const a = A.act.anchor, top = A.y + Math.max(0.35, A.model.height) * 0.55;
+      const ay = A.act.y || THREAD_ANCHOR_Y;
+      T.d.position.set(A.x, top, A.z);
+      T.d.scale.set(1, Math.max(0.01, ay - top), 1);
+      T.d.rotation.set(0, 0, 0);
+      T.d.updateMatrix();
+      T.line.setMatrixAt(n, T.d.matrix);
+      n++;
+    }
+    T.line.count = n;
+    T.line.instanceMatrix.needsUpdate = true;
+    T.line.visible = n > 0;
   }
 
   /** bat at night: flutters in loops over the yard (a small circle around where it started). */
@@ -910,6 +1102,17 @@ export function mountBarn3d(host, ctx) {
     m.body.position.x = P.shake;
     m.body.position.y = P.lift || 0;   // bubble swimmers float by lifting the body (root, shadow and picking stay on the ground)
     if (m.head && A.headBase) m.head.rotation.set(A.headBase.x + P.hPitch, A.headBase.y + P.hYaw, A.headBase.z + P.hRoll);
+    if (m.head && (P.tuck > 0 || A.tucked)) { // a snail pulls its head into the shell: the head shrinks and sinks back
+      if (A.headRef !== m.head) { A.headRef = m.head; A.head0 = { s: m.head.scale.clone(), p: m.head.position.clone() }; }
+      const k = 1 - 0.72 * P.tuck;
+      m.head.scale.set(A.head0.s.x * k, A.head0.s.y * k, A.head0.s.z * k);
+      m.head.position.set(A.head0.p.x, A.head0.p.y - 0.05 * P.tuck, A.head0.p.z - 0.1 * P.tuck);
+      for (const n of ['earL', 'earR']) { // eyestalks are pulled in too
+        const ear = m.parts && m.parts[n];
+        if (ear && ear.scale) { if (!ear.userData.s0) ear.userData.s0 = ear.scale.clone(); ear.scale.copy(ear.userData.s0).multiplyScalar(1 - 0.7 * P.tuck); }
+      }
+      A.tucked = P.tuck > 0;
+    }
     applyPartPose(m.parts, A.partBase, P); // wings, tail, tailTip, trunk, mane (each optional)
     // blink / closed eyes
     const eyes = m.parts && m.parts.eyes;
@@ -949,7 +1152,7 @@ export function mountBarn3d(host, ctx) {
         a.x -= nx * push * wa; a.z -= nz * push * wa;
         b.x += nx * push * wb; b.z += nz * push * wb;
       }
-      for (const o of obstacles) {
+      for (const o of (a.loco.kind === 'hover' ? [] : obstacles)) {   // flyers pass over the pond and around the tree
         const d = dist2(a.x, a.z, o.x, o.z), min = o.r + ra * 0.3;
         if (d < min) { const k = d > 1e-4 ? (min - d) / d : 0; a.x += (a.x - o.x) * k; a.z += (a.z - o.z) * k; }
       }
@@ -1208,6 +1411,7 @@ export function mountBarn3d(host, ctx) {
     syncCribs(state);
     syncGifts(state);
     syncDecor(state);
+    try { syncFestival(); } catch (err) { console.warn('festival scene failed', err); }
     updateNestLabels();
 
     // HUD
@@ -1920,6 +2124,17 @@ export function mountBarn3d(host, ctx) {
         { geometry: cyl(0.1, 0.1, 0.012, 7), color: '#e8b930', position: [-0.62, 0.01, -0.3] },
         { geometry: cyl(0.1, 0.1, 0.012, 7), color: '#d9822b', position: [0.3, 0.01, -0.62] },
       ]; break;
+      case 'decor_lanna_lamp': parts = [ // โคมล้านนา on a post; the glowing paper is a second mesh (lampPaperGeo)
+        { geometry: cyl(0.17, 0.22, 0.08), color: '#8d5a34', position: [0, 0.04, 0] },
+        { geometry: cyl(0.035, 0.05, 0.75), color: '#6b4423', position: [0, 0.45, 0] },
+        { geometry: cyl(0.2, 0.2, 0.05), color: '#f2b630', position: [0, 0.78, 0] },
+        { geometry: keep(new THREE.TorusGeometry(0.265, 0.025, 5, 20)), color: '#f2b630', position: [0, 1.02, 0], rotation: [Math.PI / 2, 0, 0] },
+        { geometry: cone(0.34, 0.26, 12), color: '#d8574a', position: [0, 1.4, 0] },
+        { geometry: sph(0.06), color: '#f2b630', position: [0, 1.58, 0] },
+        { geometry: cyl(0.012, 0.012, 0.2), color: '#d8574a', position: [0, 0.66, 0] },
+        { geometry: sph(0.06), color: '#d8574a', position: [0, 0.54, 0], scale: [1, 1.4, 1] },
+      ]; break;
+      case 'decor_big_krathong': parts = krathongParts(1.9, keep); break;
       default: parts = [ // sign: a post and a board (the farm name is a separate plane)
         { geometry: cyl(0.05, 0.06, 1.0, 8), color: '#8d5a34', position: [0, 0.5, 0] },
         { geometry: box(1.0, 0.44, 0.07), color: '#d9a35f', position: [0, 0.95, 0] },
@@ -1931,6 +2146,21 @@ export function mountBarn3d(host, ctx) {
     for (const o of tmp) o.dispose();
     decorGeos.set(decorId, g);
     return g;
+  }
+
+  /** A krathong in merged parts, `S` times its base size (0.3 radius): banana-leaf base, lotus petals, marigolds, candle, incense. */
+  function krathongParts(S, keep) {
+    const cyl = (rt, rb, h, seg = 14) => keep(new THREE.CylinderGeometry(rt, rb, h, seg));
+    const sph = (r, ws = 10, hs = 8) => keep(new THREE.SphereGeometry(r, ws, hs));
+    const cone = (r, h, seg = 8) => keep(new THREE.ConeGeometry(r, h, seg));
+    const parts = [{ geometry: cyl(0.3 * S, 0.33 * S, 0.07 * S, 18), color: '#7bbf5a', position: [0, 0.035 * S, 0] }];
+    for (let i = 0; i < 10; i++) { const a = (i / 10) * TAU; parts.push({ geometry: cone(0.07 * S, 0.2 * S, 5), color: '#4fae56', position: [Math.cos(a) * 0.3 * S, 0.1 * S, Math.sin(a) * 0.3 * S], rotation: [0, Math.PI - a, 0.9] }); }
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * TAU; parts.push({ geometry: cone(0.075 * S, 0.24 * S, 6), color: '#ff8fb1', position: [Math.cos(a) * 0.19 * S, 0.16 * S, Math.sin(a) * 0.19 * S], rotation: [0, Math.PI - a, 0.55] }); }
+    for (let i = 0; i < 6; i++) { const a = (i / 6) * TAU + 0.3; parts.push({ geometry: cone(0.06 * S, 0.2 * S, 6), color: '#ffffff', position: [Math.cos(a) * 0.1 * S, 0.19 * S, Math.sin(a) * 0.1 * S], rotation: [0, Math.PI - a, 0.3] }); }
+    for (let i = 0; i < 4; i++) { const a = (i / 4) * TAU + 0.8; parts.push({ geometry: sph(0.06 * S, 8, 6), color: '#ffb300', position: [Math.cos(a) * 0.27 * S, 0.12 * S, Math.sin(a) * 0.27 * S] }); }
+    parts.push({ geometry: cyl(0.022 * S, 0.022 * S, 0.17 * S, 6), color: '#fff5dc', position: [0, 0.2 * S, 0] });
+    for (const dx of [-1, 0, 1]) parts.push({ geometry: cyl(0.006 * S, 0.006 * S, 0.34 * S, 4), color: '#8d5a34', position: [dx * 0.05 * S, 0.27 * S, -0.04 * S], rotation: [0.15, 0, -dx * 0.2] });
+    return parts;
   }
 
   function signTexture(name) {
@@ -1953,6 +2183,16 @@ export function mountBarn3d(host, ctx) {
     return list.find(s => s.index === spot) || null;
   }
 
+  let lampPaper = null;
+  const lampPaperGeo = () => lampPaper || (lampPaper = own(mergeStaticParts(THREE, [{ geometry: new THREE.SphereGeometry(0.26, 14, 10), color: '#ff9a3c', position: [0, 1.02, 0], scale: [1, 1.2, 1] },
+    { geometry: new THREE.SphereGeometry(0.2, 10, 8), color: '#ffd26a', position: [0, 1.02, 0.12], scale: [1, 1.4, 0.7] }])));
+  const lampPaperMat = own(new THREE.MeshBasicMaterial({ vertexColors: true }));
+  const glowTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const c2 = cv.getContext('2d'); const g = c2.createRadialGradient(32, 32, 1, 32, 32, 31);
+    g.addColorStop(0, 'rgba(255,236,160,1)'); g.addColorStop(0.35, 'rgba(255,170,60,0.55)'); g.addColorStop(1, 'rgba(255,140,40,0)'); c2.fillStyle = g; c2.fillRect(0, 0, 64, 64);
+    return own(new THREE.CanvasTexture(cv)); })();
+  const lampHaloMat = own(new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+  function updateLampGlow() { const n = nightNow(); lampPaperMat.color.set(n ? 0xffffff : 0xcfc2ac); lampHaloMat.opacity = n ? 0.75 : 0; }
+
   function createDecorInst(rec, pos) {
     const group = new THREE.Group();
     const body = new THREE.Group();
@@ -1970,6 +2210,12 @@ export function mountBarn3d(host, ctx) {
       plane.userData.noPick = true;
       body.add(plane);
       inst.sign = { plane, mat, geo: plane.geometry };
+    }
+    if (rec.decorId === 'decor_lanna_lamp') { // glowing paper + a soft halo at night
+      body.add(new THREE.Mesh(lampPaperGeo(), lampPaperMat));
+      const halo = new THREE.Sprite(lampHaloMat);
+      halo.position.set(0, 1.02, 0); halo.scale.set(1.5, 1.5, 1); halo.userData.noPick = true; halo.renderOrder = 5;
+      body.add(halo);
     }
     group.position.set(pos.x, 0, pos.z);
     group.scale.setScalar(0.01);
@@ -2692,6 +2938,78 @@ export function mountBarn3d(host, ctx) {
         { geometry: sph(0.22), color: '#a98bff', position: [0.34, -1.1, 0.75], scale: [1, 0.9, 0.25] },
         { geometry: sph(0.11), color: '#3b3b55', position: [0, -0.92, 0.82], scale: [0.8, 1.4, 0.8] },
       ];
+      // ── เทศกาล (CONTRACT_V11 §4): the 10 festival accessories, one merged mesh each ──
+      case 'acc_strawhat': return [
+        { geometry: cyl(1.5, 1.5, 0.05, 20), color: '#e9c46a', position: [0, 0.82, 0], rotation: [0.08, 0, 0] },
+        { geometry: cyl(0.62, 0.72, 0.55, 14), color: '#f0d27e', position: [0, 1.1, 0] },
+        { geometry: cyl(0.73, 0.73, 0.13, 14), color: '#c0573a', position: [0, 0.94, 0] },
+        { geometry: cone(0.07, 0.42, 6), color: '#f2c14a', position: [0.66, 1.08, 0.2], rotation: [0.3, 0, -0.35] },
+        { geometry: cone(0.07, 0.42, 6), color: '#f2c14a', position: [0.74, 1.04, 0.05], rotation: [0.1, 0, -0.5] },
+      ];
+      case 'acc_leafcrown': return [
+        { geometry: tor(0.86, 0.04), color: '#3f9a45', position: [0, 0.55, 0], rotation: flat },
+        ...Array.from({ length: 9 }, (_, i) => {
+          const a = (i / 9) * TAU;
+          return { geometry: cone(0.15, 0.5, 5), color: i % 2 ? '#4fae56' : '#7ad47f', position: [Math.cos(a) * 0.9, 0.78, Math.sin(a) * 0.9], rotation: [0, Math.PI - a, 0.5] };
+        }),
+      ];
+      case 'acc_antenna': {
+        const stalk = s => { // side s = +1 (left, +x) / -1: a thin stalk leaning out and forward with a ball on the tip
+          const rz = -0.35 * s, rx = 0.35, L = 0.75, base = [0.36 * s, 0.84, 0.42];
+          const d = [-Math.sin(rz), Math.cos(rz) * Math.cos(rx), Math.cos(rz) * Math.sin(rx)];
+          return [
+            { geometry: cyl(0.03, 0.03, L, 5), color: '#2b2b3a', position: base.map((b, i) => b + d[i] * L / 2), rotation: [rx, 0, rz] },
+            { geometry: sph(0.13), color: '#e8403a', position: base.map((b, i) => b + d[i] * L) },
+          ];
+        };
+        return [{ geometry: keep(new THREE.TorusGeometry(0.88, 0.045, 5, 18, Math.PI)), color: '#2b2b3a', position: [0, 0.05, 0.05] }, ...stalk(1), ...stalk(-1)];
+      }
+      case 'acc_beanie': return [
+        { geometry: keep(new THREE.SphereGeometry(1.08, 14, 8, 0, TAU, 0, Math.PI * 0.42)), color: '#e0384f', position: [0, 0.02, 0] },
+        { geometry: tor(1.0, 0.14, 6, 20), color: '#f4efe6', position: [0, 0.36, 0], rotation: flat },
+        { geometry: tor(0.9, 0.04, 5, 20), color: '#ffffff', position: [0, 0.62, 0], rotation: flat },
+        { geometry: sph(0.27, 10, 8), color: '#f4efe6', position: [0, 1.17, 0] },
+      ];
+      case 'acc_wizardhat': return [
+        { geometry: cyl(1.3, 1.3, 0.06, 20), color: '#2f2478', position: [0, 0.88, 0] },
+        { geometry: cone(0.72, 1.35, 14), color: '#3b2d8f', position: [0, 1.58, 0] },
+        { geometry: cone(0.24, 0.5, 8), color: '#3b2d8f', position: [0.22, 2.4, 0], rotation: [0, 0, -0.75] },
+        { geometry: cyl(0.74, 0.74, 0.12, 14), color: '#ffd84a', position: [0, 0.97, 0] },
+        { geometry: sph(0.09), color: '#ffd84a', position: [0.27, 1.25, 0.5] },
+        { geometry: sph(0.07), color: '#ffe27a', position: [-0.3, 1.5, 0.35] },
+        { geometry: sph(0.08), color: '#ffd84a', position: [0.1, 1.85, 0.3] },
+      ];
+      case 'acc_chada': return [
+        { geometry: cyl(0.86, 0.9, 0.16, 16), color: '#f2b630', position: [0, 0.8, 0] },
+        { geometry: cone(0.78, 0.55, 14), color: '#ffd24a', position: [0, 1.18, 0] },
+        { geometry: cone(0.5, 0.55, 12), color: '#f2b630', position: [0, 1.62, 0] },
+        { geometry: cone(0.24, 0.55, 10), color: '#ffd24a', position: [0, 2.04, 0] },
+        ...[-0.6, -0.3, 0, 0.3, 0.6].map(a => ({ geometry: sph(0.1), color: a === 0 ? '#3ec9c0' : '#d83a4a', position: [Math.sin(a) * 0.88, 0.8, Math.cos(a) * 0.88] })),
+      ];
+      case 'acc_floatie': return [
+        { geometry: tor(0.82, 0.2, 8, 22), color: '#ffffff', position: [0, -0.88, 0], rotation: flat },
+        ...Array.from({ length: 4 }, (_, i) => { const a = (i / 4) * TAU + 0.4; return { geometry: sph(0.215, 8, 6), color: '#ff5a5a', position: [Math.cos(a) * 0.82, -0.88, Math.sin(a) * 0.82], scale: [1.3, 1, 1.3] }; }),
+      ];
+      case 'acc_kitescarf': return [
+        { geometry: tor(0.78, 0.17, 7, 20), color: '#3ec1d3', position: [0, -0.88, 0], rotation: flat },
+        { geometry: box(0.3, 0.7, 0.13), color: '#3ec1d3', position: [0.46, -1.3, 0.66], rotation: [0, 0, -0.18] },
+        { geometry: box(0.34, 0.34, 0.06), color: '#ffd84a', position: [0.38, -1.78, 0.7], rotation: [0, 0, 0.785] },
+        { geometry: box(0.16, 0.16, 0.07), color: '#e0384f', position: [0.38, -1.78, 0.71], rotation: [0, 0, 0.785] },
+        { geometry: box(0.3, 0.3, 0.06), color: '#ffffff', position: [0, -0.7, 0.74], rotation: [0, 0, 0.785] },
+      ];
+      case 'acc_beads': return [
+        { geometry: tor(0.8, 0.02, 4, 22), color: '#5a3d2b', position: [0, -0.82, 0], rotation: flat },
+        ...ring(14, 0.82, -0.82, 0.14, ['#e8453c', '#ffd84a', '#4fae56', '#4d96ff']),
+        { geometry: sph(0.24), color: '#ff9f43', position: [0, -1.12, 0.78] },
+      ];
+      case 'acc_sabai': return [
+        { geometry: tor(0.8, 0.14, 7, 20), color: '#f7a8c4', position: [0, -0.86, 0], rotation: flat },
+        { geometry: box(0.36, 1.25, 0.09), color: '#f7a8c4', position: [0.16, -1.36, 0.68], rotation: [0, 0, 0.55] },
+        { geometry: box(0.06, 1.25, 0.1), color: '#ffd24a', position: [0.0, -1.36, 0.69], rotation: [0, 0, 0.55] },
+        { geometry: box(0.06, 1.25, 0.1), color: '#ffd24a', position: [0.32, -1.36, 0.69], rotation: [0, 0, 0.55] },
+        { geometry: sph(0.17), color: '#ffffff', position: [-0.28, -0.98, 0.78] },
+        { geometry: sph(0.09), color: '#ffd24a', position: [-0.28, -0.98, 0.93] },
+      ];
       case 'party': return [
         { geometry: cone(0.54, 1.1), color: '#ff5fa2', position: [0, 1.5, 0] },
         { geometry: tor(0.4, 0.05), color: '#ffffff', position: [0, 1.3, 0], rotation: flat },
@@ -2779,6 +3097,214 @@ export function mountBarn3d(host, ctx) {
     const A = actors.get(petId);
     const r = ctx.run(s => takeOffAccessory(s, petId, slot));
     if (r && r.ok && A) { A.hold = Math.max(A.hold, 3); popAt(A, '😌', 0, 0.2); }
+  }
+
+  // ── เทศกาล 🏮 (CONTRACT_V11 §3, §4): bunting / paper lanterns / floating flowers, sky lanterns, the krathong scene ──────
+  let nightForce = null;                                  // ?debug=1 hook: true / false overrides the clock
+  const nightNow = () => (nightForce === null ? hourIsNight() : nightForce);
+  const streamX = z => WILD.streamX + WILD.streamAmp * Math.sin(z * WILD.streamFreq);
+  const FEST_COLORS = { farm: ['#ffca28', '#fff3c4'], forest: ['#66bb6a', '#d9f2d0'], bug: ['#2ecc71', '#ffe27a'], water: ['#4dd0e1', '#e0f7fa'], sky: ['#ffd54f', '#ffffff'],
+    savanna: ['#ffb300', '#c0642a'], polar: ['#b3e5fc', '#ffffff'], mystic: ['#b388ff', '#ffe27a'] };
+  const festMat = own(new THREE.MeshToonMaterial({ vertexColors: true, side: THREE.DoubleSide, gradientMap: world.toonGradient }));
+  const paperMat = own(new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  const haloMat = own(new THREE.MeshBasicMaterial({ color: 0xffc766, transparent: true, opacity: 0.28, depthWrite: false, blending: THREE.AdditiveBlending }));
+  let festDeco = null;                                    // { sig, objs: [Object3D], geos: [], sky: {...}|null, calls }
+  const SKY_N = 8;
+  const frontArc = (n, a0 = -2.2, a1 = 2.2) => Array.from({ length: n }, (_, i) => a0 + (a1 - a0) * (n === 1 ? 0.5 : i / (n - 1)));
+
+  function clearFestDeco() {
+    if (!festDeco) return;
+    for (const o of festDeco.objs) { world.scene.remove(o); if (o.isInstancedMesh) o.dispose(); }   // frees the instance buffers too
+    for (const g of festDeco.geos) g.dispose();
+    festDeco = null;
+  }
+
+  function buildFestDeco(fest) {
+    const R = world.fenceRadius || 6.3;
+    const D = { sig: '', objs: [], geos: [], sky: null, calls: 0, fest: fest.id };
+    const add = (o, geo) => { o.userData.noPick = true; world.scene.add(o); D.objs.push(o); if (geo) D.geos.push(geo); D.calls++; return o; };
+    if (fest.kind === 'weekly') { // bunting along the fence in the festival's colour: one merged mesh
+      const cols = [...(FEST_COLORS[fest.habitat] || ['#ffd54f', '#ffffff']), '#ffffff'];
+      const tmp = [];
+      const flagG = new THREE.CircleGeometry(0.27, 3); tmp.push(flagG);
+      const strG = new THREE.BoxGeometry(0.52, 0.016, 0.016); tmp.push(strG);
+      const n = Math.max(20, Math.round(R * 4.4 / 0.5)), parts = [];
+      frontArc(n).forEach((a, i) => {
+        const u = (i % 5) / 4, y = 1.0 - 0.1 * Math.sin(u * Math.PI);
+        parts.push({ geometry: flagG, color: cols[i % cols.length], position: [Math.sin(a) * (R + 0.03), y - 0.16, Math.cos(a) * (R + 0.03)], rotation: [0, a, -Math.PI / 2] });
+        parts.push({ geometry: strG, color: '#8d6e4a', position: [Math.sin(a) * (R + 0.03), y, Math.cos(a) * (R + 0.03)], rotation: [0, a, 0] });
+      });
+      const geo = mergeStaticParts(THREE, parts);
+      for (const g of tmp) g.dispose();
+      add(new THREE.Mesh(geo, festMat), geo);
+    } else if (fest.id === LOY_ID) {
+      // paper lanterns hanging along the fence (instanced, 1 call)
+      const lg = new THREE.SphereGeometry(0.13, 8, 6);
+      const im = new THREE.InstancedMesh(lg, paperMat, 18);
+      const d = new THREE.Object3D(), col = new THREE.Color(), pal = ['#ff9a3c', '#ff6f91', '#ffd24a', '#ff8a5c'];
+      frontArc(18).forEach((a, i) => {
+        d.position.set(Math.sin(a) * (R - 0.05), 0.78 - (i % 2) * 0.12, Math.cos(a) * (R - 0.05));
+        d.scale.set(1, 1.3, 1); d.updateMatrix(); im.setMatrixAt(i, d.matrix); im.setColorAt(i, col.set(pal[i % pal.length]));
+      });
+      im.frustumCulled = false;
+      add(im, lg);
+      // floating flowers: on the pond (if the yard has one) and along the stream, merged (1 call)
+      const tmp = [];
+      const pet = new THREE.ConeGeometry(0.06, 0.2, 5); tmp.push(pet);
+      const base = new THREE.CylinderGeometry(0.09, 0.1, 0.03, 8); tmp.push(base);
+      const spots = [];
+      for (const p of yardProps(yardTier)) if (p.kind === 'pond') spots.push([p.x + 0.55, p.z + 0.1, 0], [p.x - 0.1, p.z - 0.55, 1], [p.x + 0.05, p.z + 0.55, 2]);
+      for (const z of [-2.5, -0.5, 1.5, 3.5, 5.5]) spots.push([streamX(z) + Math.sin(z) * 0.3, z, 0]);
+      const parts = [];
+      spots.forEach(([x, z, k]) => {
+        parts.push({ geometry: base, color: '#4fae56', position: [x, 0.08, z], scale: 1.4 });
+        for (let i = 0; i < 6; i++) { const a = (i / 6) * TAU + k; parts.push({ geometry: pet, color: i % 2 ? '#ff8fb1' : '#ffffff', position: [x + Math.cos(a) * 0.09, 0.14, z + Math.sin(a) * 0.09], rotation: [0, Math.PI - a, 0.8] }); }
+      });
+      const fg = mergeStaticParts(THREE, parts);
+      for (const g of tmp) g.dispose();
+      add(new THREE.Mesh(fg, festMat), fg);
+      // sky lanterns (โคมลอย): 2 instanced meshes (paper + soft halo), only drawn at night
+      const bodyG = new THREE.CylinderGeometry(0.17, 0.11, 0.3, 8), haloG = new THREE.SphereGeometry(0.34, 6, 4);
+      const body = new THREE.InstancedMesh(bodyG, paperMat, SKY_N), halo = new THREE.InstancedMesh(haloG, haloMat, SKY_N);
+      for (let i = 0; i < SKY_N; i++) body.setColorAt(i, col.set(['#ffb04a', '#ff9a3c', '#ffd26a'][i % 3]));
+      body.frustumCulled = halo.frustumCulled = false; body.visible = halo.visible = false;
+      add(body, bodyG); add(halo, haloG);
+      D.sky = { body, halo, d, seeds: Array.from({ length: SKY_N }, (_, i) => ({ x: (hashId('sky' + i) % 800) / 100 - 4, z: (hashId('skz' + i) % 600) / 100 - 2.2, life: 18 + (i % 4) * 2.2, off: i * 2.6 })) };
+    }
+    return D;
+  }
+
+  function syncFestival() {
+    let fest;
+    try { fest = activeFestival(now()); } catch (err) { console.warn('festival unavailable', err); return; }
+    const sig = `${fest.id}|${yardTier}`;
+    if (festDeco && festDeco.sig === sig) return;
+    clearFestDeco();
+    festDeco = buildFestDeco(fest);
+    festDeco.sig = sig;
+  }
+
+  function stepFestival(dt, t) {
+    updateLampGlow();
+    const S = festDeco && festDeco.sky;
+    if (!S) return;
+    const night = nightNow();
+    S.body.visible = S.halo.visible = night;
+    if (!night) return;
+    S.seeds.forEach((s, i) => {
+      const age = (t + s.off) % s.life, u = age / s.life;
+      const k = Math.min(smooth(age / 1.5), smooth((s.life - age) / 2.5));
+      S.d.position.set(s.x + age * 0.14 + Math.sin(age * 0.7 + i) * 0.25, 0.6 + age * 0.42, s.z + Math.sin(age * 0.5 + i * 2) * 0.2);
+      S.d.rotation.set(0, age * 0.3, 0);
+      S.d.scale.setScalar(Math.max(0.001, k * (1 - u * 0.25)));
+      S.d.updateMatrix();
+      S.body.setMatrixAt(i, S.d.matrix);
+      S.d.scale.multiplyScalar(0.9 + Math.sin(t * 6 + i) * 0.07);
+      S.d.updateMatrix();
+      S.halo.setMatrixAt(i, S.d.matrix);
+    });
+    S.body.instanceMatrix.needsUpdate = S.halo.instanceMatrix.needsUpdate = true;
+    if (S.body.instanceColor) S.body.instanceColor.needsUpdate = true;
+    // (no world.boost here: the lanterns drift slowly, so the idle frame cap keeps applying all night)
+  }
+
+  // the krathong itself: banana-leaf base with lotus petals; the candle flame is a flickering glow sprite
+  let krGeo = null;
+  const krMat = () => new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: world.toonGradient, transparent: true });
+  const krList = [];                                      // floating krathongs { grp, mat, spr, sprMat, t, ... }
+  function krathongGeometry() {
+    if (krGeo) return krGeo;
+    const tmp = [];
+    krGeo = own(mergeStaticParts(THREE, krathongParts(1.5, o => { tmp.push(o); return o; })));
+    for (const o of tmp) o.dispose();
+    return krGeo;
+  }
+
+  function spawnKrathong(x, z) {
+    const mat = krMat(), sprMat = new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    const grp = new THREE.Group();
+    const mesh = new THREE.Mesh(krathongGeometry(), mat);
+    mesh.userData.noPick = true;
+    const spr = new THREE.Sprite(sprMat);
+    spr.position.set(0, 0.5, 0); spr.userData.noPick = true; spr.renderOrder = 6;
+    grp.add(mesh, spr);
+    grp.position.set(x, 0.2, z); grp.scale.setScalar(0.01);
+    world.scene.add(grp);
+    const K = { grp, mat, spr, sprMat, t: 0, x, z, phase: 'set', fz: z, fx: x, tz: z + 0.8, tx: streamX(z + 0.8), drift: 0, seed: Math.random() * TAU };
+    krList.push(K);
+    return K;
+  }
+
+  function removeKrathong(K) {
+    world.scene.remove(K.grp);
+    K.mat.dispose(); K.sprMat.dispose();
+    const i = krList.indexOf(K);
+    if (i >= 0) krList.splice(i, 1);
+  }
+
+  function stepKrathongs(dt) {
+    if (krPan && !krList.length && !krPet) { world.setPan(krPan.x, krPan.z); krPan = null; }
+    for (const K of [...krList]) {
+      K.t += dt;
+      const g = K.grp;
+      let op = 1;
+      if (K.phase === 'set') { // set down on the bank, bobbing a little
+        g.scale.setScalar(Math.max(0.01, ease.outBack(K.t / 0.5)));
+        g.position.set(K.x, 0.2 + Math.sin(K.t * 3) * 0.015, K.z);
+        if (K.t > 1.6) { K.phase = 'fly'; K.ft = 0; }
+      } else if (K.phase === 'fly') { // a gentle arc over the fence onto the water
+        K.ft += dt;
+        const u = Math.min(1, K.ft / 1.8);
+        g.position.set(K.fx + (K.tx - K.fx) * u, 0.2 + Math.sin(u * Math.PI) * 1.5, K.fz + (K.tz - K.fz) * u);
+        g.rotation.y += dt * 2;
+        if (u >= 1) { K.phase = 'drift'; K.drift = 0; fxo('emojiPop', world, { x: K.tx, y: 0.5, z: K.tz }, '💦'); fxo('sparkleAt', world, { x: K.tx, y: 0.3, z: K.tz }); }
+      } else { // drifts downstream (toward the camera), bobbing, and fades at the yard edge
+        K.drift += dt;
+        const z = K.tz + K.drift * 0.45;
+        g.position.set(streamX(z) + Math.sin(K.drift * 0.9 + K.seed) * 0.22, 0.07 + Math.sin(K.drift * 2.2 + K.seed) * 0.02, z);
+        g.rotation.y += dt * 0.25; g.rotation.z = Math.sin(K.drift * 1.4 + K.seed) * 0.05;
+        op = Math.min(1, Math.max(0, (5.6 - z) / 1.4));   // fades out as it reaches the near edge of the yard
+        if (op <= 0 || K.drift > 24) { removeKrathong(K); continue; }
+      }
+      K.mat.opacity = op;
+      const fl = 0.5 + Math.sin(K.t * 23 + K.seed) * 0.06 + Math.sin(K.t * 37) * 0.05;
+      K.spr.scale.set(fl, fl, 1);
+      K.sprMat.opacity = op * (0.8 + Math.sin(K.t * 29) * 0.15);
+      world.boost(150);
+    }
+  }
+
+  // the pet's side of the scene: walk to the east bank (toward the stream), crouch, set the krathong on the water
+  let krPet = null, krPan = null;
+  /** Plays the scene for a pet that just floated a krathong (state is already paid). False when it cannot be shown. */
+  function krathongScene(petId) {
+    if (disposed || !isOn || photo) return false;
+    const A = actors.get(petId);
+    if (!A || A.hidden || A.spawn || A.pet.status === 'sleeping') return false;
+    if (selected || selectedCrib) closeSheet();
+    if (!krPan) krPan = world.getPan();   // the camera slides toward the stream (the water is outside the fence), back when the last krathong is gone
+    world.setPan(7, 0.6);
+    const bank = clampToYard(YARD.walkRadius - 0.3, Math.max(-1.0, Math.min(2.0, A.z)));
+    A.hold = 0;
+    krPet = A.id;
+    later(20000, () => { if (krPet === petId) krPet = null; });   // never keep the camera away if the pet gets pulled off the scene
+    begin(A, { type: 'krathongWalk', target: bank, speed: 1.3, dur: 3.2, onArrive: () => {
+      if (disposed) return;
+      const K = spawnKrathong(bank.x + 0.5, bank.z);
+      K.fx = K.x; K.fz = K.z; K.tz = bank.z + 0.9; K.tx = streamX(K.tz);
+      later(900, () => alive(petId) && popAt(A, '🙏', 0, 0.2));
+      later(1000, () => { if (krPet === petId) krPet = null; });
+    } });
+    return true;
+  }
+
+  function krathongPose(A, P, t, dt) {
+    const act = A.act;
+    if (!act.arrived) return;
+    A.heading += angDiff(A.heading, Math.PI / 2) * Math.min(1, dt * 6);
+    const k = smooth(act.t / 0.4) * smooth((act.dur - act.t) / 0.5);
+    P.pitch = 0.3 * k; P.hPitch = 0.3 * k; P.sy = 1 - 0.1 * k;
+    if (at(act, 'k1', 1.7)) { popAt(A, '🪷', 0.2, 0.2); fxo('sparkle', world, A.id); }
   }
 
   // ── อากาศ 🌦️ (CONTRACT_V9 §4): puddle jumping, sheltering, the sun (and a rainbow) after the rain ──────────────────────
@@ -3465,6 +3991,9 @@ export function mountBarn3d(host, ctx) {
     stepPops(dt);
     stepHatch(dt);
     stepBreed(dt);
+    stepThread();
+    stepFestival(dt, t);
+    stepKrathongs(dt);
     stepTemps(dt);
     // selection ring
     const sel = selTarget();
@@ -3491,7 +4020,9 @@ export function mountBarn3d(host, ctx) {
   sync(getState());
   const unWeather = bindWeather(world, { onChange: onWeather });   // real-hour weather (js/weather.js); ?weather=rain forces it
   if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), stroke: (id, phase, region, point, ms) => onStroke({ id, phase, region, point: point || { x: 0, y: 0.5, z: 0 }, durationMs: ms }), greet: d => { greetDigest = d; greetWait = 0; }, kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); },
-    weather: k => { wxDebug = true; world.setWeather(k, 1); onWeather({ kind: k, intensity: 1 }); }, photo: () => enterPhoto(), info: () => ({ party, rainSt, wxKind, photo, stats: world.getStats() }), applyWear: id => applyWear(actors.get(id)), breedScene: (a, b) => breedScene(a, b), breedInfo: () => breedSc && { t: breedSc.t, nt: breedSc.nt, arrived: breedSc.arrived, egg: !!breedSc.egg } };
+    weather: k => { wxDebug = true; world.setWeather(k, 1); onWeather({ kind: k, intensity: 1 }); }, photo: () => enterPhoto(), info: () => ({ party, rainSt, wxKind, photo, stats: world.getStats() }), applyWear: id => applyWear(actors.get(id)), breedScene: (a, b) => breedScene(a, b), breedInfo: () => breedSc && { t: breedSc.t, nt: breedSc.nt, arrived: breedSc.arrived, egg: !!breedSc.egg },
+    krathong: id => krathongScene(id), night: on => { nightForce = on === null || on === undefined ? null : !!on; },
+    fest: () => ({ id: festDeco && festDeco.fest, calls: festDeco ? festDeco.calls : 0, sky: !!(festDeco && festDeco.sky && festDeco.sky.body.visible), krathongs: krList.length, kr: krList.map(k => [k.phase, +k.grp.position.x.toFixed(2), +k.grp.position.y.toFixed(2), +k.grp.position.z.toFixed(2), +k.mat.opacity.toFixed(2)]), stats: world.getStats() }) };
 
   return {
     setActive(on) {
@@ -3502,6 +4033,8 @@ export function mountBarn3d(host, ctx) {
       world.setActive(isOn);
       if (isOn) sync(getState());
     },
+    /** plays the krathong scene for a pet that just floated one; false when it was skipped. */
+    krathongScene(petId) { return krathongScene(petId); },
     /** plays the breeding scene for the pair; false when it was skipped (off-screen, no 3D, ...). */
     breedScene(aId, bId) { return breedScene(aId, bId); },
     dispose() {
@@ -3512,6 +4045,9 @@ export function mountBarn3d(host, ctx) {
         if (hatching.pet && !hatching.revealShown && ctx.revealHatch) ctx.revealHatch(hatching.pet, !!hatching.nurseryPetId);
         endHatch();
       }
+      for (const K of [...krList]) removeKrathong(K);
+      if (krPan) { try { world.setPan(krPan.x, krPan.z); } catch { /* gone */ } krPan = null; }
+      clearFestDeco();
       disposed = true;
       unsub();
       unFrame();

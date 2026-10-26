@@ -6,7 +6,7 @@
 .barn-section { display: grid; gap: 10px; }
 .barn-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .barn-section > .barn-head { margin-bottom: 0; }
-.barn-title { margin: 0; font-size: 1.15rem; }
+.barn-title { margin: 0; font-size: 1.15rem; white-space: nowrap; flex-shrink: 0; }
 .barn-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); }
 .barn-empty { padding: 28px 16px; }
 .barn-empty-emoji { font-size: 56px; animation: pet-bob 2.6s ease-in-out infinite; }
@@ -659,3 +659,32 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .fam-section .incu-slot, .incu-slot.is-family { border-color: #ff9fc4; background: linear-gradient(135deg, #fff1f6, var(--surface)); }
 .incu-slot.is-family .incu-egg { filter: drop-shadow(0 0 4px #ff9fc4); }
 .incu-parents { font-size: 0.85rem; font-weight: 700; }
+
+/* ── เทศกาล 🏮 (CONTRACT_V11 §4) ── */
+.fest-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 36px; padding: 0 12px; border-radius: 999px; border: 2px solid #f2b630; background: linear-gradient(90deg, #fff4d6, #ffe4e9); color: #6b3a14; font-weight: 700; font-size: 0.88rem; cursor: pointer; justify-self: start; }
+.fest-chip.fest-special { border-color: #ff7a59; background: linear-gradient(90deg, #ffe9c2, #ffd3e0); }
+.fest-chip-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fest-chip-d { font-weight: 500; white-space: nowrap; opacity: 0.8; }
+.fest-chip-n { background: var(--danger, #e0384f); color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; }
+.fest-chip.has-claim { animation: pet-twinkle 2.2s ease-in-out infinite; }
+.fest-chip:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.fest-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.fest-head > div { display: grid; flex: 1; min-width: 0; }
+.fest-head-e { font-size: 2rem; }
+.fest-lanterns { font-size: 1.1rem; background: #fff4d6; border: 2px solid #f2b630; border-radius: 999px; padding: 2px 12px; color: #6b3a14; }
+.fest-sec { margin-top: 12px; }
+.fest-task, .fest-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); margin-top: 6px; }
+.fest-task.is-done, .fest-item.is-owned { opacity: 0.7; }
+.fest-task-e, .fest-item-e { font-size: 1.6rem; }
+.fest-task-main, .fest-item-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.fest-bar { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.fest-bar > span { display: block; height: 100%; background: linear-gradient(90deg, #f2b630, #ff7a59); border-radius: 999px; }
+.fest-done { font-size: 0.82rem; color: var(--success); font-weight: 700; white-space: nowrap; }
+.fest-login { display: grid; gap: 6px; }
+.fest-dots { display: flex; gap: 6px; flex-wrap: wrap; }
+.fest-dot { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; border: 2px dashed var(--border); font-size: 1rem; }
+.fest-dot.is-on { border: 2px solid #f2b630; background: #fff4d6; }
+.fest-kr { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.fest-kr-n { font-weight: 700; }
+.fest-note { font-size: 0.8rem; margin: 6px 0 0; }
+@media (prefers-reduced-motion: reduce) { .fest-chip.has-claim { animation: none; } }

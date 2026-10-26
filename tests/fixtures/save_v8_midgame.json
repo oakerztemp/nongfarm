@@ -1,0 +1,665 @@
+{
+  "version": 8,
+  "updatedAt": 1790200000000,
+  "lastTick": 1790200000000,
+  "player": {
+    "farmName": "ฟาร์มกลางเกม v8",
+    "level": 8,
+    "xp": 150,
+    "coins": 2300,
+    "createdAt": 1789136000000,
+    "lastDailyClaim": "2026-09-14"
+  },
+  "pets": [
+    {
+      "id": "pet1",
+      "speciesId": "hamster",
+      "nickname": "",
+      "shiny": false,
+      "personality": "cheerful",
+      "stage": 2,
+      "xp": 302,
+      "stats": {
+        "hunger": 79.85,
+        "happy": 69.94,
+        "energy": 89.7,
+        "clean": 74.925
+      },
+      "poop": 0,
+      "sick": false,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "working",
+      "task": {
+        "type": "plot",
+        "plotIndex": 0,
+        "slot": 0
+      },
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 25,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": {
+        "plotIndex": 0,
+        "slot": 0
+      },
+      "favKnown": true,
+      "wear": {
+        "head": "acc_bow",
+        "neck": null
+      },
+      "lastBirthdayGift": null,
+      "coat": "base",
+      "family": null,
+      "breedReadyAt": 0
+    },
+    {
+      "id": "pet2",
+      "speciesId": "chicken",
+      "nickname": "",
+      "shiny": false,
+      "personality": "cheerful",
+      "stage": 2,
+      "xp": 250,
+      "stats": {
+        "hunger": 79.85,
+        "happy": 69.94,
+        "energy": 89.85,
+        "clean": 74.925
+      },
+      "poop": 0,
+      "sick": false,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "working",
+      "task": {
+        "type": "plot",
+        "plotIndex": 1,
+        "slot": 0
+      },
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 25,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": {
+        "plotIndex": 1,
+        "slot": 0
+      },
+      "favKnown": false,
+      "wear": {
+        "head": null,
+        "neck": null
+      },
+      "lastBirthdayGift": 2,
+      "coat": "cream",
+      "family": null,
+      "breedReadyAt": 0
+    },
+    {
+      "id": "pet3",
+      "speciesId": "cat",
+      "nickname": "",
+      "shiny": true,
+      "personality": "lazy",
+      "stage": 1,
+      "xp": 60,
+      "stats": {
+        "hunger": 79.85,
+        "happy": 69.9,
+        "energy": 89.79,
+        "clean": 74.925
+      },
+      "poop": 0,
+      "sick": false,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "expedition",
+      "task": {
+        "type": "expedition",
+        "expeditionId": "exp1"
+      },
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 25,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": null,
+      "favKnown": true,
+      "wear": {
+        "head": null,
+        "neck": null
+      },
+      "lastBirthdayGift": null,
+      "coat": "base",
+      "family": null,
+      "breedReadyAt": 0
+    },
+    {
+      "id": "pet4",
+      "speciesId": "dog",
+      "nickname": "",
+      "shiny": false,
+      "personality": "hardworking",
+      "stage": 3,
+      "xp": 700,
+      "stats": {
+        "hunger": 79.85,
+        "happy": 69.9,
+        "energy": 90.15,
+        "clean": 74.925
+      },
+      "poop": 0,
+      "sick": false,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "working",
+      "task": {
+        "type": "plot",
+        "plotIndex": 0,
+        "slot": 1
+      },
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 25,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": {
+        "plotIndex": 0,
+        "slot": 1
+      },
+      "favKnown": false,
+      "wear": {
+        "head": null,
+        "neck": null
+      },
+      "lastBirthdayGift": null,
+      "coat": "base",
+      "family": null,
+      "breedReadyAt": 0
+    },
+    {
+      "id": "pet5",
+      "speciesId": "cow",
+      "nickname": "",
+      "shiny": false,
+      "personality": "cheerful",
+      "stage": 1,
+      "xp": 40,
+      "stats": {
+        "hunger": 79.925,
+        "happy": 69.97,
+        "energy": 91,
+        "clean": 74.8875
+      },
+      "poop": 2,
+      "sick": false,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "sleeping",
+      "task": null,
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 25,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": null,
+      "favKnown": true,
+      "wear": {
+        "head": null,
+        "neck": null
+      },
+      "lastBirthdayGift": null,
+      "coat": "base",
+      "family": null,
+      "breedReadyAt": 0
+    },
+    {
+      "id": "pet6",
+      "speciesId": "rabbit",
+      "nickname": "",
+      "shiny": false,
+      "personality": "lazy",
+      "stage": 1,
+      "xp": 60,
+      "stats": {
+        "hunger": 79.85,
+        "happy": 69.9,
+        "energy": 90.15,
+        "clean": 74.925
+      },
+      "poop": 0,
+      "sick": false,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "working",
+      "task": {
+        "type": "plot",
+        "plotIndex": 0,
+        "slot": 2
+      },
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 70,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": {
+        "plotIndex": 0,
+        "slot": 2
+      },
+      "favKnown": false,
+      "wear": {
+        "head": null,
+        "neck": null
+      },
+      "lastBirthdayGift": null,
+      "coat": "base",
+      "family": null,
+      "breedReadyAt": 0
+    },
+    {
+      "id": "pet7",
+      "speciesId": "pig",
+      "nickname": "",
+      "shiny": false,
+      "personality": "glutton",
+      "stage": 3,
+      "xp": 700,
+      "stats": {
+        "hunger": 40,
+        "happy": 30,
+        "energy": 70,
+        "clean": 20
+      },
+      "poop": 0,
+      "sick": true,
+      "zeroSince": null,
+      "lastFedAt": 1789996400000,
+      "status": "idle",
+      "task": null,
+      "bornAt": 1789982000000,
+      "zeroMs": 0,
+      "bond": 0,
+      "bondDay": "2026-09-14",
+      "bondToday": 6,
+      "giftDay": null,
+      "station": null,
+      "favKnown": true,
+      "wear": {
+        "head": null,
+        "neck": null
+      },
+      "lastBirthdayGift": null,
+      "coat": "base",
+      "family": null,
+      "breedReadyAt": 0
+    }
+  ],
+  "barnCapacity": 8,
+  "incubator": [
+    {
+      "eggId": "egg_forest",
+      "startAt": 1789999900000,
+      "readyAt": 1790000500000
+    }
+  ],
+  "incubatorCapacity": 1,
+  "inventory": {
+    "egg_farm": 2,
+    "egg_water": 1,
+    "seed_carrot": 10,
+    "seed_corn": 6,
+    "seed_tomato": 4,
+    "seed_potato": 3,
+    "food_kibble": 8,
+    "food_meat": 3,
+    "crop_carrot": 14,
+    "crop_corn": 7,
+    "crop_tomato": 3,
+    "forage_mushroom": 6,
+    "forage_berry": 9,
+    "care_soap": 3,
+    "care_toy": 2,
+    "care_medicine": 1,
+    "care_fertilizer": 4
+  },
+  "plots": [
+    {
+      "index": 0,
+      "cropId": "rice",
+      "plantedAt": 1789998000000,
+      "progress": 0.4,
+      "petIds": [
+        "pet1",
+        "pet4",
+        "pet6"
+      ],
+      "watered": false,
+      "lastGrowAt": 1790000180000,
+      "xpCarryMs": 0,
+      "helperPetIds": [],
+      "stations": [
+        "pet1",
+        "pet4",
+        "pet6"
+      ]
+    },
+    {
+      "index": 1,
+      "cropId": "strawberry",
+      "plantedAt": 1789999000000,
+      "progress": 0.2,
+      "petIds": [
+        "pet2",
+        null
+      ],
+      "watered": false,
+      "lastGrowAt": 1790000180000,
+      "xpCarryMs": 0,
+      "helperPetIds": [],
+      "stations": [
+        "pet2",
+        null,
+        null
+      ]
+    },
+    {
+      "index": 2,
+      "cropId": "carrot",
+      "plantedAt": 1789999999000,
+      "progress": 1,
+      "petIds": [
+        null
+      ],
+      "helperBonus": 0,
+      "watered": false,
+      "lastGrowAt": 1790000180000,
+      "xpCarryMs": 0,
+      "helperPetIds": [
+        "pet5"
+      ],
+      "stations": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "index": 3,
+      "cropId": null,
+      "plantedAt": 0,
+      "progress": 0,
+      "petIds": [],
+      "watered": false,
+      "lastGrowAt": 1790000180000,
+      "xpCarryMs": 0,
+      "helperPetIds": [],
+      "stations": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "index": 4,
+      "cropId": null,
+      "plantedAt": 0,
+      "progress": 0,
+      "petIds": [],
+      "watered": false,
+      "lastGrowAt": 1790000180000,
+      "xpCarryMs": 0,
+      "helperPetIds": [],
+      "stations": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "index": 5,
+      "cropId": null,
+      "plantedAt": 0,
+      "progress": 0,
+      "petIds": [],
+      "watered": false,
+      "lastGrowAt": 1790000180000,
+      "xpCarryMs": 0,
+      "helperPetIds": [],
+      "stations": [
+        null,
+        null,
+        null
+      ]
+    }
+  ],
+  "expeditions": [
+    {
+      "id": "exp1",
+      "petId": "pet3",
+      "zoneId": "forest",
+      "startAt": 1789999900000,
+      "endAt": 1790000200000,
+      "done": false,
+      "rewards": null
+    }
+  ],
+  "collection": {
+    "hamster": {
+      "owned": 1,
+      "shiny": false
+    },
+    "chicken": {
+      "owned": 1,
+      "shiny": false
+    },
+    "cat": {
+      "owned": 1,
+      "shiny": true
+    },
+    "dog": {
+      "owned": 1,
+      "shiny": false
+    },
+    "cow": {
+      "owned": 1,
+      "shiny": false
+    },
+    "pig": {
+      "owned": 1,
+      "shiny": false
+    },
+    "sheep": {
+      "owned": 1,
+      "shiny": false
+    },
+    "goat": {
+      "owned": 1,
+      "shiny": false
+    }
+  },
+  "log": [
+    {
+      "t": 1790000000000,
+      "msg": "log 0"
+    },
+    {
+      "t": 1789999999000,
+      "msg": "log 1"
+    }
+  ],
+  "stats": {
+    "hatched": 8,
+    "fed": 1,
+    "played": 0,
+    "cleaned": 0,
+    "released": 0,
+    "planted": 1,
+    "harvested": 1,
+    "helped": 1,
+    "expeditionsStarted": 1,
+    "expeditionsClaimed": 0,
+    "ordersDone": 0,
+    "sold": 0,
+    "bought": 0,
+    "bred": 0
+  },
+  "quests": {
+    "step": 5,
+    "done": false,
+    "preDone": [
+      "hatch",
+      "feed",
+      "plant",
+      "help",
+      "harvest",
+      "explore"
+    ]
+  },
+  "orders": {
+    "day": "2026-09-21",
+    "list": [
+      {
+        "id": "2026-09-21-1",
+        "items": {
+          "crop_sunflower": 5
+        },
+        "reward": {
+          "coins": 551,
+          "xp": 34
+        },
+        "done": false
+      }
+    ],
+    "week": "2026-W39",
+    "weekly": null
+  },
+  "stardust": 0,
+  "claimedGoals": [],
+  "settings": {
+    "notify": true
+  },
+  "yard": {
+    "lastAt": 1790199000000,
+    "byPet": {
+      "pet5": {
+        "c": 69.6,
+        "ms": 16200000,
+        "prog": 0.75,
+        "items": {
+          "food_milk": 2,
+          "seed_carrot": 1,
+          "forage_shell": 1
+        }
+      },
+      "pet7": {
+        "c": 68,
+        "ms": 16200000,
+        "prog": 0.75,
+        "items": {
+          "food_milk": 1,
+          "forage_shell": 1
+        }
+      }
+    }
+  },
+  "nursery": [
+    {
+      "pet": {
+        "id": "nurs1",
+        "speciesId": "hamster",
+        "nickname": "",
+        "shiny": false,
+        "personality": "cheerful",
+        "stage": 0,
+        "xp": 0,
+        "stats": {
+          "hunger": 79.925,
+          "happy": 69.97,
+          "energy": 91,
+          "clean": 74.8875
+        },
+        "poop": 2,
+        "sick": false,
+        "zeroSince": null,
+        "lastFedAt": 1789996400000,
+        "status": "nursery",
+        "task": null,
+        "bornAt": 1789982000000,
+        "zeroMs": 0,
+        "bond": 0,
+        "bondDay": "2026-09-14",
+        "bondToday": 0,
+        "giftDay": null,
+        "station": null,
+        "favKnown": false,
+        "wear": {
+          "head": null,
+          "neck": null
+        },
+        "lastBirthdayGift": null,
+        "coat": "base",
+        "family": null,
+        "breedReadyAt": 0
+      },
+      "hatchedAt": 1790190000000
+    }
+  ],
+  "decor": [
+    {
+      "id": "dc1",
+      "decorId": "bed",
+      "spot": 0
+    }
+  ],
+  "inventoryDecor": {
+    "ball": 1
+  },
+  "postcards": [
+    {
+      "id": "pc1",
+      "petName": "โมจิ",
+      "speciesId": "cat",
+      "text": "สบายดีนะ",
+      "at": 1790150000000,
+      "read": false
+    }
+  ],
+  "friends": {
+    "pet1|pet2": 80.5,
+    "pet3|pet4": 31.25
+  },
+  "friendsMet": [
+    "pet1|pet2"
+  ],
+  "lastGreetAt": 1790190000000,
+  "wardrobe": {
+    "acc_bow": 1,
+    "acc_bell": 1
+  },
+  "journal": [
+    {
+      "day": "2026-09-13",
+      "lines": [
+        {
+          "emoji": "🐣",
+          "text": "มะลิ ฟักออกมาแล้ว ตัวเล็กนิดเดียวเลย!",
+          "petId": "pet1",
+          "kind": "hatch"
+        }
+      ]
+    }
+  ],
+  "familyEggs": [],
+  "coatsSeen": {
+    "base": true,
+    "cream": true
+  }
+}

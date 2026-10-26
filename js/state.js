@@ -4,6 +4,7 @@ import { fastForwardQuests } from './quests.js'; // circular on purpose: only ca
 import { getCrop } from './data/crops.js';
 import { getSpecies, HABITATS } from './data/species.js';
 import { COAT_IDS } from './data/coats.js';
+import { FESTIVAL_IDS, SHOP_ITEM_IDS, TASK_POOL, LANTERN_MAX, KRATHONG_MAX, LOGIN_MAX, TASKS_PER_FESTIVAL, LEDGER_MAX, SEEN_DAYS_MAX, FLOAT_DAYS_MAX } from './data/festivals.js';
 
 // v7: accessory ids are validated against js/data/accessories.js (owned by the data author). It is loaded with a tolerant
 // top-level await so a missing/renamed file never breaks the game: without it only the id's shape is checked.
@@ -21,7 +22,7 @@ function accessoryOf(id) {
 // v5 constants other modules rely on (CONTRACT_V7 §1):
 //   NURSERY_SLOTS  max babies waiting in state.nursery        POSTCARDS_MAX  postcards kept (oldest dropped)
 //   YARD_CAP_MS    pets.js owns the live 6 h gift cap; the migration only clamps credited ms to the same value
-export const STATE_VERSION = 8;
+export const STATE_VERSION = 9;
 export const NURSERY_SLOTS = 3;
 export const POSTCARDS_MAX = 30;
 export const FRIEND_PAIRS_PER_PET = 4;  // v6: every pet keeps its 4 strongest pairs (plus its best-friend pair)...
@@ -33,6 +34,8 @@ export const pairKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 export const JOURNAL_DAYS_MAX = 14;     // v7: days of diary kept (oldest dropped)
 export const JOURNAL_LINES_MAX = 6;     // v7: lines per day (oldest of that day dropped)
 export const WEAR_SLOTS = ['head', 'neck'];
+export const FESTIVAL_LANTERN_MAX = LANTERN_MAX;   // v9: lanterns carried (js/festival.js owns the rules)
+export const FESTIVAL_KRATHONG_MAX = KRATHONG_MAX; // v9: krathongs in stock
 export const FAMILY_EGG_MAX = 2;       // v8: family eggs waiting in state.familyEggs (breeding refuses when full)
 const BREED_COOLDOWN_CAP_MS = 72 * 3600 * 1000;   // = breeding.js BREED_COOLDOWN_MS (no import: breeding.js imports pets.js -> state.js)
 const V4_YARD_CAP_MS = 6 * 3600 * 1000;
@@ -46,6 +49,10 @@ const STAT_KEYS = [
   'ordersDone', 'sold', 'bought', 'yardCollected', 'bred',
 ];
 const newStats = () => Object.fromEntries(STAT_KEYS.map(k => [k, 0]));
+
+function newFestival() {
+  return { id: '', key: '', tasks: [], loginDays: [], seenDays: [], ledger: {}, lanterns: 0, krathongs: 0, owned: {}, krathong: { day: '', n: 0 }, floatDays: {} };
+}
 
 function newPlot(index) {
   return { index, cropId: null, plantedAt: 0, progress: 0, watered: false, petIds: [], stations: [null, null, null] };
@@ -92,6 +99,7 @@ export function createNewState() {
     wardrobe: {},         // v7: accessoryId -> copies owned (worn copies included; a copy is worn by one pet at a time)
     familyEggs: [],       // v8: laid family eggs not yet in the incubator, <= FAMILY_EGG_MAX: [{ id, laidAt, habitatA, habitatB, a: parent, b: parent }] (js/breeding.js)
     coatsSeen: { base: true }, // v8: coatId -> true for every coat the player has had (the coats_all book goal)
+    festival: newFestival(), // v9: { id, key, tasks, loginDays, seenDays, ledger, lanterns, krathongs, owned, krathong, floatDays } (js/festival.js)
     journal: [],          // v7: [{ day: 'YYYY-MM-DD', lines: [{ emoji, text, petId? }] }] oldest day first, <= JOURNAL_DAYS_MAX x JOURNAL_LINES_MAX (js/journal.js)
   };
 }
@@ -330,6 +338,13 @@ export const MIGRATIONS = {
     s.version = 8;
     return s;
   },
+
+  // v8 -> v9: the festival state (tasks roll on the first ensureFestival; lanterns start at 0).
+  8(s) {
+    if (!isObj(s.festival)) s.festival = newFestival();
+    s.version = 9;
+    return s;
+  },
 };
 
 /**
@@ -514,7 +529,8 @@ function sanitiseV7(s) {
 
 const GEN_MAX = 99;
 const isHabitat = h => typeof h === 'string' && Object.prototype.hasOwnProperty.call(HABITATS, h);
-const cleanName = v => (typeof v === 'string' ? Array.from(v.replace(/[\u0000-\u001f\u007f]/g, '')).slice(0, 16).join('') : '');
+// 32, not the 16 of a nickname: an unnamed parent is snapshotted under its species name (e.g. 21 code points), which must survive whole
+const cleanName = v => (typeof v === 'string' ? Array.from(v.replace(/[\u0000-\u001f\u007f]/g, '')).slice(0, 32).join('') : '');
 
 /** One parent snapshot of a family egg -> a clean copy, or null when it is malformed. */
 function cleanParent(p) {
@@ -575,6 +591,67 @@ function sanitiseV8(s) {
   s.coatsSeen = seen;
 }
 
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const cleanCount = (v, max) => (Number.isFinite(v) && v > 0 ? Math.min(Math.floor(v), max) : 0);
+
+const cleanDays = (arr, max) => {
+  const out = [];
+  for (const d of Array.isArray(arr) ? arr : []) if (typeof d === 'string' && DAY_KEY_RE.test(d) && !out.includes(d)) out.push(d);
+  return out.slice(-max);
+};
+
+/** A festival's task list -> clean tasks (pool ids only, one each, at most TASKS_PER_FESTIVAL). */
+function cleanFestTasks(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).map(t => {
+    const def = isObj(t) ? TASK_POOL.find(d => d.id === t.id) : null;
+    if (!def || seen.has(def.id)) return null;
+    seen.add(def.id);
+    const target = Number.isInteger(t.target) && t.target >= 1 && t.target <= 99 ? t.target : def.target;
+    return { id: def.id, kind: def.kind, target, progress: Math.min(target, cleanCount(t.progress, 99)), claimed: t.claimed === true };
+  }).filter(Boolean).slice(0, TASKS_PER_FESTIVAL);
+}
+
+/**
+ * v9: state.festival, built from known fields only. Unknown festival / item / task ids dropped, tasks keep their pool id with a valid
+ * target / progress / claimed, lanterns <= 999, krathongs <= 5, login days unique and <= 7, seenDays <= 30, ledger <= 10 keys of full
+ * task lists, floatDays <= 10 days. A key without exactly 3 tasks (or a debug key) is cleared so the next sync rerolls. Idempotent.
+ */
+function sanitiseV9(s) {
+  const f = isObj(s.festival) ? s.festival : {};
+  const known = typeof f.id === 'string' && FESTIVAL_IDS.includes(f.id);
+  let tasks = known ? cleanFestTasks(f.tasks) : [];
+  let key = known && typeof f.key === 'string' && !f.key.startsWith('debug:') ? f.key.slice(0, 60) : '';
+  if (tasks.length !== TASKS_PER_FESTIVAL) { tasks = []; key = ''; }
+  const owned = {};
+  for (const [id, v] of Object.entries(isObj(f.owned) ? f.owned : {})) if (v === true && SHOP_ITEM_IDS.includes(id)) owned[id] = true;
+  const ledger = {};
+  for (const [k, v] of Object.entries(isObj(f.ledger) ? f.ledger : {})) {
+    if (k.length > 60 || k.startsWith('debug:') || !isObj(v)) continue;
+    const t = cleanFestTasks(v.tasks);
+    if (t.length === TASKS_PER_FESTIVAL) ledger[k] = { tasks: t, loginDays: cleanDays(v.loginDays, LOGIN_MAX) };
+  }
+  for (const k of Object.keys(ledger).slice(0, Math.max(0, Object.keys(ledger).length - LEDGER_MAX))) delete ledger[k];
+  const floatDays = {};
+  const fd = isObj(f.floatDays) ? f.floatDays : {};
+  for (const d of Object.keys(fd).filter(d => DAY_KEY_RE.test(d) && cleanCount(fd[d], 99) > 0).sort().slice(-FLOAT_DAYS_MAX)) floatDays[d] = cleanCount(fd[d], 99);
+  const k = isObj(f.krathong) ? f.krathong : {};
+  s.festival = {
+    ...newFestival(),
+    id: known ? f.id : '',
+    key,
+    tasks,
+    loginDays: known ? cleanDays(f.loginDays, LOGIN_MAX) : [],
+    seenDays: cleanDays(f.seenDays, SEEN_DAYS_MAX),
+    ledger,
+    lanterns: cleanCount(f.lanterns, LANTERN_MAX),
+    krathongs: cleanCount(f.krathongs, KRATHONG_MAX),
+    owned,
+    krathong: { day: typeof k.day === 'string' && DAY_KEY_RE.test(k.day) ? k.day : '', n: cleanCount(k.n, 99) },
+    floatDays,
+  };
+}
+
 let warnedNewer = false;
 
 /** True for a save written by a newer client than this one understands (must never be uploaded). */
@@ -624,6 +701,7 @@ function migrateUnsafe(raw) {
   sanitiseV6(s);
   sanitiseV7(s);
   sanitiseV8(s);
+  sanitiseV9(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

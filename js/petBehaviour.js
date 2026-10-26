@@ -18,6 +18,8 @@ export const YARD = {
   bowl: { x: 1.7, z: 2.3 },          // food bowl, front right
   bowlClear: 0.9,                    // wander targets keep this far from the bowl centre
   obstacles: [],                     // static prop circles { x, z, r } of the current yard tier (pond, tree, ...)
+  flowers: [],                       // where a bee may visit: flowerbed blooms and pond lilies of the current tier (V11 §5)
+  trees: [],                         // tree props { id, x, z } of the current tier (a spider hangs from one)
 };
 
 // ── Yard tiers (CONTRACT_V6 §4) ─────────────────────────────────────────────
@@ -56,7 +58,14 @@ export function configureYard(tier = 'L') {
   YARD.walkRadius = lay.walk - 0.1;
   YARD.nestZ = lay.barnZ + 2.35;
   YARD.backLimit = lay.barnZ + 3.0;
-  YARD.obstacles = yardProps(tier).map(({ x, z, r }) => ({ x, z, r }));
+  const props = yardProps(tier);
+  YARD.obstacles = props.map(({ x, z, r }) => ({ x, z, r }));
+  YARD.trees = props.filter(p => p.kind === 'tree').map(({ id, x, z }) => ({ id, x, z }));
+  YARD.flowers = [];
+  for (const p of props) {
+    if (p.kind === 'flowerbed') for (const a of [0.6, 2.7, 4.6]) YARD.flowers.push({ x: p.x + Math.cos(a) * 0.4, z: p.z + Math.sin(a) * 0.4 });
+    if (p.kind === 'pond') YARD.flowers.push({ x: p.x - 0.35, z: p.z + 0.25 }, { x: p.x + 0.3, z: p.z - 0.3 });   // the two lily pads
+  }
   return YARD;
 }
 
@@ -311,7 +320,7 @@ const pause = (rng, mult, lo = 3, hi = 8) => (lo + rng() * (hi - lo)) * mult;
  * barn3d plays them as reactions (feedPet result / a poop appearing).
  */
 export function nextAction(pet, actorState = {}, rng = Math.random, now = 0) {
-  return applyLoco(pet, nextActionBase(pet, actorState, rng, now), rng, now);
+  return applyLoco(pet, nextActionBase(pet, actorState, rng, now), rng, now, actorState);
 }
 
 function nextActionBase(pet, actorState, rng, now) { // eslint-disable-line no-unused-vars
@@ -395,7 +404,7 @@ function nextActionBase(pet, actorState, rng, now) { // eslint-disable-line no-u
     puddles = (rain.puddles || []).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.z));
     shelters = (rain.shelters || []).filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.z) && !p.busy);
     const loco = locomotionOf(pet && pet.speciesId);
-    if (puddles.length && !sad && loco.kind !== 'float' && loco.kind !== 'shell') w.puddle = lover ? 5.5 : 0.7 + pers.hop * 0.8;
+    if (puddles.length && !sad && loco.kind !== 'float' && loco.kind !== 'shell' && loco.kind !== 'hover') w.puddle = lover ? 5.5 : 0.7 + pers.hop * 0.8;
     if (shelters.length && loco.kind !== 'float' && loco.kind !== 'shell') w.shelter = lover ? 0.5 : 1.4 + pers.idle * 0.35 + (pet && (pet.personality === 'shy' || pet.personality === 'lazy') ? 2.5 : 0);
     w.wander *= 0.7;
   }
@@ -641,13 +650,14 @@ export function greetSpots(n) {
 export const WALK_BASE = 1.25;   // world units / second at pace 1
 export const TURN_RATE = 9;      // heading smoothing (1/s)
 const WALKS = new Set(['wander', 'approach', 'walkTo']);
-const ARRIVE_TYPES = new Set(['decor', 'buddy', 'party', 'puddle', 'shelter', 'breedMeet']);   // walk to the spot first, then the timer runs from arrival
+const ARRIVE_TYPES = new Set(['decor', 'buddy', 'party', 'puddle', 'shelter', 'breedMeet', 'visit', 'antLine', 'dangle', 'krathongWalk']);   // walk to the spot first, then the timer runs from arrival
 /** Fallback durations (s) for timed actions that do not carry one. */
 export const DEFAULT_DUR = {
   idle: 3, sleep: 12, sick: 5, lookAtCamera: 2, hop: 1.6, eat: 1.8, no: 0.7, bathe: 2.2, poop: 1.1, play: 3,
   flyCircle: 9, soar: 8, gallop: 6, sprint: 5, breach: 2.2, roar: 2.6, munch: 5, snowPuff: 3, shimmer: 2.4, flourish: 1.4,
   wave: 1.7, decor: 5, buddy: 5, party: 6, puddle: 5, shelter: 10,
   batLoop: 6, headTurn: 2.4, fan: 3.2,
+  flutterLoop: 6, visit: 4, antLine: 5, burrow: 3.8, hide: 3.4, chirp: 3.2, dangle: 6, tailCurl: 2.4, krathongWalk: 4,
 };
 
 /** Shortest signed angle from a to b. */
@@ -744,10 +754,10 @@ export function applyPartPose(parts, base, P) {
   set('mane', 'z', P.mane || 0);
   set('fluke', 'x', P.fluke || 0);
   set('lid', 'x', -(P.shell || 0));
-  set('shell', 'x', -(P.shell || 0) * 0.8);      // oyster / conch: the shell top opens and closes
+  set('shell', 'x', -(P.shell || 0) * 0.8 + 0.5 * (P.tuck || 0));   // snail: +x tips the spiral forward over the head (a hide)      // oyster / conch: the shell top opens and closes
   // peacock: P.tailUp 0..1 = how open the fan is. The fan trails back at rest (models.js); +x stands it upright and it spreads wider.
   const up = Math.max(0, Math.min(1, P.tailUp || 0));
-  set('tail', 'x', 0.8 * up);
+  set('tail', 'x', 0.8 * up + 0.6 * Math.max(0, Math.min(1, P.tailCurl || 0)));   // scorpion: +x curls the tail further forward over the head (models.js V11 notes)
   if (parts.tail && parts.tail.scale && base.tailScale) parts.tail.scale.set(base.tailScale.x * (1 + up), base.tailScale.y * (1 + 0.5 * up), base.tailScale.z);
   set('legR', 'x', P.leg || 0);                   // flamingo: +x folds the foot back and up
 }
@@ -786,20 +796,60 @@ export function isNightAt(ms) {
   return h >= 18 || h < 6;
 }
 
-/** What tapping a pet does besides the usual hop: the owl turns its head, the peacock fans its tail. Null for everyone else. */
+// ── Bug locomotion (CONTRACT_V11 §5) ──────────────────────────────────────────────────────────────────────
+/** Flyers hover above the grass with fast wings (like the water bubble pets they never walk); the others each crawl in their own way. */
+export const BUG_FLYERS = new Set(['bee', 'butterfly', 'fly', 'mosquito']);
+export const HOVER_HEIGHT = { bee: 0.62, butterfly: 0.78, fly: 0.55, mosquito: 0.7 };
+const HOVER_SPEED = { bee: 1.15, butterfly: 0.75, fly: 1.5, mosquito: 1.3 };
+for (const id of BUG_FLYERS) LOCO[id] = { kind: 'hover', speed: HOVER_SPEED[id], turn: 0.9 };
+LOCO.ladybug = { kind: 'crawl', speed: 0.8 };               // crawls, sometimes a short flight
+LOCO.ant = { kind: 'march', speed: 1.1 };                   // steady march; two or more form a line
+LOCO.caterpillar = { kind: 'inch', speed: 0.45, turn: 0.6 };   // body squash wave
+LOCO.earthworm = { kind: 'wriggle', speed: 0.6, turn: 0.7 };   // wriggles, burrows down and pops up nearby
+LOCO.snail = { kind: 'snail', speed: 0.3, turn: 0.4 };         // very slow, hides in its shell when tapped
+LOCO.cricket = { kind: 'jump', speed: 1.25 };               // long hops, chirps at night
+LOCO.spider = { kind: 'skitter', speed: 1.15 };             // sometimes hangs from a tree on a thread
+LOCO.scorpion = { kind: 'scuttle', speed: 0.85 };           // curls its tail when idle
+
+/** Gap (world units) between the ants of a line. */
+export const ANT_GAP = 0.5;
+/** Where follower `slot` (1, 2, ...) of an ant line stands: behind the leader (x, z), against its unit heading (hx, hz). */
+export function antLineSpot(leader, hx, hz, slot) {
+  return clampToYard(num(leader && leader.x) - num(hx) * ANT_GAP * slot, num(leader && leader.z) - num(hz) * ANT_GAP * slot);
+}
+
+/** Tree spots for a hanging spider: [{ id, anchor: {x, z}, y }]; the thread starts at the underside of the canopy (anchor), the spider hangs below. */
+export const THREAD_ANCHOR_Y = 1.15;
+export function dangleSpots(trees = YARD.trees) {
+  const out = [];
+  for (const tr of trees || []) {
+    const base = Math.atan2(-tr.z, -tr.x);                 // the open side of the tree faces the yard centre
+    [0, 0.9, -0.9].forEach((da, k) => {
+      const a = base + da;
+      const p = clampToYard(tr.x + Math.cos(a) * 0.66, tr.z + Math.sin(a) * 0.66);
+      out.push({ id: `${tr.id}:${k}`, anchor: p, y: THREAD_ANCHOR_Y });
+    });
+  }
+  return out;
+}
+
+/** What tapping a pet does besides the usual hop: the owl turns its head, the peacock fans its tail, the snail hides in its shell. Null for everyone else. */
 export function tapReaction(speciesId) {
   if (speciesId === 'owl') return { type: 'headTurn', dur: DEFAULT_DUR.headTurn };
   if (speciesId === 'peacock') return { type: 'fan', dur: DEFAULT_DUR.fan };
+  if (speciesId === 'snail') return { type: 'hide', dur: DEFAULT_DUR.hide };
   return null;
 }
 
 const FREE_TYPES = new Set(['wander', 'approach', 'idle', 'lookAtCamera', 'hop']);
 
 /** Slows the walkers down per species; shells (oyster / conch) mostly stay put and just open and close. Pure. */
-function applyLoco(pet, act, rng, nowMs) {
+function applyLoco(pet, act, rng, nowMs, st = {}) {
   const lo = locomotionOf(pet && pet.speciesId);
   if (lo === WALK_LOCO || !act) return act;
   const walking = act.type === 'wander' || act.type === 'approach';
+  const bug = bugLoco(pet, act, lo, walking, rng, nowMs, st || {});
+  if (bug) return bug;
   if (lo.kind === 'shell' && walking && !act.reason && rng() < 0.85) return { type: 'idle', duration: 5 + rng() * 5, reason: 'shell' };
   if (lo.kind === 'play' && act.type === 'idle' && !act.reason && rng() < 0.3) return { type: 'hop', duration: 1.6, hops: 3 };
   if (lo.kind === 'bat' && FREE_TYPES.has(act.type) && !act.reason) {
@@ -810,6 +860,53 @@ function applyLoco(pet, act, rng, nowMs) {
   if (lo.kind === 'birdhop' && walking && !act.reason && rng() < 0.22) act = { ...act, flutter: true };   // a short hop-flight with flapping wings
   if (Number.isFinite(act.speed) && lo.speed) return { ...act, speed: act.speed * lo.speed * (act.flutter ? 1.35 : 1) };
   return act;
+}
+
+/**
+ * The bug species' own idles (CONTRACT_V11 §5). Returns a replacement action, or null to carry on with the usual
+ * speed scaling.
+ */
+function bugLoco(pet, act, lo, walking, rng, nowMs, st) {
+  const kind = lo.kind, id = pet && pet.speciesId;
+  const free = (walking || act.type === 'idle') && !act.reason;
+  if (!free) return null;
+  const idle = act.type === 'idle';
+  if (kind === 'hover') {
+    if (id === 'bee' && YARD.flowers.length && rng() < 0.45) {   // the bee visits a bloom or a lily pad
+      const f = YARD.flowers[Math.floor(rng() * YARD.flowers.length)];
+      return { type: 'visit', target: clampToYard(f.x, f.z), speed: lo.speed, duration: 3 + rng() * 3, flower: true };
+    }
+    if (id === 'butterfly' && rng() < 0.35) return { type: 'flutterLoop', duration: 5 + rng() * 3 };   // drifts in loops
+    return null;
+  }
+  if (kind === 'crawl' && walking && rng() < 0.2) return { ...act, flutter: true, speed: (act.speed || 1) * lo.speed * 1.9 };   // a short flight
+  if (kind === 'march') {
+    // two or more ants walk in a line behind the one with the lowest id hash
+    const ax = num(st.x), az = num(st.z), mine = hashId(pet.id);
+    const ants = (Array.isArray(st.others) ? st.others : []).filter(o => o && o.sp === 'ant' && Number.isFinite(o.x) && Number.isFinite(o.z));
+    const ranked = ants.map(o => ({ o, h: hashId(o.id) })).sort((a, b) => a.h - b.h);
+    if (ranked.length && ranked[0].h < mine && rng() < 0.8) {
+      const lead = ranked[0].o, slot = ranked.filter(r => r.h < mine).length;
+      let hx = Number.isFinite(lead.tx) ? lead.tx - lead.x : ax - lead.x, hz = Number.isFinite(lead.tz) ? lead.tz - lead.z : az - lead.z;
+      const l = Math.hypot(hx, hz) || 1;
+      hx /= l; hz /= l;
+      return { type: 'antLine', leaderId: lead.id, slot, target: antLineSpot(lead, hx, hz, slot), speed: 1.2 * lo.speed, duration: 4 + rng() * 3 };
+    }
+    return null;
+  }
+  if (kind === 'wriggle' && rng() < 0.2) {
+    const others = (Array.isArray(st.others) ? st.others : []).filter(o => o && Number.isFinite(o.x) && Number.isFinite(o.z));
+    return { type: 'burrow', to: pickTarget(rng, num(st.x), num(st.z), others, false), duration: DEFAULT_DUR.burrow };
+  }
+  if (kind === 'snail' && idle && rng() < 0.12) return { type: 'hide', self: true, duration: DEFAULT_DUR.hide };
+  if (kind === 'jump' && idle && isNightAt(nowMs) && rng() < 0.55) return { type: 'chirp', duration: DEFAULT_DUR.chirp + rng() * 2 };
+  if (kind === 'skitter' && YARD.trees.length && rng() < 0.22) {
+    const spots = dangleSpots();
+    const sp = spots[Math.floor(rng() * spots.length)];
+    return { type: 'dangle', spotId: sp.id, anchor: sp.anchor, target: sp.anchor, y: sp.y, speed: lo.speed, duration: 4.5 + rng() * 3 };
+  }
+  if (kind === 'scuttle' && idle && rng() < 0.5) return { type: 'tailCurl', duration: DEFAULT_DUR.tailCurl + rng() };
+  return null;
 }
 
 // ── Rain (CONTRACT_V9 §4) ───────────────────────────────────────────────────────────────────────────────────

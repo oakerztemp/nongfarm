@@ -19,7 +19,7 @@ import {
 const C = YARD_BASE_COINS.common, L = YARD_BASE_COINS.legendary; // yard coins/h of a hamster / racehorse
 import { nextAction, bubbleFor, bowlSpot, makeRng, clampToYard, paceOf, YARD, beginAction, advanceActor,
   signatureFor, NAP_CAP, pickTarget, ceremonyKind, partBases, applyPartPose, canStartCeremony,
-  yardTierOf, yardProps, configureYard, YARD_TIER_LAYOUT, nestSpot } from '../js/petBehaviour.js';
+  yardTierOf, yardProps, configureYard, YARD_TIER_LAYOUT, nestSpot, hashId } from '../js/petBehaviour.js';
 
 const HOUR = 3600 * 1000;
 const MIN = 60 * 1000;
@@ -2106,4 +2106,132 @@ test('sky tap reactions: owl turns its head, peacock fans its tail, others have 
   assertEq([scale.x, scale.y, scale.z], [1, 1, 1], 'the fan closes');
   applyPartPose({}, partBases({}), { tailUp: 1, leg: 1 });   // billboards have no parts: no throw
   assertEq(beginAction({ type: 'fan' }).dur, 3.2, 'fan lasts 3.2s'); assertEq(beginAction({ type: 'headTurn' }).dur, 2.4, 'head turn');
+});
+
+// ── CONTRACT_V11 §5: bug locomotion and idles ──
+import { BUG_FLYERS, antLineSpot, dangleSpots, ANT_GAP } from '../js/petBehaviour.js';
+
+test('bug locomotion: flyers hover, each crawler has its own kind', () => {
+  for (const id of ['bee', 'butterfly', 'fly', 'mosquito']) { assert(BUG_FLYERS.has(id), id); assertEq(locomotionOf(id).kind, 'hover', id); }
+  const kinds = { ladybug: 'crawl', ant: 'march', caterpillar: 'inch', earthworm: 'wriggle', snail: 'snail', cricket: 'jump', spider: 'skitter', scorpion: 'scuttle' };
+  for (const [id, k] of Object.entries(kinds)) assertEq(locomotionOf(id).kind, k, id);
+  assert(locomotionOf('snail').speed < 0.4 && locomotionOf('caterpillar').speed < 0.6, 'snail and caterpillar are slow');
+  assertEq(locomotionOf('beetle').kind, 'walk', 'beetle walks');
+});
+
+test('bug locomotion: the bee visits blooms and lily pads, the butterfly drifts in loops, the ladybug sometimes flies', () => {
+  configureYard('XL');
+  assert(YARD.flowers.length >= 5, 'XL has flowerbed blooms and two lily pads');
+  configureYard('S');
+  assertEq(YARD.flowers.length, 0, 'S has no flowers');
+  configureYard('XL');
+  const day = new Date(2026, 9, 26, 13).getTime();
+  const acts = (id, n) => { const { pet } = setup(id, { personality: 'cheerful' }); const rng = makeRng(7); const out = []; for (let i = 0; i < n; i++) out.push(nextAction(pet, { x: 0, z: 0, others: [], last: 'idle' }, rng, day)); return out; };
+  const bee = acts('bee', 400).filter(a => a.type === 'visit');
+  assert(bee.length > 20, 'bee visits: ' + bee.length);
+  assert(bee.every(a => a.flower && Number.isFinite(a.target.x) && Math.hypot(a.target.x, a.target.z) <= YARD.walkRadius + 1e-6 && a.duration >= 3), 'visit targets are finite and inside the yard');
+  assert(YARD.flowers.some(f => bee.some(a => Math.hypot(a.target.x - f.x, a.target.z - f.z) < 0.01)), 'a visit lands on a flower spot');
+  assert(acts('butterfly', 400).filter(a => a.type === 'flutterLoop').length > 20, 'butterfly loops');
+  assert(acts('hamster', 300).every(a => a.type !== 'visit' && a.type !== 'flutterLoop'), 'others do not');
+  const lw = acts('ladybug', 400).filter(a => a.type === 'wander');
+  const fl = lw.filter(a => a.flutter);
+  assert(fl.length > 5 && fl.length < lw.length * 0.5, `some crawls become a short flight: ${fl.length}/${lw.length}`);
+  assert(fl.every(a => a.speed > 0 && Number.isFinite(a.speed)), 'flight speed finite');
+  configureYard('L');
+});
+
+test('bug locomotion: ants walk in a line behind the lowest-id ant', () => {
+  configureYard('L');
+  const mk = id => setup('ant', { id }).pet;
+  const ids = ['a1', 'a2', 'a3'].sort((x, y) => hashId(x) - hashId(y));
+  const others = id => ids.filter(x => x !== id).map((x, i) => ({ id: x, sp: 'ant', x: 1 + i, z: 1, tx: 3, tz: 1 }));
+  const rng = makeRng(3);
+  const lead = Array.from({ length: 200 }, () => nextAction(mk(ids[0]), { x: 0, z: 0, others: others(ids[0]), last: 'idle' }, rng, 0));
+  assert(lead.every(a => a.type !== 'antLine'), 'the leader walks on its own');
+  const fol = Array.from({ length: 300 }, () => nextAction(mk(ids[2]), { x: 0, z: 0, others: others(ids[2]), last: 'idle' }, rng, 0)).filter(a => a.type === 'antLine');
+  assert(fol.length > 80, 'followers line up: ' + fol.length);
+  assert(fol.every(a => a.leaderId === ids[0] && a.slot === 2 && Number.isFinite(a.target.x) && a.duration > 3), 'follower is the 2nd behind the leader');
+  const L = { x: 2, z: 1 };
+  const s1 = antLineSpot(L, 1, 0, 1), s2 = antLineSpot(L, 1, 0, 2);
+  near(s1.x, 2 - ANT_GAP, 'first follower'); near(s2.x, 2 - 2 * ANT_GAP, 'second follower'); near(s2.z, 1, 'same row');
+  const solo = Array.from({ length: 100 }, () => nextAction(mk('a1'), { x: 0, z: 0, others: [], last: 'idle' }, rng, 0));
+  assert(solo.every(a => a.type !== 'antLine'), 'a single ant never lines up');
+  const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type: 'antLine', target: { x: 2, z: 0 }, speed: 1 }), loco: locomotionOf('ant') };
+  let g = 0; while (!advanceActor(A, 0.1, () => {}).decided && g++ < 400 && !A.act.arrived);
+  assert(A.act.arrived, 'antLine walks to its spot first');
+});
+
+test('bug locomotion: caterpillar inches, earthworm burrows, snail hides on tap, cricket chirps at night, spider hangs, scorpion curls', () => {
+  configureYard('XL');
+  const day = new Date(2026, 9, 26, 13).getTime(), night = new Date(2026, 9, 26, 23).getTime();
+  const run = (id, ms, n = 500, ctx = {}) => { const { pet } = setup(id, { personality: 'cheerful' }); const rng = makeRng(11); const c = {}; for (let i = 0; i < n; i++) { const a = nextAction(pet, { x: 0, z: 0, others: [], last: 'idle', ...ctx }, rng, ms); c[a.type] = (c[a.type] || 0) + 1; } return c; };
+  assert(run('earthworm', day).burrow > 30, 'earthworm burrows');
+  const b = nextAction(setup('earthworm').pet, { x: 0, z: 0, others: [], last: 'idle' }, () => 0.05, day);
+  assert(b.type === 'burrow' && Number.isFinite(b.to.x) && Math.hypot(b.to.x, b.to.z) <= YARD.walkRadius + 1e-6 && b.duration > 3, 'burrow pops up somewhere inside the yard');
+  assert(run('snail', day).hide > 5, 'snail sometimes hides itself');
+  assertEq(tapReaction('snail').type, 'hide', 'tap hides the snail'); assert(tapReaction('snail').dur > 2, 'for a few seconds');
+  assert(run('cricket', night).chirp > 20 && !run('cricket', day).chirp, 'chirps at night only');
+  const sp = run('spider', day); assert(sp.dangle > 40, 'spider dangles: ' + JSON.stringify(sp));
+  configureYard('S'); assert(!run('spider', day).dangle, 'no tree, no thread (tier S)'); configureYard('XL');
+  assert(run('scorpion', day).tailCurl > 30, 'scorpion curls its tail when idle');
+  const spots = dangleSpots();
+  assertEq(spots.length, YARD.trees.length * 3, '3 hanging spots per tree');
+  assert(spots.every(p => Number.isFinite(p.anchor.x) && p.y > 0.5 && Math.hypot(p.anchor.x, p.anchor.z) <= YARD.walkRadius + 1e-6), 'spots are finite and walkable');
+  for (const id of ['caterpillar', 'ant', 'ladybug']) assert(run(id, day, 200).wander > 10, id + ' still wanders');
+  for (const type of ['visit', 'antLine', 'dangle', 'krathongWalk']) { const A = { x: 0, z: 0, heading: 0, phase: 0, act: beginAction({ type, target: { x: 1, z: 0 }, dur: 1 }) }; let g = 0; while (!A.act.arrived && g++ < 100) advanceActor(A, 0.1, () => {}); assert(A.act.arrived, type + ' walks to its spot, then its timer runs'); }
+  // models.js V11 signs: the scorpion tail curls with +x, the snail shell tips forward with +x
+  const tail = { rotation: { x: 0.2, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1, set() {} } }, shell = { rotation: { x: 0, y: 0, z: 0 } };
+  const parts = { tail, shell }, base = partBases(parts);
+  applyPartPose(parts, base, { tailCurl: 1, tuck: 1 });
+  near(tail.rotation.x, 0.8, 'tail curls forward'); near(shell.rotation.x, 0.5, 'shell tips forward');
+  applyPartPose(parts, base, {});
+  near(tail.rotation.x, 0.2, 'tail back'); near(shell.rotation.x, 0, 'shell back');
+  configureYard('L');
+});
+
+// ── CONTRACT_V11 §4: festival chip + sheet (pure strings) ──
+import { festChipHtml, festivalSheetHtml } from '../js/ui/festivalSheet.js';
+import { festivalView, activeFestival } from '../js/festival.js';
+
+test('festival UI: the chip names the festival and the days left; the sheet lists 3 tasks, 7 login dots and the shop', () => {
+  const s = createNewState();
+  const fest = activeFestival(now());
+  const chip = festChipHtml(s);
+  assert(chip.includes('data-action="open-festival"') && chip.includes(fest.nameTh) && /เหลือ \d+ วัน/.test(chip), 'chip: ' + chip.slice(0, 120));
+  assert(!chip.includes('fest-chip-n'), 'nothing to claim yet');
+  const view = festivalView(s);
+  view.tasks[0].progress = view.tasks[0].target; view.tasks[0].claimable = true;
+  const html = festivalSheetHtml(s, view);
+  assertEq((html.match(/data-fest="claim"/g) || []).length, 3, '3 claim buttons');
+  assertEq((html.match(/class="fest-dot[ "]/g) || []).length, 7, '7 login dots');
+  assert(html.includes('data-fest="buy"') && html.includes('ร้านเทศกาล'), 'shop');
+  assert(!html.includes('data-fest="craft"'), 'krathong only during ลอยกระทง');
+  const loy = { ...view, festival: { ...view.festival, id: 'fest_loykrathong' }, krathong: { stock: 1, max: 5, recipe: { forage_herb: 3, forage_wood: 1 }, missing: {}, canCraft: true, floatsToday: 0, cap: 3, left: 3, peak: false } };
+  const h2 = festivalSheetHtml(s, loy);
+  assert(h2.includes('data-fest="craft"') && h2.includes('data-fest="float"') && !/data-fest="float" disabled/.test(h2), 'craft + float buttons');
+});
+
+// ── CONTRACT_V11 §3/§4: festival decoration stays inside its draw-call budget ──
+import * as engineT from '../js/world3d/engine.js';
+
+test('festival decoration: ลอยกระทง <= 4 extra draw calls, weekly bunting <= 1 (needs WebGL)', async () => {
+  if (!engineT.detectWebGL({ allowSoftware: true })) { console.log('PASS note: no WebGL, skipped'); return; }
+  const { mountBarn3d } = await import('../js/ui/barn3d.js');
+  const oldUrl = location.href;
+  history.replaceState(null, '', location.pathname + '?debug=1');   // barn3d only exposes its debug object with ?debug=1
+  const ctx = { run: () => null, esc: x => x, petSheetHtml: () => '', foodTrayHtml: () => '', nurserySheetHtml: () => '', openDetails() {}, openEggPicker() {}, onFatal(e) { throw e; }, decor: { available: () => false } };
+  const calls = async ms => withFakeNow(ms, async () => {
+    const host = document.createElement('div');
+    host.style.cssText = 'width:320px;height:240px;position:fixed;left:0;top:0;';
+    document.body.appendChild(host);
+    const b = mountBarn3d(host, ctx);
+    try { const f = host.__b3debug.fest(); return [f.id, f.calls]; } finally { b.dispose(); host.remove(); }
+  });
+  try {
+    const [idLoy, loy] = await calls(new Date(2026, 10, 20, 12).getTime());
+    assertEq(idLoy, 'fest_loykrathong', 'special festival is on');
+    assert(loy >= 2 && loy <= 4, 'ลอยกระทง decoration calls: ' + loy);
+    const [idWk, wk] = await calls(new Date(2026, 10, 10, 12).getTime());
+    assert(idWk !== 'fest_loykrathong' && wk === 1, `weekly bunting is one call: ${idWk} ${wk}`);
+  } finally { history.replaceState(null, '', oldUrl); }
 });

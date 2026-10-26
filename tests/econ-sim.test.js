@@ -15,7 +15,9 @@ import { CROPS, getCrop } from '../js/data/crops.js';
 import { EGGS } from '../js/data/eggs.js';
 import { ITEMS, getItem } from '../js/data/items.js';
 import { DECOR } from '../js/data/decor.js';
-import { ACCESSORIES, shopAccessories, getAccessory } from '../js/data/accessories.js';
+import { ACCESSORIES, FESTIVAL_ACCESSORIES, shopAccessories, expeditionAccessories, getAccessory } from '../js/data/accessories.js';
+import { FESTIVAL_DECOR } from '../js/data/decor.js';
+import { activeFestival, claimTask, loginLantern, buyFestivalItem, craftKrathong, floatKrathong, festivalView, LOY_ID, TASK_REWARD, LOGIN_MAX, KRATHONG_RECIPE, KRATHONG_MAX, FLOAT_DAILY_CAP, FLOAT_PEAK_CAP } from '../js/festival.js';
 import { getSpecies } from '../js/data/species.js';
 import { getEgg } from '../js/data/eggs.js';
 import { COATS } from '../js/data/coats.js';
@@ -240,6 +242,7 @@ function breedWhenRich(s, bot) {
   const before = s.player.coins;
   if (breed(s, best.a.id, best.b.id).ok) {
     bot.bred++;
+    bot.layLog.push({ a: best.a.id, b: best.b.id, t: now() });
     bot.breedSpent += before - s.player.coins;
     if (best.bestFriends) bot.bredBest++;
   }
@@ -273,6 +276,44 @@ function makeRoomForFamily(s, bot) {
 
 const canWorkAfterRecall = p => p.stats.energy >= 20 && p.stats.hunger >= 15 && !p.sick;
 
+// V11: the bot plays the festival like a polite player: first open of the day = login lantern, claims every finished task, spends lanterns on the
+// festival's items, and during ลอยกระทง crafts krathongs ONLY from herbs / wood beyond what the next two yard upgrades (and the next decor) still need,
+// then floats them with idle pets. Lantern gains are logged per festival key so a gate can bound them.
+function festivalPlay(s, bot) {
+  const F = bot.fest;
+  const f = () => s.festival;
+  const gain = fn => {
+    const before = f().lanterns;
+    const r = fn();
+    const d = f().lanterns - before;
+    if (r.ok && d > 0) { const k = f().id + '|' + f().key; F.gained[k] = (F.gained[k] || 0) + d; F.total += d; }
+    return r;
+  };
+  const coins0 = s.player.coins, dust0 = s.stardust;
+  if (gain(() => loginLantern(s)).ok) F.logins++;
+  for (const t of [...f().tasks]) if (gain(() => claimTask(s, t.id)).ok) F.tasks++;
+  for (const it of (festivalView(s).shop || [])) {
+    if (it.owned || f().lanterns < it.price) continue;
+    if (buyFestivalItem(s, it.id).ok) { F.items.push(it.id); F.spent += it.price; }
+  }
+  if (activeFestival().id === LOY_ID) {
+    const keep = materialTarget(s);
+    const wish = decorWishlist(s)[0];
+    if (wish) for (const [id, n] of Object.entries(wish.items)) keep[id] = (keep[id] || 0) + n;
+    while (f().krathongs < KRATHONG_MAX && Object.entries(KRATHONG_RECIPE).every(([id, n]) => countItem(s, id) - n >= (keep[id] || 0))) {
+      if (!craftKrathong(s).ok) break;
+      F.crafted++;
+      for (const [id, n] of Object.entries(KRATHONG_RECIPE)) F.mat[id] = (F.mat[id] || 0) + n;
+    }
+    for (const p of s.pets) {
+      if (f().krathongs < 1) break;
+      if (gain(() => floatKrathong(s, p.id)).ok) { F.floated++; }
+    }
+  }
+  // festivals pay no coins and no stardust (gate 1): anything the bot did here left both untouched
+  if (s.player.coins !== coins0 || s.stardust !== dust0) F.leak++;
+}
+
 function session(s, bot, cadence) {
   const startCoins = () => s.player.coins;
   collectYardGifts(s, bot);
@@ -288,6 +329,8 @@ function session(s, bot, cadence) {
     const r = completeOrder(s, o.id);
     if (r.ok) { bot.earned += o.reward.coins; bot.by.orders += o.reward.coins; }
   }
+
+  if (!bot.noFest) festivalPlay(s, bot);
 
   // 3. sell the rest of crops/forage (keep what open orders still need)
   const keep = orderNeeds(s);
@@ -488,27 +531,29 @@ const PROFILES = {
 // ── one full run ────────────────────────────────────────────────────────────
 function runSim(profile, seed, opts = {}) {
   const next = PROFILES[profile];
-  return withFakeNow(START, clock => {
-    const realRandom = Math.random;
+  const T0 = opts.start ?? START;
+  return withFakeNow(T0, clock => {
+    const realRandom = Math.random, realNow = Date.now;
     Math.random = mulberry32(seed);
+    Date.now = () => clock.get();   // uid() mixes in Date.now(): without this pet ids (and everything hashed from them) differ on every run
     try {
       const s = createNewState();
-      const bot = { earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
+      const bot = { noFest: !!opts.noFest, fest: { gained: {}, total: 0, logins: 0, tasks: 0, items: [], spent: 0, crafted: 0, floated: 0, mat: {}, leak: 0 }, earned: 0, assigns: 0, combos: 0, autoDispatch: 0, gathers: 0, upgrades: 0, decorBuilt: 0, decorPlaced: 0, decorSpent: 0, accBought: 0, accSpent: 0, noAcc: !!opts.noAcc, noBreed: !!opts.noBreed, rehomed: 0, bred: 0, bredBest: 0, breedSpent: 0, layLog: [], by: { crop: 0, forage: 0, orders: 0, yard: 0 } };
       const rows = [];
-      let last = START;
-      let lastRowAt = START;
+      let last = T0;
+      let lastRowAt = T0;
       let lastEarned = 0;
       let lastYard = 0;
       const tierDay = {};   // virtual days (fractional) until the yard first reached tier M / L / XL
-      const t0 = Date.now();
-      for (let t = START; t <= START + DAYS * DAY; t = next(t)) {
+      const t0 = performance.now();
+      for (let t = T0; t <= T0 + DAYS * DAY; t = next(t)) {
         clock.set(t);
-        if (t > START) bot.autoDispatch += catchUp(s, last, t);
+        if (t > T0) bot.autoDispatch += catchUp(s, last, t);
         last = t;
         claimDaily(s);
         session(s, bot, Math.max(10 * MIN, next(t) - t));
-        for (const [id, cap] of [['M', 6], ['L', 10], ['XL', 15]]) if (!(id in tierDay) && s.barnCapacity >= cap) tierDay[id] = +((t - START) / DAY).toFixed(2);
-        if (t >= START + (rows.length + 1) * DAY) {
+        for (const [id, cap] of [['M', 6], ['L', 10], ['XL', 15]]) if (!(id in tierDay) && s.barnCapacity >= cap) tierDay[id] = +((t - T0) / DAY).toFixed(2);
+        if (t >= T0 + (rows.length + 1) * DAY) {
           rows.push({
             day: rows.length + 1, level: s.player.level, coins: Math.floor(s.player.coins),
             perHour: (bot.earned - lastEarned) / ((t - lastRowAt) / HOUR), plots: s.plots.length, pets: s.pets.length,
@@ -520,9 +565,10 @@ function runSim(profile, seed, opts = {}) {
           lastRowAt = t;
         }
       }
-      return { rows, assigns: bot.assigns, combos: bot.combos, autoDispatch: bot.autoDispatch, by: bot.by, bot, earned: bot.earned, perHour: bot.earned / (DAYS * 24), ms: Date.now() - t0, tierDay, state: s };
+      return { rows, assigns: bot.assigns, combos: bot.combos, autoDispatch: bot.autoDispatch, by: bot.by, bot, earned: bot.earned, perHour: bot.earned / (DAYS * 24), ms: Math.round(performance.now() - t0), tierDay, state: s };
     } finally {
       Math.random = realRandom;
+      Date.now = realNow;
     }
   });
 }
@@ -537,6 +583,19 @@ const resultsOff = {};
 async function resultOff(name) {   // same bot + seed, accessory buying switched off
   if (!resultsOff[name]) resultsOff[name] = await runSim(name, 20260302, { noAcc: true });
   return resultsOff[name];
+}
+
+const NOV16 = new Date(2026, 10, 16, 8, 0, 0).getTime();   // a window that contains ลอยกระทง (17..30 Nov) from day 2 on
+const resultsFest = {};
+async function resultFest(name, mode) {   // V11: festival play OFF ('off') or ON in the second window ('nov'), same bot + seed
+  const key = name + '|' + mode;
+  if (!resultsFest[key]) resultsFest[key] = await runSim(name, 20260302, mode === 'off' ? { noFest: true } : mode === 'nov' ? { start: NOV16 } : { start: NOV16, noFest: true });
+  return resultsFest[key];
+}
+const resultsNoFest = {};
+async function resultNoFest(name) {
+  if (!resultsNoFest[name]) resultsNoFest[name] = await runSim(name, 20260302, { noFest: true });
+  return resultsNoFest[name];
 }
 
 const resultsNoBreed = {};
@@ -1023,6 +1082,26 @@ test('econ V10 gate 1: breeding is no stardust pump (per coin of cost, a bred ba
   console.log(`[econ-sim] V10 gate 1: ${checked} parent pairs, none beats the egg in stardust per coin`);
 });
 
+test('econ V10 gate 1 (cross-habitat): parents from two habitats never beat the better of the two eggs in stardust per coin', () => {
+  const worst = [];
+  let checked = 0;
+  for (const ha of HABITAT_LIST) for (const hb of HABITAT_LIST) {
+    if (HABITAT_LIST.indexOf(hb) <= HABITAT_LIST.indexOf(ha)) continue;
+    const eggBest = Math.max(...[ha, hb].map(h => eggRollValue(h, dustOf) * (1 + SHINY_EGG) / eggOf(h).price));
+    for (const ra of RARITY_LIST) for (const rb of RARITY_LIST) {
+      if (!speciesOfRarity(ha, ra) || !speciesOfRarity(hb, rb)) continue;
+      for (const shinyParents of [false, true]) for (const best of [false, true]) {
+        const baby = babyOf(ha, ra, hb, rb, shinyParents, best);
+        const perCoin = babyValue(baby, dustOf) * (1 + baby.shiny) / baby.cost;
+        checked++;
+        if (perCoin > eggBest * 1.0000001) worst.push(`${ha} ${ra} + ${hb} ${rb}${shinyParents ? ' shiny' : ''}${best ? ' best' : ''}: ${(perCoin / eggBest).toFixed(2)}x`);
+      }
+    }
+  }
+  assert(checked >= 400, 'pairs checked: ' + checked);
+  assert(!worst.length, `${worst.length} of ${checked} cross-habitat pairs out-earn an egg (${worst.slice(0, 4).join(' | ')})`);
+});
+
 test('econ V10 gate 2: breeding is no coin pump (a bred baby repays its cost no faster than a bought egg: RELEASE_COINS + 14 days of yard value per coin spent, best-friend price included)', () => {
   const days14 = 14 * 24;
   const worst = [];
@@ -1099,9 +1178,13 @@ test('econ V10 gate 4: family eggs and coats have no buy->sell path (not an item
 test('econ V10: breeding is level-gated, rate-limited by the 72 h cooldown and the 2-egg cap (the bot never lays more than one egg per parent per 72 h)', async () => {
   for (const name of ['3h', 'realistic']) {
     const on = await result(name);
-    // every pet is a parent at most once per 72 h: with N pets the bot cannot lay more than N/2 eggs per 72 h, so over 14 days it is bounded by N x 14 / 6
-    const bound = Math.ceil(on.state.pets.length * 14 / 6) + 6;
-    assert(on.bot.bred <= bound, `${name}: ${on.bot.bred} family eggs in 14 days (bound ${bound})`);
+    // every pet is a parent at most once per 72 h: the gaps between two eggs of the same parent are >= the cooldown
+    const byParent = new Map();
+    for (const { a, b, t } of on.bot.layLog) for (const id of [a, b]) byParent.set(id, [...(byParent.get(id) || []), t]);
+    assert(on.bot.layLog.length === on.bot.bred && on.bot.bred > 0, `${name}: every laid egg is logged`);
+    for (const [id, times] of byParent) {
+      for (let i = 1; i < times.length; i++) assert(times[i] - times[i - 1] >= BREED_COOLDOWN_MS, `${name}: parent ${id} laid twice ${((times[i] - times[i - 1]) / 3600000).toFixed(1)} h apart`);
+    }
     assert(on.bot.breedSpent <= on.earned, `${name}: the bot spent ${on.bot.breedSpent} on breeding but earned ${on.earned}`);
   }
   const s = createNewState();
@@ -1109,4 +1192,100 @@ test('econ V10: breeding is level-gated, rate-limited by the 72 h cooldown and t
   assert(!canBreed(s, 'x', 'y').ok, 'below the unlock level nothing breeds');
   assertEq(BREED_COOLDOWN_MS, 72 * 3600 * 1000, 'cooldown 72 h');
   assertEq(FAMILY_EGG_MAX, 2, 'family egg cap 2');
+});
+
+// ── V11: festival guardrails (CONTRACT_V11 "Economy and save guardrails") ───
+const FEST_ITEM_IDS = [...FESTIVAL_ACCESSORIES.map(a => a.id), ...FESTIVAL_DECOR.map(d => d.id)];
+
+test('econ V11 gate 1: festivals pay no coins and no stardust; festival items are in no coin shop, no expedition drop, no sell or build path', () => withFakeNow(new Date(2026, 10, 24, 20, 0, 0).getTime(), () => {
+  assertEq(FESTIVAL_ACCESSORIES.length, 10, '10 festival accessories');
+  assertEq(FESTIVAL_DECOR.length, 2, '2 festival decors');
+  for (const a of FESTIVAL_ACCESSORIES) {
+    assert(a.festival && a.lanterns > 0 && a.price == null && a.zone == null, a.id + ' is lantern-only (festival id, lanterns, no coin price, no zone)');
+    assert(!shopAccessories().some(x => x.id === a.id) && !expeditionAccessories().some(x => x.id === a.id) && !ACCESSORIES.some(x => x.id === a.id), a.id + ' is in no coin shop or drop list');
+    assert(getAccessory(a.id) === a, a.id + ' is still a normal accessory for wearing');
+  }
+  assertEq(shopAccessories().length, 7, 'the coin shop is unchanged');
+  const s = createNewState();
+  s.player.coins = 99999; s.player.level = 30;
+  for (const id of FEST_ITEM_IDS) {
+    assert(!getItem(id), id + ' is not an inventory item');
+    assert(!sellItem(s, id, 1).ok && !buyItem(s, id, 1).ok, id + ' cannot go through buy/sell');
+  }
+  for (const a of FESTIVAL_ACCESSORIES) assert(!buyAccessory(s, a.id).ok, a.id + ' cannot be bought with coins');
+  for (const d of FESTIVAL_DECOR) {
+    assert(d.lanterns > 0 && d.coins === 0 && d.festival, d.id + ' data');
+    assert(!buildDecor(s, d.id).ok && !decorBuildStatus(s, d.id).ok, d.id + ' cannot be built for coins or materials');
+  }
+  // the whole festival loop moves neither coins nor stardust
+  const coins = s.player.coins, dust = s.stardust;
+  assert(loginLantern(s).ok, 'login');
+  s.festival.lanterns = 40;
+  for (const t of s.festival.tasks) { t.progress = t.target; assert(claimTask(s, t.id).ok, 'claim'); }
+  assert(buyFestivalItem(s, 'decor_lanna_lamp').ok && buyFestivalItem(s, 'acc_chada').ok, 'shop');
+  addItem(s, 'forage_herb', 6); addItem(s, 'forage_wood', 2);
+  assert(craftKrathong(s).ok, 'craft');
+  assertEq([s.player.coins, s.stardust], [coins, dust], 'no coins, no stardust from any festival action');
+  assertEq(s.wardrobe.acc_chada, 1, 'the accessory goes to the wardrobe');
+  assertEq(s.inventoryDecor.decor_lanna_lamp, 1, 'the decor goes to the bag');
+}));
+
+test('econ V11 gate 3: lantern income is bounded (weekly <= 6 + 7 = 13, ลอยกระทง <= 14 x 3 + 2 + 7 + 6 = 57) and the bot never exceeds it in any window', async () => {
+  assertEq(3 * TASK_REWARD + LOGIN_MAX, 13, 'weekly bound');
+  assertEq(14 * FLOAT_DAILY_CAP + (FLOAT_PEAK_CAP - FLOAT_DAILY_CAP) + LOGIN_MAX + 3 * TASK_REWARD, 57, 'special bound');
+  const rows = [];
+  for (const name of ['3h', 'realistic']) for (const mode of ['march', 'nov']) {
+    const r = mode === 'march' ? await result(name) : await resultFest(name, 'nov');
+    for (const [key, n] of Object.entries(r.bot.fest.gained)) {
+      const special = key.includes('loykrathong') || key.startsWith('fest_loykrathong');
+      const bound = special ? 57 : 13;
+      rows.push(`${name}/${mode} ${key}: ${n}/${bound}`);
+      assert(n <= bound, `${name} ${mode}: ${key} gave ${n} lanterns (bound ${bound})`);
+    }
+    assertEq(r.bot.fest.leak, 0, `${name} ${mode}: festival actions leaked coins or stardust`);
+  }
+  console.log('[econ-sim] V11 lantern income per festival: ' + rows.join(' | '));
+});
+
+const FEST_SEEDS = [20260302, 7, 11, 23];   // the sim itself drifts by a few % between runs of one config, so ON and OFF are compared as means over 4 seeds
+async function festRuns(name, win, on) {
+  const runs = [];
+  for (const seed of FEST_SEEDS) {
+    const key = `${name}|${win}|${on ? 'on' : 'off'}|${seed}`;
+    if (!resultsFest[key]) resultsFest[key] = await runSim(name, seed, { start: win === 'nov' ? NOV16 : START, noFest: !on });
+    runs.push(resultsFest[key]);
+  }
+  return runs;
+}
+const mean = xs => xs.reduce((t, x) => t + x, 0) / xs.length;
+
+test('econ V11 gate 2: with festival play ON vs OFF the income per hour stays within +-3% (mean of 4 seeds; the sim is deterministic now, uid() sees the fake clock), the yard tiers within +-25% of the V6 baseline (and of the OFF run in the ลอยกระทง window), the bot really plays', async () => {
+  const out = [];
+  for (const name of ['3h', 'realistic']) {
+    for (const win of ['march', 'nov']) {
+      const on = await festRuns(name, win, true), off = await festRuns(name, win, false);
+      const ratio = mean(on.map(r => r.perHour)) / mean(off.map(r => r.perHour));
+      const perSeed = on.map((r, i) => r.perHour / off[i].perHour);
+      assert(ratio >= 0.97 && ratio <= 1.03, `${name} ${win}: ${Math.round(mean(on.map(r => r.perHour)))} coins/h ON vs ${Math.round(mean(off.map(r => r.perHour)))} OFF (${(100 * (ratio - 1)).toFixed(2)}%)`);
+      assert(perSeed.every(x => x > 0.85 && x < 1.15), `${name} ${win}: a single seed drifted more than 15%: ${perSeed.map(x => x.toFixed(3)).join(' ')}`);
+      const tot = k => on.reduce((t, r) => t + (typeof r.bot.fest[k] === 'number' ? r.bot.fest[k] : r.bot.fest[k].length), 0);
+      assert(tot('tasks') >= 3 * on.length && tot('total') >= 8 * on.length && tot('logins') >= on.length, `${name} ${win}: the bot played (${tot('tasks')} tasks, ${tot('total')} lanterns over ${on.length} runs)`);
+      if (win === 'nov') assert(tot('crafted') >= 1 && tot('floated') >= 1 && tot('items') >= 1, `${name} nov: the bot crafted ${tot('crafted')}, floated ${tot('floated')}, bought ${tot('items')} items over ${on.length} runs`);
+      for (const tier of ['M', 'L', 'XL']) {
+        const mOn = mean(on.map(r => r.tierDay[tier])), mOff = mean(off.map(r => r.tierDay[tier]));
+        assert(Number.isFinite(mOn) && Number.isFinite(mOff) && mOn >= mOff * (1 - TIER_TOLERANCE) && mOn <= mOff * (1 + TIER_TOLERANCE), `${name} ${win}: tier ${tier} on day ${mOn.toFixed(2)} ON vs ${mOff.toFixed(2)} OFF (mean of 4 seeds)`);
+        if (win === 'march') {
+          const base = V6_BASELINE_TIER_DAYS[name][tier];
+          assert(mOn >= base * (1 - TIER_TOLERANCE) && mOn <= base * (1 + TIER_TOLERANCE), `${name} (festival ON): tier ${tier} on day ${mOn.toFixed(2)} (mean of 4 seeds), V6 baseline ${base}`);
+          assert(on[0].tierDay[tier] >= base * (1 - TIER_TOLERANCE) && on[0].tierDay[tier] <= base * (1 + TIER_TOLERANCE), `${name} (festival ON, the standard seed): tier ${tier} on day ${on[0].tierDay[tier]}, V6 baseline ${base}`);
+        }
+      }
+      assert(on.every(r => (r.rows.find(x => x.day === 14) || r.rows[r.rows.length - 1]).perHour <= 4500), `${name} ${win}: day-14 gate with festivals`);
+      const F = on[0].bot.fest;
+      out.push(`${name} ${win}: ${Math.round(mean(on.map(r => r.perHour)))} vs ${Math.round(mean(off.map(r => r.perHour)))} coins/h (${(100 * (ratio - 1)).toFixed(2)}%, seeds ${perSeed.map(x => (100 * (x - 1)).toFixed(1) + '%').join('/')}), tiers ${on[0].tierDay.M}/${on[0].tierDay.L}/${on[0].tierDay.XL} (OFF ${off[0].tierDay.M}/${off[0].tierDay.L}/${off[0].tierDay.XL}), seed0: ${F.total} lanterns, ${F.tasks} tasks, crafted ${F.crafted} (herb ${F.mat.forage_herb || 0}, wood ${F.mat.forage_wood || 0}), floated ${F.floated}, items ${F.items.join(',') || '-'}`);
+    }
+  }
+  console.log('[econ-sim] V11 festivals ON vs OFF: ' + out.join(' | '));
+  globalThis.__econFingerprint = out.map(x => x.replace(/ seed0:.*/, '')).join('|');
+  globalThis.__econFest = out;
 });

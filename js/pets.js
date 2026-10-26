@@ -13,6 +13,7 @@ import { getAccessory } from './data/accessories.js';
 import { COAT_IDS } from './data/coats.js';
 import { rollFamilyGenes } from './breeding.js';
 import { journalEvent } from './journal.js';
+import { festivalEvent, festivalPostcardTemplates } from './festival.js';
 
 import { tickFriends, bestFriendMap, bestFriendOf as bestFriendId, friendDecayMult, removePetFriends } from './friends.js';
 
@@ -673,6 +674,7 @@ export function hatchReady(state, slotIndex) {
 
   addPlayerXp(state, 10);
   bumpStat(state, 'hatched');
+  festivalEvent(state, 'hatch', { speciesId: species.id });
   if (genes) {
     bumpStat(state, 'bred');
     if (!state.coatsSeen || typeof state.coatsSeen !== 'object') state.coatsSeen = { base: true };
@@ -741,6 +743,7 @@ export function feedPet(state, petId, itemId) {
   addPetXp(state, petId, 2);
   bumpStat(state, 'fed');
   addBond(state, petId, favorite ? 5 : 2);
+  if (favorite) festivalEvent(state, 'feed', { petId });
 
   const note = favorite ? ' ของโปรดเลย! ⭐' : match ? ' ถูกปากมาก' : ' กินพอได้ (ไม่ใช่อาหารถนัด)';
   return ok(`${item.emoji} ${nong(pet)} กิน${item.nameTh}${note}`);
@@ -819,6 +822,7 @@ export function patPet(state, petId) {
   pet.patToday = (pet.patToday || 0) + 1;
   pet.stats.happy = clamp(pet.stats.happy + 3, 0, 100);
   const bond = addBond(state, petId, 1);
+  festivalEvent(state, 'pat', { petId });
   return { ok: true, msg: '', rewarded: true, bond, left: PAT_DAILY_MAX - pet.patToday };
 }
 
@@ -1149,7 +1153,9 @@ export const POSTCARD_TEMPLATES = [
 function schedulePostcard(state, pet) {
   const sp = getSpecies(pet.speciesId);
   const name = petName(pet);
-  const tpl = POSTCARD_TEMPLATES[hashId(`${pet.id}:card`) % POSTCARD_TEMPLATES.length];
+  const extra = festivalPostcardTemplates();   // during ลอยกระทง the cards are krathong-themed (CONTRACT_V11 §3)
+  const pool = extra.length ? extra : POSTCARD_TEMPLATES;
+  const tpl = pool[hashId(`${pet.id}:card`) % pool.length];
   const delay = POSTCARD_MIN_MS + (hashId(`${pet.id}:delay`) % (POSTCARD_SPAN_MS + 1));
   if (!Array.isArray(state.postcards)) state.postcards = [];
   state.postcards.push({

@@ -19,10 +19,28 @@ export const ACCESSORIES = [
   { id: 'acc_butterfly',  slot: 'neck', emoji: '🦋', nameTh: 'หูกระต่ายผีเสื้อ', price: null, zone: 'cloud' },
 ];
 
+// V11 festival accessories (CONTRACT_V11 §2): sold ONLY in their festival's shop for lanterns (`lanterns`), never for coins, never for sale back.
+// They live in their own list so ACCESSORIES (the coin shop + expedition list the UI walks) stays exactly as it was; getAccessory / accessoriesBySlot / isAccessoryId
+// see both lists, so wearing, the wardrobe, the sanitiser and the 3D meshes treat them like any other accessory. price null + zone null = no coin shop, no expedition drop.
+export const FESTIVAL_ACCESSORIES = [
+  { id: 'acc_strawhat',  slot: 'head', emoji: '👒', nameTh: 'หมวกฟาง',          price: null, zone: null, festival: 'fest_farm',    lanterns: 6 },
+  { id: 'acc_leafcrown', slot: 'head', emoji: '🍃', nameTh: 'มงกุฎใบไม้',       price: null, zone: null, festival: 'fest_forest',  lanterns: 6 },
+  { id: 'acc_antenna',   slot: 'head', emoji: '🐞', nameTh: 'หนวดแมลงน้อย',     price: null, zone: null, festival: 'fest_bug',     lanterns: 6 },
+  { id: 'acc_beanie',    slot: 'head', emoji: '🧶', nameTh: 'หมวกไหมพรม',       price: null, zone: null, festival: 'fest_polar',   lanterns: 6 },
+  { id: 'acc_wizardhat', slot: 'head', emoji: '🎩', nameTh: 'หมวกพ่อมดดาว',     price: null, zone: null, festival: 'fest_mystic',  lanterns: 6 },
+  { id: 'acc_chada',     slot: 'head', emoji: '👑', nameTh: 'ชฎาน้อย',          price: null, zone: null, festival: 'fest_loykrathong', lanterns: 6 },
+  { id: 'acc_floatie',   slot: 'neck', emoji: '🛟', nameTh: 'ห่วงยางจิ๋ว',      price: null, zone: null, festival: 'fest_water',   lanterns: 6 },
+  { id: 'acc_kitescarf', slot: 'neck', emoji: '🧣', nameTh: 'ผ้าพันคอลายว่าว',  price: null, zone: null, festival: 'fest_sky',     lanterns: 6 },
+  { id: 'acc_beads',     slot: 'neck', emoji: '📿', nameTh: 'สร้อยลูกปัด',      price: null, zone: null, festival: 'fest_savanna', lanterns: 6 },
+  { id: 'acc_sabai',     slot: 'neck', emoji: '🧣', nameTh: 'ผ้าสไบ',           price: null, zone: null, festival: 'fest_loykrathong', lanterns: 6 },
+];
+export const ALL_ACCESSORIES = [...ACCESSORIES, ...FESTIVAL_ACCESSORIES];
+
 export function getAccessory(id) {
-  return ACCESSORIES.find(a => a.id === id) || null;
+  return ALL_ACCESSORIES.find(a => a.id === id) || null;
 }
 export const isAccessoryId = id => !!getAccessory(id);
-export const accessoriesBySlot = slot => ACCESSORIES.filter(a => a.slot === slot);
-export const shopAccessories = () => ACCESSORIES.filter(a => a.price != null);
-export const expeditionAccessories = zoneId => ACCESSORIES.filter(a => a.price == null && (!zoneId || a.zone === zoneId));
+export const isFestivalAccessory = id => FESTIVAL_ACCESSORIES.some(a => a.id === id);
+export const accessoriesBySlot = slot => ALL_ACCESSORIES.filter(a => a.slot === slot);
+export const shopAccessories = () => ACCESSORIES.filter(a => a.price != null && !a.festival);
+export const expeditionAccessories = zoneId => ACCESSORIES.filter(a => a.price == null && !a.festival && (!zoneId || a.zone === zoneId));

@@ -1220,4 +1220,255 @@ export const MODEL_SPECS = {
     ],
     shinyPalette: { '#2a8fb0': '#d4a42a', '#4fc0c8': '#ffe08a', '#2a74c8': '#e0802a', '#3aa88a': '#e8c050', '#2f9a78': '#c8902a', '#2a5fc9': '#a84ad8', '#e8b84a': '#fff4b0', '#9ad8ff': '#ffd9a0', '#c9a05a': '#a8683a' },
   },
+
+  // ───────── V11 §5: bug friends (น้องแมลง) ─────────
+  // Chibi insects, big eyes, pastel and friendly (the cockroach and mosquito are round and soft on purpose). Budgets: common/uncommon <= 1.0k tris + 6 calls, rare/epic <= 1.6k + 7.
+  // ROTATION SIGNS for B (petBehaviour). Every pivot below keeps its rest pose in its own rotation, so ADD to it (rotation.z = rest + flap), never overwrite it. Left = +x, right = -x, the pet faces +z.
+  //   wingL / wingR   bee, butterfly, fly, mosquito (flat wing blades pointing sideways, hinged at the shoulders) and ladybug, cockroach, cricket (shell halves hinged at the front of the back):
+  //                   wingL.rotation.z += a together with wingR.rotation.z -= a (a > 0) RAISES the wing tips / opens the shells; a < 0 lowers them. Mirror signs, never the same sign on both.
+  //                   Flap = rest + sin(t) * amp on L and -(rest + sin(t) * amp) on R (the ladybug / cockroach open to ~0.9 for a short flight; the cricket rubs its wings with a small +-0.12 shiver).
+  //   tail            bee stinger, caterpillar + earthworm rear segments (the pivot sits at the rear, the tip points back): rotation.x = +v RAISES the tip, -v drops it;
+  //                   rotation.y = +v swings the tip to the pet's RIGHT (-x), -v to its LEFT (+x). Wriggle = sin(t) * 0.35 on rotation.y.
+  //                   scorpion tail (a segmented arch over the back): rotation.x += v curls it FURTHER FORWARD over the head (+0.4 = tighter coil), rotation.x -= v uncurls it back
+  //                   (-0.5 lays it flat behind the body); rotation.y = +v swings the stinger to the pet's LEFT (+x). There is no tailTip on the bugs.
+  //   earL / earR     ant, caterpillar, cockroach, mosquito antennae and the snail eyestalks: rotation.x = +v tips them FORWARD and down, -v back and up;
+  //                   rotation.z = +v on earL (and -v on earR) pulls them INWARD together, -v on earL (+v on earR) spreads them apart.
+  //                   scorpion claws: rotation.x = +v lowers the claw tip DOWN, -v LIFTS it up (raise / snap); rotation.z = +v on earL (-v on earR) swings the claw INWARD to the face.
+  //   legL / legR     spider only (four bent legs per side on a hip pivot at the body centre): legL.rotation.z = +a together with legR.rotation.z = -a lifts the feet (a wave / a skitter);
+  //                   rotation.x = +v swings that side's feet BACKWARD, -v forward.
+  //   shell           snail spiral (rotation.x = +v tips the shell forward over the head (a hide); rotation.z wobbles it); the head, earL and earR can be scaled / pulled in by B to hide.
+  //   head / body / eyes / anchor  as always (eyes.scale.y = blink, body.scale squash). Flyers (bee, butterfly, fly, mosquito) have tiny feet only so they stand at y = 0; B lifts root.y to hover.
+  //   Static (no pivot, nothing to animate): the antennae of bee, butterfly, ladybug, cricket and fly (they ride the head), every leg except the spider's, the ant's thorax.
+  // Colours are all body-like, so coats recolour the whole bug; shiny palettes are curated (gentle, never neon).
+
+  bee: {
+    body: { w: 0.3, h: 0.28, d: 0.34, y: 0.34, color: '#ffd23f', lo: 2 },
+    legs: { type: 'crab', n: 3, r: 0.02, ground: true, x: 0.55, dy: 0.55, z: 0.5, color: '#5a3d2b', down: 1, out: 0.45, fan: 0.4 },
+    head: { r: 0.27, w: 1.05, h: 0.98, d: 0.95, y: 0.55, z: 0.2, color: '#ffd23f', lo: true },
+    eyes: { s: 0.17, gap: 0.52, el: 0.08 },
+    blush: '#ff9ab0',
+    extras: [
+      { t: 'stripes', g: 'sphL', color: '#5a3d2b', at: [-0.45, 0.0], th: 0.12 },
+      { t: 'smile', color: '#5a3d2a' },
+      { t: 'blobs', on: 'head', color: '#5a3d2b', list: [
+        { g: 'thin', p: [0.1, 0.2, 0.06], s: [0.014, 0.2, 0.014], dir: [0.45, 1, 0.7], mirror: true },
+        { g: 'sphP', p: [0.165, 0.37, 0.17], s: 0.036, mirror: true },
+      ] },
+      { t: 'group', name: 'tail', p: [0, 0.34, -0.3], list: [{ g: 'coneP', c: '#5a3d2b', p: [0, -0.01, -0.02], s: [0.05, 0.15, 0.05], dir: [0, -0.15, -1] }] },
+      { t: 'bugwings', color: '#e4f4ff', x: 0.25, y: 0.85, rest: 0.85, blades: [[0.34, -0.04, 0.34, 0.17, 0.3], [0.22, -0.22, 0.22, 0.11, 0.45, 0, -0.012]] },
+    ],
+    shinyPalette: { '#ffd23f': '#86dcff', '#5a3d2b': '#2b5fc9', '#e4f4ff': '#fff0fb' },
+  },
+
+  butterfly: {
+    body: { w: 0.19, h: 0.24, d: 0.3, y: 0.36, color: '#a58ad8', lo: 2 },
+    legs: { type: 'crab', n: 2, r: 0.016, ground: true, x: 0.6, dy: 0.5, z: 0.4, color: '#6f55a8', down: 1, out: 0.4, fan: 0.3 },
+    head: { r: 0.25, w: 1.05, h: 0.98, d: 0.95, y: 0.55, z: 0.28, color: '#c0aaf0', lo: true },
+    eyes: { s: 0.18, gap: 0.5, el: 0.06 },
+    blush: '#ff9ab0',
+    extras: [
+      { t: 'smile', color: '#6f55a9' },
+      { t: 'blobs', on: 'head', color: '#6f55a8', list: [
+        { g: 'thin', p: [0.09, 0.2, 0.06], s: [0.012, 0.26, 0.012], dir: [0.35, 1, 0.55], mirror: true },
+        { g: 'sphP', p: [0.17, 0.44, 0.2], s: 0.04, mirror: true },
+      ] },
+      { t: 'bugwings', colors: ['#ff9ad5', '#ffc4ea', '#fff2a8'], x: 0.3, y: 0.7, rest: 0.95, blades: [[0.46, 0.0, 0.46, 0.3, 0.12, 0], [0.32, -0.38, 0.3, 0.22, 0.35, 1, -0.012]],
+        spots: [[0.6, -0.04, 0.08, 2], [0.38, -0.44, 0.065, 2]] },
+    ],
+    shinyPalette: { '#ff9ad5': '#7fc4ff', '#ffc4ea': '#bfe3ff', '#fff2a8': '#fff8d0', '#a58ad8': '#e89ac0', '#c0aaf0': '#f5b8d4' },
+  },
+
+  ladybug: {
+    body: { w: 0.34, h: 0.2, d: 0.36, y: 0.2, color: '#2a2430', lo: 2 },
+    legs: { type: 'crab', n: 3, r: 0.02, ground: true, x: 0.8, dy: 0.2, z: 0.6, color: '#2a2430', down: 1, out: 0.5, fan: 0.4 },
+    head: { r: 0.24, w: 1.15, h: 0.92, d: 0.9, y: 0.34, z: 0.34, color: '#2a2430', lo: true },
+    eyes: { s: 0.19, gap: 0.5, el: 0.1, ring: '#ffffff' },
+    blush: '#ff8fa3',
+    extras: [
+      { t: 'blobs', on: 'head', color: '#2a2430', list: [
+        { g: 'thin', p: [0.08, 0.18, 0.08], s: [0.012, 0.2, 0.012], dir: [0.4, 1, 0.8], mirror: true },
+        { g: 'sphP', p: [0.15, 0.36, 0.22], s: 0.032, mirror: true },
+      ] },
+      { t: 'blobs', on: 'head', color: '#fffdf4', list: [{ g: 'sphL', p: [0, -0.1, 0.19], s: [0.13, 0.07, 0.07] }] },
+      { t: 'elytra', color: '#f0453a', spot: '#2a2430', y: 0.95, z: 0.5, w: 0.62, h: 1.55, d: 1.05, dy: 0.2, dz: 0.55,
+        spots: [[0.8, 0.45, 0.2], [1.6, 0.0, 0.17]] },
+    ],
+    shinyPalette: { '#fffdf4': '#fff2a8', '#f0453a': '#ffc23a', '#2a2430': '#7a4fd1' },
+  },
+
+  ant: {
+    dz: -0.33,
+    body: { w: 0.27, h: 0.27, d: 0.3, y: 0.3, color: '#c4523a', lo: true },
+    legs: { type: 'crab', n: 3, r: 0.02, ground: true, x: 0.5, dy: 0.5, z: 1.0, color: '#7a3a2a', down: 1, out: 0.5, fan: 0.5 },
+    head: { r: 0.27, w: 1.1, h: 0.95, d: 0.95, y: 0.42, z: 0.78, color: '#e8744f', lo: true },
+    eyes: { s: 0.18, gap: 0.52, el: 0.08 },
+    blush: '#ff9ab0',
+    ears: { type: 'feeler', s: 1.0, az: 0.42, el: 0.85, color: '#7a3a2a', inner: '#7a3a2a', len: 1.3, dir: [0.3, 1, 0.45], bend: 0.9, r: 0.05, split: 0.5 },
+    extras: [
+      { t: 'smile', color: '#7a3a2b' },
+      { t: 'blobs', color: '#e8744f', list: [{ g: 'sphL', p: [0, 0.34, 0.46], s: [0.12, 0.12, 0.14] }] },
+      { t: 'blobs', on: 'head', color: '#fff0d8', list: [{ g: 'coneP', p: [0.05, -0.17, 0.2], s: [0.03, 0.09, 0.03], dir: [0.5, -0.4, 1], mirror: true }] },
+    ],
+    shinyPalette: { '#c4523a': '#6b8fe0', '#e8744f': '#9bb8f5', '#7a3a2a': '#2e3f8f', '#fff0d8': '#ffffff' },
+  },
+
+  caterpillar: {
+    dz: -0.12,
+    body: { w: 0.27, h: 0.26, d: 0.27, y: 0.3, color: '#8fdc5e', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.27, w: 1.05, h: 1, d: 0.95, y: 0.36, z: 0.4, color: '#c8f08a', lo: true },
+    eyes: { s: 0.18, gap: 0.5, el: 0.06 },
+    blush: '#ff9ab0',
+    ears: { type: 'feeler', s: 1.0, az: 0.42, el: 0.95, color: '#ff8fa8', inner: '#ff8fa8', len: 1.0, dir: [0.3, 1, 0.3], bend: 0.7, r: 0.06, ball: 3 },
+    extras: [
+      { t: 'smile', color: '#5a8a3b' },
+      { t: 'blobs', color: '#ff9ab0', list: [{ g: 'sphP', p: [0, 0.56, 0.0], s: 0.05 }, { g: 'sphP', p: [0, 0.5, -0.4], s: 0.045 }] },
+      { t: 'group', name: 'tail', p: [0, 0.28, -0.26], list: [
+        { g: 'sphM', c: '#c8f08a', p: [0, -0.01, -0.2], s: [0.25, 0.24, 0.22] },
+        { g: 'sphL', c: '#8fdc5e', p: [0, -0.03, -0.43], s: [0.2, 0.19, 0.19] },
+        { g: 'sphL', c: '#c8f08a', p: [0, -0.06, -0.6], s: [0.14, 0.14, 0.14] },
+      ] },
+    ],
+    shinyPalette: { '#8fdc5e': '#ffb347', '#c8f08a': '#ffe0a0', '#ff8fa8': '#7ad8ff', '#ff9ab0': '#7ad8ff', '#5a8a3a': '#a85d24' },
+  },
+
+  earthworm: {
+    dz: -0.08,
+    body: { w: 0.18, h: 0.16, d: 0.22, y: 0.17, color: '#ffa8b8', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.24, w: 1, h: 1, d: 0.95, y: 0.3, z: 0.34, color: '#ffa8b8', lo: true },
+    eyes: { s: 0.19, gap: 0.5, el: 0.1 },
+    blush: '#ff7a9a',
+    extras: [
+      { t: 'smile', color: '#c85a79' },
+      { t: 'blobs', color: '#ffc4cf', list: [{ g: 'sphL', p: [0, 0.18, 0.14], s: [0.2, 0.18, 0.1] }] },
+      { t: 'group', name: 'tail', p: [0, 0.17, -0.2], list: [
+        { g: 'sphM', c: '#ff95a8', p: [0.04, 0, -0.1], s: [0.17, 0.155, 0.14] },
+        { g: 'sphL', c: '#ffa8b8', p: [0.1, 0, -0.27], s: [0.15, 0.14, 0.13] },
+        { g: 'sphL', c: '#ff95a8', p: [0.15, 0, -0.43], s: [0.13, 0.12, 0.12] },
+        { g: 'sphL', c: '#ffa8b8', p: [0.16, 0.0, -0.57], s: [0.1, 0.1, 0.1] },
+        { g: 'sphP', c: '#ff95a8', p: [0.13, 0.03, -0.69], s: [0.07, 0.07, 0.08] },
+      ] },
+    ],
+    shinyPalette: { '#ffa8b8': '#c8a8ff', '#ff95a8': '#b090f0', '#ffc4cf': '#e6d6ff', '#ff7a9a': '#ff9ad5', '#c85a78': '#7a56b8' },
+  },
+
+  snail: {
+    body: { w: 0.2, h: 0.12, d: 0.46, y: 0.13, color: '#f3d6a0', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.22, w: 1.05, h: 1, d: 0.95, y: 0.32, z: 0.4, color: '#f3d6a0', lo: true },
+    eyes: { s: 0.18, gap: 0.5, el: 0.06 },
+    blush: '#ff9a8a',
+    ears: { type: 'arm', s: 1.0, az: 0.4, el: 0.9, color: '#f3d6a0', inner: '#f3d6a0', dir: [0.3, 1, 0.3], r: 0.1, len: 1.2, club: 2.2 },
+    extras: [
+      { t: 'smile', color: '#b0703f' },
+      { t: 'blobs', color: '#f3d6a0', list: [{ g: 'sphL', p: [0, 0.22, 0.28], s: [0.15, 0.14, 0.16] }] },
+      { t: 'group', name: 'shell', p: [0, 0.3, -0.1], list: [
+        { g: 'sphM', c: '#ffbd7a', p: [0, 0.06, 0], s: [0.26, 0.28, 0.29] },
+        { g: 'disc', c: '#fff0c8', p: [0.152, 0.06, 0.0], s: 0.23, r: [0, Math.PI / 2, 0], mirror: true },
+        { g: 'disc', c: '#ff9a5c', p: [0.208, 0.06, 0.012], s: 0.17, r: [0, Math.PI / 2, 0], mirror: true },
+        { g: 'disc', c: '#fff0c8', p: [0.245, 0.06, 0.024], s: 0.11, r: [0, Math.PI / 2, 0], mirror: true },
+        { g: 'disc', c: '#ff9a5c', p: [0.258, 0.06, 0.034], s: 0.05, r: [0, Math.PI / 2, 0], mirror: true },
+      ] },
+    ],
+    shinyPalette: { '#f3d6a0': '#c8f0d0', '#ffbd7a': '#8ad8ff', '#fff0c8': '#f2fbff', '#ff9a5c': '#5aa8f0', '#b0703e': '#3f7fb8', '#ff9a8a': '#ffb0d8' },
+  },
+
+  cricket: {
+    dz: -0.08,
+    body: { w: 0.26, h: 0.25, d: 0.42, y: 0.4, color: '#a5d36b', lo: true },
+    legs: { type: 'crab', n: 2, r: 0.024, ground: true, x: 0.55, dy: 0.5, z: 0.7, color: '#6f9a3f', down: 1, out: 0.5, fan: 0.4 },
+    head: { r: 0.26, w: 1.0, h: 1.05, d: 0.95, y: 0.5, z: 0.4, color: '#b5df7a', lo: true },
+    eyes: { s: 0.19, gap: 0.5, el: 0.1 },
+    blush: '#ff9ab0',
+    extras: [
+      { t: 'smile', color: '#5a7a31' },
+      { t: 'blobs', on: 'head', color: '#6f9a3f', list: [
+        { g: 'thin', p: [0.08, 0.2, 0.05], s: [0.012, 0.3, 0.012], dir: [0.35, 1, 0.5], mirror: true },
+        { g: 'thin', p: [0.169, 0.454, 0.177], s: [0.011, 0.3, 0.011], dir: [0.55, 0.2, -0.4], mirror: true },
+      ] },
+      { t: 'blobs', color: '#6f9a3f', list: [
+        { g: 'sphL', p: [0.24, 0.43, -0.28], s: [0.075, 0.2, 0.09], dir: [0.1, 0.35, -0.9], mirror: true },
+        { g: 'coneP', p: [0.3, 0.5, -0.5], s: [0.045, 0.52, 0.045], dir: [0.02, -1, 0.15], mirror: true },
+      ] },
+      { t: 'elytra', color: '#8cc356', y: 0.85, z: 0.38, w: 0.55, h: 0.6, d: 1.1, dy: 0.2, dz: 0.55, rest: 0.0 },
+    ],
+    shinyPalette: { '#a5d36b': '#ffd36a', '#b5df7a': '#ffe58a', '#6f9a3f': '#d49a2a', '#8cc356': '#f5b84a', '#5a7a30': '#a8681e' },
+  },
+
+  fly: {
+    body: { w: 0.26, h: 0.25, d: 0.3, y: 0.34, color: '#b4d95a', lo: 2 },
+    legs: { type: 'crab', n: 3, r: 0.018, ground: true, x: 0.55, dy: 0.5, z: 0.5, color: '#6f8a2a', down: 1, out: 0.4, fan: 0.4 },
+    head: { r: 0.27, w: 1.1, h: 1, d: 0.9, y: 0.52, z: 0.2, color: '#ffe38a', lo: true },
+    eyes: { s: 0.23, gap: 0.55, el: 0.08, ring: '#ff9aa0' },
+    blush: '#ffb0a0',
+    snout: { type: 'nose', color: '#c98a4a', s: 0.1, el: -0.5 },
+    extras: [
+      { t: 'stripes', g: 'sphL', color: '#7aa83a', at: [-0.4, 0.05], th: 0.1 },
+      { t: 'bugwings', color: '#eef9ff', x: 0.25, y: 0.85, rest: 0.8, blades: [[0.36, -0.04, 0.37, 0.18, 0.35], [0.24, -0.22, 0.24, 0.11, 0.5, 0, -0.012]] },
+    ],
+    shinyPalette: { '#b4d95a': '#ff9ad0', '#ffe38a': '#fff0c0', '#7aa83a': '#d4609e', '#eef9ff': '#fff4fb' },
+  },
+
+  cockroach: {
+    body: { w: 0.36, h: 0.27, d: 0.42, y: 0.32, color: '#e8b27c', lo: true },
+    legs: { type: 'crab', n: 3, r: 0.03, ground: true, x: 0.8, dy: 0.35, z: 0.7, color: '#c98a58', down: 1, out: 0.6, fan: 0.4 },
+    head: { r: 0.27, w: 1.1, h: 0.95, d: 0.92, y: 0.38, z: 0.42, color: '#f6dcbc', lo: true },
+    eyes: { s: 0.2, gap: 0.5, el: 0.1, ring: '#fffaf0' },
+    blush: '#ff9a8a',
+    ears: { type: 'feeler', s: 1.0, az: 0.5, el: 0.75, color: '#b97e52', inner: '#b97e52', len: 2.0, dir: [0.55, 1, 0.45], bend: 0.5, r: 0.05, split: 0.5, ball: 2.0 },
+    extras: [
+      { t: 'smile', color: '#9a6039' },
+      { t: 'blobs', color: '#f0c898', list: [{ g: 'sphM', p: [0, 0.42, 0.2], s: [0.28, 0.13, 0.14] }] },
+      { t: 'elytra', color: '#d68f55', spot: '#f6dcbc', edge: '#f0c898', y: 0.9, z: 0.4, w: 0.62, h: 1.0, d: 1.0, dy: 0.25, dz: 0.5, spots: [[0.6, 0.75, 0.2], [1.0, 0.5, 0.12]], spotTh: 0.18 },
+    ],
+    shinyPalette: { '#e8b27c': '#b9e8c8', '#f6dcbc': '#f0fff4', '#c98a58': '#6fc4a0', '#b97e52': '#4fa886', '#d68f55': '#7fd4b0', '#f0c898': '#d4f5e0', '#9a6038': '#2f7a5e' },
+  },
+
+  mosquito: {
+    body: { w: 0.27, h: 0.27, d: 0.31, y: 0.46, color: '#b7c6ff', lo: true },
+    legs: { type: 'crab', n: 3, r: 0.015, ground: true, x: 0.5, dy: 0.5, z: 0.8, color: '#8e9ee0', down: 1, out: 0.6, fan: 0.4 },
+    head: { r: 0.26, w: 1.05, h: 1, d: 0.95, y: 0.66, z: 0.22, color: '#c9d4ff', lo: true },
+    eyes: { s: 0.21, gap: 0.52, el: 0.05, ring: '#ffffff' },
+    blush: '#ff9ab8',
+    snout: { type: 'beak', color: '#ffb3c8', w: 0.1, len: 0.6, el: -0.3 },
+    ears: { type: 'feeler', s: 1.0, az: 0.45, el: 0.85, color: '#8e9ee0', inner: '#ffb3c8', len: 1.2, dir: [0.45, 1, 0.4], bend: 0.6, r: 0.05, ball: 2.8 },
+    extras: [
+      { t: 'smile', color: '#6f7fc9' },
+      { t: 'stripes', g: 'sphL', color: '#fffaff', at: [-0.45, -0.05, 0.3], th: 0.1 },
+      { t: 'bugwings', color: '#efe9ff', x: 0.25, y: 0.85, rest: 0.8, blades: [[0.36, -0.05, 0.38, 0.13, 0.25], [0.24, -0.2, 0.24, 0.09, 0.45, 0, -0.012]] },
+    ],
+    shinyPalette: { '#b7c6ff': '#ffc4dc', '#c9d4ff': '#ffe0ee', '#8e9ee0': '#e07aa8', '#ffb3c8': '#9ad8ff', '#fffaff': '#fff4a8', '#efe9ff': '#fff2f8', '#6f7fc8': '#a84a78' },
+  },
+
+  spider: {
+    body: { w: 0.36, h: 0.34, d: 0.38, y: 0.42, color: '#8f6fd8', lo: true },
+    legs: { type: 'none' },
+    head: { r: 0.28, w: 1.1, h: 1, d: 0.95, y: 0.46, z: 0.4, color: '#a68be8', lo: true },
+    eyes: { s: 0.2, gap: 0.45, el: 0.12, ring: '#ffffff' },
+    blush: '#ff8fb8',
+    extras: [
+      { t: 'smile', color: '#4a3291' },
+      { t: 'spots', color: '#ff8fb0', th: 0.25, list: [{ on: 'body', az: 3.14, el: 0.85, s: 0.55, sx: 0.8, sy: 1.1 }, { on: 'body', az: 2.7, el: 0.6, s: 0.25 }, { on: 'body', az: -2.7, el: 0.6, s: 0.25 }] },
+      { t: 'blobs', on: 'head', color: '#fff0d8', list: [{ g: 'coneP', p: [0.05, -0.2, 0.22], s: [0.03, 0.08, 0.03], dir: [0.1, -1, 0.3], mirror: true }] },
+      { t: 'spiderlegs', n: 4, r: 0.034, color: '#6f4fc0', x: 0.75, dy: 0.1, z: 0.55, up: 0.32, rise: 0.9, out: 1.0, fan: 0.75, out2: 0.5, fan2: 0.6 },
+    ],
+    shinyPalette: { '#8f6fd8': '#ff9ad5', '#a68be8': '#ffc0e6', '#6f4fc0': '#c0508f', '#ff8fb0': '#9ad8ff', '#4a3290': '#8a2a62', '#fff0d8': '#ffffff' },
+  },
+
+  scorpion: {
+    dz: -0.05,
+    body: { w: 0.3, h: 0.22, d: 0.42, y: 0.26, color: '#f0b878', lo: true },
+    legs: { type: 'crab', n: 4, r: 0.03, ground: true, x: 0.8, dy: 0.3, z: 0.75, color: '#d9955a', down: 1, out: 0.9, fan: 0.35 },
+    head: { r: 0.25, w: 1.1, h: 0.9, d: 0.95, y: 0.36, z: 0.4, color: '#f6c890', lo: true },
+    eyes: { s: 0.2, gap: 0.5, el: 0.12 },
+    blush: '#ff9a8a',
+    ears: { type: 'claw', s: 1.7, az: 1.25, el: -0.25, color: '#ff9a6a', inner: '#ffc09a', out: 0.4, lift: 0.15 },
+    tail: { type: 'long', n: 5, len: 0.85, r: 0.06, taper: 0.1, lift: 0.6, curve: 0.55, y: 0.35, z: 0.9, color: '#f0b878', sting: '#f6c890', gem: '#7ae8ff' },
+    extras: [
+      { t: 'smile', color: '#9a5a31' },
+      { t: 'stripes', g: 'sphM', color: '#e0985a', at: [-0.55, -0.2, 0.15], th: 0.09 },
+    ],
+    shinyPalette: { '#f0b878': '#b9a0f0', '#f6c890': '#dcc8ff', '#d9955a': '#8a70d0', '#ff9a6a': '#ff8fc0', '#ffc09a': '#ffd0e6', '#e0985a': '#8a70d0', '#7ae8ff': '#ffe66a', '#9a5a30': '#4a3290' },
+  },
 };

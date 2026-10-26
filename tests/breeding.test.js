@@ -371,7 +371,7 @@ test('migrate v7 -> v8: fixture kept, familyEggs / coatsSeen / pet fields defaul
   const raw = await loadFixture('save_v7_midgame');
   assertEq(raw.version, 7);
   const s = await withFakeNow(1790100000000, () => migrate(raw));
-  assertEq([s.version, STATE_VERSION], [8, 8]);
+  assertEq([s.version, STATE_VERSION], [9, 9]);
   assertEq([s.familyEggs, s.coatsSeen], [[], { base: true }]);
   assert(s.pets.length === raw.pets.length && s.pets.every(p => p.coat === 'base' && p.family === null && p.breedReadyAt === 0), 'pets');
   assert(s.nursery.length && s.nursery.every(e => e.pet.coat === 'base' && e.pet.family === null), 'nursery pets');
@@ -384,7 +384,7 @@ test('migrate v7 -> v8: fixture kept, familyEggs / coatsSeen / pet fields defaul
   assertEq(migrate(JSON.parse(JSON.stringify(s))), s, 'idempotent');
   // a v6 save climbs all the way
   const old = await withFakeNow(1790100000000, async () => migrate(await loadFixture('save_v6_midgame')));
-  assertEq([old.version, old.familyEggs, old.coatsSeen], [8, [], { base: true }]);
+  assertEq([old.version, old.familyEggs, old.coatsSeen], [9, [], { base: true }]);
 });
 
 const goodParent = (id, sp = 'cow') => ({ petId: id, name: 'พ่อ', speciesId: sp, personality: 'shy', shiny: true, coat: 'rose', gen: 2 });

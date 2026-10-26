@@ -31,6 +31,8 @@ import * as farmLogic from '../farm.js'; // decor build / place / remove (namesp
 import { DECOR, getDecor } from '../data/decor.js';
 import { takeAwayDigest } from '../away.js';
 import { onBestFriend, friendEventMessage, bestFriendOf } from '../friends.js';
+import { festChipHtml, openFestivalSheet } from './festivalSheet.js';
+import { activeFestival, ensureFestival, loginLantern, pendingFestival } from '../festival.js';
 
 const e = escapeHtml;
 
@@ -39,7 +41,41 @@ const e = escapeHtml;
 function takeGreeting() {
   let d = null;
   try { d = takeAwayDigest(); } catch (err) { console.warn('away digest unavailable', err); }
-  return d && Array.isArray(d.lines) && d.lines.length ? d : null;
+  d = d && Array.isArray(d.lines) && d.lines.length ? d : null;
+  // CONTRACT_V11 §4: a festival that began while the player was away gets the first line of the digest
+  try {
+    const fest = festNews || pendingFestival(getState());
+    festNews = null;
+    if (d && fest) {
+      d = { ...d, lines: [{ emoji: fest.emoji, text: `ระหว่างที่คุณไม่อยู่ เทศกาล${fest.nameTh.replace(/^เทศกาล/, '')} เริ่มแล้ว!` }, ...d.lines].slice(0, 5) };
+    }
+  } catch (err) { console.warn('festival digest line skipped', err); }
+  return d;
+}
+
+// ── เทศกาล 🏮 (CONTRACT_V11 §4): the first time the yard is shown each day / festival, roll the tasks and take the login lantern ──
+let festChecked = '';
+let festNews = null;   // the festival that began while away, kept until the digest has told it (the daily check below rolls the state first)
+function festivalDailyCheck() {
+  let sig = '';
+  try { sig = `${activeFestival(now()).key}|${new Date(now()).toDateString()}`; } catch { return; }
+  if (sig === festChecked) return;
+  festChecked = sig;
+  try { festNews = pendingFestival(getState()) || festNews; } catch { /* none */ }
+  setTimeout(() => {
+    try {
+      const r = update(s => { ensureFestival(s); return loginLantern(s); });
+      if (r && r.ok && r.msg) notify(r.msg, 'success');
+    } catch (err) { console.warn('festival check failed', err); }
+  }, 0);
+}
+
+function openFestival() {
+  openFestivalSheet({
+    run,
+    pickPet: opts => openPetPicker(opts),
+    onFloated: id => { if (barn3d && typeof barn3d.krathongScene === 'function') { try { barn3d.krathongScene(id); } catch (err) { console.warn('krathong scene skipped', err); } } },
+  });
 }
 
 // a new best-friend pair (CONTRACT_V8 §4): one toast, here (friends.js only queues / emits the event)
@@ -703,12 +739,15 @@ function renderBarn(state) {
   const pets = state.pets;
   const mode = barnMode();
   const toggle = barnToggleHtml(mode);
+  let festChip = '';
+  try { festChip = festChipHtml(state); festivalDailyCheck(); } catch (err) { console.warn('festival chip unavailable', err); }
   if (mode === '3d' || mode === 'loading') {
     return `<div class="barn-view barn-3d">
       ${renderFamilyEggs(state)}
       <section class="barn-section">
         <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
           <div class="barn-head-r">${memoryBtnsHtml()}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+        ${festChip}
         ${mode === '3d'
           ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
           : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดลาน 3 มิติ…</div>'}
@@ -734,6 +773,7 @@ function renderBarn(state) {
     <section class="barn-section">
       <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
         <div class="barn-head-r">${giftChipHtml(state)}${memoryBtnsHtml()}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+      ${festChip}
       ${pets.length ? `<div class="barn-grid">${pets.map(p => renderPetCard(p, state)).join('')}</div>` : empty}
     </section></div>`;
 }
@@ -1183,6 +1223,7 @@ function bindBarn(root) {
     'nursery-swap': withPet(id => openSwapPicker(id)),
     'nursery-rehome': withPet(id => confirmRehome(id)),
     'open-mail': () => openMailbox(),
+    'open-festival': () => openFestival(),
     'open-journal': () => openJournal(),
     'open-album': () => { openAlbum(); },
     'greet-next': () => {

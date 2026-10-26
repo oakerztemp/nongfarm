@@ -16,6 +16,7 @@ import { EGGS } from './data/eggs.js';
 import { getItem } from './data/items.js';
 import { DECOR, getDecor } from './data/decor.js';
 import { getAccessory, expeditionAccessories, ACC_DROP_CHANCE } from './data/accessories.js';
+import { festivalEvent } from './festival.js';
 
 const MIN = 60 * 1000;
 export const MAX_PLOTS = 16;
@@ -719,6 +720,7 @@ export function harvestPlot(state, plotIndex) {
   addItem(state, 'crop_' + crop.id, amount);
   addPlayerXp(state, crop.xp);
   bumpStat(state, 'harvested');
+  festivalEvent(state, 'harvest');
   for (const id of ids) {
     if (!getPet(state, id)) continue;
     addPetXp(state, id, Math.max(2, Math.ceil(crop.xp / 2)));
@@ -970,6 +972,7 @@ export function completeOrder(state, orderId) {
   }
   order.done = true;
   bumpStat(state, 'ordersDone');
+  festivalEvent(state, 'order');
   return done(`📋 ส่งออเดอร์สำเร็จ! +${r.coins || 0} 🪙 +${r.xp || 0} XP${gifts.length ? ' · ' + gifts.join(', ') : ''}`);
 }
 
@@ -992,6 +995,7 @@ export function startExpedition(state, petId, zoneId) {
   pet.status = 'expedition';
   pet.task = { type: 'expedition', expeditionId: ex.id };
   bumpStat(state, 'expeditionsStarted');
+  festivalEvent(state, 'expedition', { petId: pet.id });
   return done(`${petEmoji(pet)} ${petName(pet)} ออกสำรวจ${zone.emoji} ${zone.nameTh} กลับใน ${formatDuration(zone.durationMs)}`);
 }
 
@@ -1224,6 +1228,7 @@ export function decorBuildStatus(state, decorId) {
 export function buildDecor(state, decorId) {
   const d = getDecor(decorId);
   if (!d) return fail('ไม่รู้จักของตกแต่งนี้');
+  if (d.festival) return fail('ของชิ้นนี้แลกได้ด้วยโคมในเทศกาลเท่านั้นนะ 🏮');   // V11: never built for coins
   const st = decorBuildStatus(state, decorId);
   if (Object.keys(st.missing).length) return fail(`ยังขาดวัสดุ: ${itemsText(st.missing)} (หาได้จากการสำรวจ)`);
   if (st.coinsShort) return fail(`เหรียญไม่พอ (ต้องใช้ ${d.coins} 🪙)`);

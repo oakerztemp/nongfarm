@@ -10,6 +10,8 @@
 // Water pets (V9 §6): spec.bubble = { r, pitch? } wraps a fully aquatic model in a translucent floating bubble (parts.bubble, ONE extra draw
 // call, a geometry + material shared by every water pet); spec.bubble.pitch tilts the swimmer inside it. Oyster / conch carry a `shell` pivot.
 // Sky pets (V10 §4): wings (wingL/wingR), tail (the peacock's whole fan is the 'tail' pivot), flamingo hip pivots legL / legR.
+// Bug pets (V11 §5): insect wings / shell halves (wingL/wingR, ears 'bugwings' + 'elytra' below), antennae as earL/earR (ears type 'feeler'), spider leg pivots legL/legR ('spiderlegs'),
+// scorpion claws (ears type 'claw') + curled tail. The rotation signs B drives are documented at the top of the "V11 §5" block in data/models.js.
 // Stage scale lives on `root` (so B's body.scale squash never fights it). Everything built here
 // shares geometries (unit shapes, scaled per mesh) and materials (keyed by colour) per THREE instance.
 
@@ -339,7 +341,7 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
   const L = { type: 'stub', h: 0.12, r: 0.08, ...spec.legs };
   const hasLegs = L.type !== 'none';
   const by = B.y ?? (hasLegs ? L.h * 0.6 + B.h * 0.95 : B.h * 0.98);
-  put(bodyG, B.lo ? 'sphM' : 'sph', tm(B.color), B.w, B.h, B.d, 0, by, 0);   // lo: 120 tris instead of 192 (forest commons have a 1.2k budget)
+  put(bodyG, B.lo === 2 ? 'sphL' : B.lo ? 'sphM' : 'sph', tm(B.color), B.w, B.h, B.d, 0, by, 0);   // lo: 120 tris instead of 192 (forest commons have a 1.2k budget)
   if (B.belly) {
     const bl = { s: 0.84, dz: 0.22, dy: -0.1, ...B.belly };
     put(bodyG, bl.lo ? 'sphL' : 'sphM', tm(bl.color), B.w * bl.s, B.h * bl.s * 1.05, B.d * bl.s, 0, by + B.h * bl.dy, B.d * bl.dz);
@@ -367,7 +369,9 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     for (const sx of [-1, 1]) for (let i = 0; i < n; i++) {
       const f = n === 1 ? 0 : i / (n - 1) * 2 - 1;
       const a = V3(sx * B.w * (L.x ?? 0.8), by - B.h * (L.dy ?? 0.3), f * B.d * (L.z ?? 0.55));
-      along(put(bodyG, 'coneP', legMat, L.r ?? 0.03, L.len ?? 0.3, L.r ?? 0.03, a.x, a.y, a.z), V3(sx * (L.out ?? 1), -(L.down ?? 0.8), f * (L.fan ?? 0.4)));
+      const dir = V3(sx * (L.out ?? 1), -(L.down ?? 0.8), f * (L.fan ?? 0.4));
+      const len = L.ground ? Math.max(0.05, a.y) / ((L.down ?? 0.8) / dir.length()) : (L.len ?? 0.3);   // V11 ground: the foot lands exactly on y = 0
+      along(put(bodyG, 'coneP', legMat, L.r ?? 0.03, len, L.r ?? 0.03, a.x, a.y, a.z), dir);
     }
   }
 
@@ -382,7 +386,7 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
   headG.position.set(0, hy, hz);
   bodyG.add(headG);
   const headColor = H.color || B.color;
-  put(headG, H.lo ? 'sphM' : 'sph', tm(headColor), hrx, hry, hrz);
+  put(headG, H.lo === 2 ? 'sphL' : H.lo ? 'sphM' : 'sph', tm(headColor), hrx, hry, hrz);
   const hs = (az, el, push = 0) => surf(hrx, hry, hrz, az, el, push);
 
   if (spec.neck) {
@@ -474,6 +478,19 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
             const f = put(pivot, 'coneP', inn || mat, s * 0.13, s * 0.42, s * 0.1, k * s * 0.14, s * 1.02, 0);
             f.rotation.z = -k * 0.18;
           }
+          break;
+        }
+        case 'feeler': {   // V11 insect antenna: two thin segments with an elbow and a ball tip (the pivot wiggles: B rotates earL / earR)
+          const d = Ea.dir || [0.5, 1, 0.5];
+          along(outer, V3(side * d[0], d[1], d[2]));
+          const len = s * (Ea.len ?? 1.4), r = s * (Ea.r ?? 0.05), l1 = len * (Ea.split ?? 0.55);
+          put(pivot, 'thin', mat, r, l1, r);
+          const elbow = new T.Group();
+          elbow.position.y = l1;
+          elbow.rotation.x = Ea.bend ?? 0.6;
+          pivot.add(elbow);
+          put(elbow, 'thin', mat, r * 0.85, len - l1, r * 0.85);
+          if (Ea.tip !== false) put(elbow, 'sphP', inn || mat, r * (Ea.ball ?? 2.4), r * (Ea.ball ?? 2.4), r * (Ea.ball ?? 2.4), 0, len - l1, 0);
           break;
         }
         case 'arm': {   // V9 tentacle / antenna: a tapered cone (optionally with a club tip) pointing forward-down
@@ -579,6 +596,13 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
           for (const a of [-1, 0, 1]) put(parent, 'sphL', tm(Ta.fan), r * 1.5, len * 0.62, r * 0.3, a * r * 1.5, len * 1.1, 0).rotation.z = -a * 0.5;
         }
         if (Ta.tuft) put(parent, 'sphL', tm(Ta.tuft), r * 2.4, r * 3.2, r * 2.4, 0, len, 0);
+        if (Ta.sting) {   // V11 scorpion: a hooked stinger cone, optionally with a diamond (two cones base to base) hanging at the tip
+          put(parent, 'cone', tm(Ta.sting), r * 1.5, r * 4.2, r * 1.5, 0, len * 0.95, 0);
+          if (Ta.gem) {
+            put(parent, 'coneP', tm(Ta.gem), r * 1.7, r * 2.2, r * 1.7, 0, len * 1.02, r * 1.2);
+            put(parent, 'coneP', tm(Ta.gem), r * 1.7, r * 2.2, r * 1.7, 0, len * 1.02, r * 1.2).rotation.x = Math.PI;
+          }
+        }
         if (Ta.flame) {
           put(parent, 'cone', tm('#ff7a1a'), r * 1.9, r * 4.4, r * 1.9, 0, len * 0.9, 0);
           put(parent, 'cone', tm('#ffd84a'), r * 1.1, r * 2.8, r * 1.1, 0, len * 0.9, 0);
@@ -1000,6 +1024,69 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
         put(pivot, 'sphP', tm(cols[2]), B.w * 0.14, B.h * 0.3, B.d * 0.6, side * B.w * 0.62, -B.h * 0.05, -B.d * 0.5);
       }
     },
+    /** V11 insect wings: one pivot per wing (parts.wingL / wingR) at the shoulders. Blades lie flat and point outward (+x on wingL). Rest pose = pivot.rotation.z = +-rest;
+     *  wingL.rotation.z = +a together with wingR.rotation.z = -a raises both tips by a (flap = rest + sin * amp). blades: [cx, cz, sx, sz, sweepBack, colourIdx, dy], spots: [cx, cz, r, colourIdx]. */
+    bugwings(o) {
+      const cols = (o.colors || [o.color || '#e9f6ff']).map(tm), th = o.th ?? 0.02;
+      for (const side of [1, -1]) {
+        const pv = new T.Group();
+        pv.position.set(side * B.w * (o.x ?? 0.25), by + B.h * (o.y ?? 0.8), B.d * (o.z ?? 0));
+        pv.rotation.z = side * (o.rest ?? 0.4);
+        pv.name = side > 0 ? 'wingL' : 'wingR';
+        pv.userData.anim = true;
+        bodyG.add(pv);
+        for (const [cx, cz, sx, sz, sweep = 0, ci = 0, dy = 0] of o.blades) {
+          const m = put(pv, o.g || 'sphL', cols[ci % cols.length], sx, th, sz, side * cx, dy, cz);
+          m.rotation.y = side * sweep;
+        }
+        for (const [cx, cz, r, ci = 1, dy = 0] of o.spots || []) put(pv, 'sphP', cols[ci % cols.length], r, th * 1.7, r, side * cx, dy, cz);
+      }
+    },
+    /** V11 shell halves (ladybug / cockroach / cricket): wingL / wingR pivots hinged near the centre line at the front of the back; the dome trails behind the hinge.
+     *  wingL.rotation.z = +a with wingR.rotation.z = -a lifts the outer edges (opens). spots: [az, el, size] on the left dome (mirrored). under: colour of a pale flight wing tucked below. */
+    elytra(o) {
+      const mat = tm(o.color), spot = tm(o.spot || '#2a2430'), W = B.w * (o.w ?? 0.58), Hh = B.h * (o.h ?? 0.8), D = B.d * (o.d ?? 1.0);
+      for (const side of [1, -1]) {
+        const pv = new T.Group();
+        pv.position.set(side * B.w * 0.06, by + B.h * (o.y ?? 0.78), B.d * (o.z ?? 0.42));
+        pv.rotation.z = side * (o.rest ?? 0);
+        pv.name = side > 0 ? 'wingL' : 'wingR';
+        pv.userData.anim = true;
+        bodyG.add(pv);
+        const cx = side * B.w * (o.cx ?? 0.42), cy = -B.h * (o.dy ?? 0.3), cz = -B.d * (o.dz ?? 0.5);
+        put(pv, 'sphM', mat, W, Hh, D, cx, cy, cz);
+        if (o.edge) put(pv, 'sphL', tm(o.edge), W * 0.96, Hh * 0.5, D * 0.96, cx + side * W * 0.04, cy - Hh * 0.45, cz);   // a pale rim along the lower edge
+        for (const [az, el, sz] of o.spots || []) {
+          const { p, n } = surf(W, Hh, D, side * az, el, W * 0.02);
+          const m = put(pv, 'sphP', spot, Hh * sz, Hh * sz, Hh * sz * (o.spotTh ?? 0.22), cx + p.x, cy + p.y, cz + p.z);
+          face(m, n);
+        }
+        if (o.under) put(pv, 'sphL', tm(o.under), B.w * 0.3, 0.02, B.d * 0.42, side * B.w * 0.46, -B.h * 0.58, -B.d * 1.08);
+      }
+    },
+    /** V11 spider legs: two hip pivots (parts.legL / parts.legR), n bent legs each (knee up and out, foot on the ground). legL.rotation.z = +a (legR -a) lifts that side's feet (wave);
+     *  legL.rotation.x = +a swings the feet forward. */
+    spiderlegs(o) {
+      const n = o.n ?? 4, r = o.r ?? 0.03, mat = tm(o.color || B.color);
+      for (const side of [1, -1]) {
+        const pv = new T.Group();
+        pv.position.set(0, by, 0);
+        pv.name = side > 0 ? 'legL' : 'legR';
+        pv.userData.anim = true;
+        bodyG.add(pv);
+        for (let i = 0; i < n; i++) {
+          const f = n === 1 ? 0 : i / (n - 1) * 2 - 1;          // -1 back .. 1 front
+          const a = V3(side * B.w * (o.x ?? 0.7), -B.h * (o.dy ?? 0.1), f * B.d * (o.z ?? 0.45));
+          const up = V3(side * (o.out ?? 0.9), o.rise ?? 0.8, f * (o.fan ?? 0.7)).normalize(), ul = o.up ?? 0.3;
+          const knee = a.clone().addScaledVector(up, ul);
+          const down = V3(side * (o.out2 ?? 0.45), -1, f * (o.fan2 ?? 0.55)).normalize();
+          const ll = (by + knee.y) / -down.y;
+          along(put(pv, 'coneP', mat, r * 1.15, ul * 1.12, r * 1.15, a.x, a.y, a.z), up);
+          along(put(pv, 'coneP', mat, r * 0.95, ll, r * 0.95, knee.x, knee.y, knee.z), down);
+          put(pv, 'sphP', mat, r * 1.5, r * 1.5, r * 1.5, knee.x, knee.y, knee.z);
+        }
+      }
+    },
     /** Empty anchor at the blowhole (parts.spout) for the water-spout fx. */
     spout(o) {
       const a = new T.Object3D();
@@ -1185,11 +1272,12 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     bub.renderOrder = 2;
     bodyG.add(bub);
   }
-  if (S !== 1) {
-    // Keep `body` free for B's squash: move the species scale onto an inner wrapper instead.
+  if (S !== 1 || spec.dz) {
+    // Keep `body` free for B's squash: move the species scale onto an inner wrapper instead. spec.dz (V11) slides a long-bodied bug back so its middle sits over the root.
     const inner = new T.Group();
     inner.name = 'species-scale';
     inner.scale.setScalar(S);
+    inner.position.z = (spec.dz || 0) * S;
     while (bodyG.children.length) inner.add(bodyG.children[0]);
     bodyG.add(inner);
   }

@@ -51,9 +51,12 @@ export const SPECIAL_FESTIVALS = [
 /**
  * Special windows, local dates 'YYYY-MM-DD', both ends inclusive (00:00 of `from` to 24:00 of `to`). While one is on it replaces the
  * weekly festival. ลอยกระทง 2569 = Tuesday 24 November 2026 (full moon of the 12th lunar month; checked on 2026-10-26).
+ * ลอยกระทง 2570 = Saturday 13 November 2027 (ขึ้น 15 ค่ำ เดือน 12 per Thai lunar calendars myhora / meemodel; checked on 2026-10-26).
+ * Next row (2571) before the end of November 2027.
  */
 export const SPECIALS = [
   { id: 'fest_loykrathong', from: '2026-11-17', to: '2026-11-30', peakDay: '2026-11-24' },
+  { id: 'fest_loykrathong', from: '2027-11-06', to: '2027-11-19', peakDay: '2027-11-13' },
 ];
 
 export const FESTIVAL_DEFS = [...WEEKLY_FESTIVALS, ...SPECIAL_FESTIVALS];

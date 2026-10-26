@@ -3084,6 +3084,11 @@ export function mountBarn3d(host, ctx) {
         // a stage-3 pet already wears the 👑 sprite: head items sit on top of it
         if (acc.slot === 'head' && m.stage === 3) obj.position.y = 0.4 + (m.crownLift || 0);
         if (acc.id === 'party') obj.rotation.z = -0.14;
+        if (acc.slot === 'neck') {   // V15: the ring sat under the chin, hidden by the head from the yard camera: tilt its front up + forward, a bit bigger
+          obj.rotation.x = -0.35;
+          obj.scale.setScalar(r * 1.12);
+          obj.position.set(0, r * 0.12, r * 0.12);
+        }
         m.head.add(obj);
       } else {
         obj = new THREE.Sprite(accSpriteMat(acc.emoji));

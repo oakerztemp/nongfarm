@@ -109,8 +109,18 @@ test('festival: every habitat returns exactly every 8 weeks, across 53-week year
   assertEq(activeFestival(at(2027, 1, 12, 12)).habitat, w(at(2026, 11, 17, 12)), 'and it is really back');
 });
 
+test('festival V15: ลอยกระทง 2570 = 2027-11-06 .. 2027-11-19, peak 2027-11-13, its own key (lanterns / tasks reroll), weekly before and after', () => {
+  assertEq(SPECIALS[1], { id: 'fest_loykrathong', from: '2027-11-06', to: '2027-11-19', peakDay: '2027-11-13' });
+  assertEq(activeFestival(at(2027, 11, 5, 23, 59, 59) + 999).kind, 'weekly', 'day before');
+  const f = activeFestival(at(2027, 11, 6, 0));
+  assertEq([f.id, f.peakDay, f.from, f.to], ['fest_loykrathong', '2027-11-13', at(2027, 11, 6, 0), at(2027, 11, 20, 0)]);
+  assert(f.key !== activeFestival(at(2026, 11, 20, 12)).key, 'a new key, not the 2026 one');
+  assertEq(activeFestival(at(2027, 11, 19, 23, 59, 59) + 999).id, 'fest_loykrathong', 'last millisecond');
+  assertEq(activeFestival(at(2027, 11, 20, 0)).kind, 'weekly', 'day after');
+});
+
 test('festival: ลอยกระทง 2026-11-17 .. 2026-11-30 replaces the weekly one; boundaries to the millisecond; peak day 2026-11-24', () => {
-  assertEq(SPECIALS, [{ id: 'fest_loykrathong', from: '2026-11-17', to: '2026-11-30', peakDay: '2026-11-24' }]);
+  assertEq(SPECIALS[0], { id: 'fest_loykrathong', from: '2026-11-17', to: '2026-11-30', peakDay: '2026-11-24' });
   const before = activeFestival(at(2026, 11, 16, 23, 59, 59) + 999);
   assertEq([before.kind, before.key, before.id], ['weekly', '2026-W47', 'fest_polar']);
   const first = activeFestival(at(2026, 11, 17, 0));

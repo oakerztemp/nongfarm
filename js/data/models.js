@@ -1477,12 +1477,244 @@ export const MODEL_SPECS = {
     ],
     shinyPalette: { '#f0b878': '#b9a0f0', '#f6c890': '#dcc8ff', '#d9955a': '#8a70d0', '#ff9a6a': '#ff8fc0', '#ffc09a': '#ffd0e6', '#e0985a': '#8a70d0', '#7ae8ff': '#ffe66a', '#9a5a30': '#4a3290' },
   },
+  // ───────── V15 §4: savanna (ทุ่งสะวันนา) ─────────
+  // Chibi recipe from the start: big head, sparkly eyes (s 0.18-0.21, tall >= 1.3), blush, pastel colours, short chubby legs, short snouts. All of them are in CHIBI_TUNED (hand tuned).
+  // Budget <= 1500 tris / <= 7 draw calls. Fixed (non-shifting) colours: hooves, nostrils, whisker/teeth, eyes.
+
+  lizard: {   // long body + long curling striped tail, sprawled legs, back crest
+    body: { w: 0.26, h: 0.23, d: 0.5, color: '#a6df8c', belly: { color: '#f5f8cf', s: 0.8, dz: 0.2 } },
+    legs: { type: 'stub', h: 0.09, r: 0.065, color: '#93d27a', x: 0.95, z: 0.55 },
+    head: { r: 0.27, w: 1.1, h: 0.88, d: 1.0, y: 0.3, z: 0.46, color: '#a6df8c' },
+    eyes: { s: 0.2, gap: 0.62, el: 0.2, tall: 1.35 },
+    blush: '#ff9fb0',
+    snout: { type: 'nose', color: '#e7a0a8', s: 0.07, el: -0.15 },
+    tail: { type: 'long', n: 5, len: 0.85, r: 0.085, taper: 0.17, lift: -0.18, curve: 0.2, y: 0.05, color: '#a6df8c', colors: ['#a6df8c', '#8fd07c'] },
+    extras: [
+      { t: 'spikes', color: '#ffd77a', n: 5, s: 0.1, from: 0.55, to: -0.7 },
+      { t: 'spots', color: '#8fd07c', g: 'disc', th: 1, list: [
+        { on: 'body', az: 0.5, el: 0.95, s: 0.42 }, { on: 'body', az: -0.6, el: 0.9, s: 0.38 }, { on: 'body', az: 2.4, el: 0.85, s: 0.42 },
+        { on: 'body', az: 1.2, el: 0.55, s: 0.3 }, { on: 'body', az: -1.3, el: 0.55, s: 0.3 },
+      ] },
+    ],
+    shinyPalette: { '#a6df8c': '#7fd8e8', '#93d27a': '#5fc2dd', '#8fd07c': '#5fc2dd', '#f5f8cf': '#e6fbff', '#ffd77a': '#ff9ad5' },
+  },
+
+  camel: {   // one hump
+    body: { w: 0.38, h: 0.36, d: 0.52, color: '#f0cf98', y: 0.43 },
+    legs: { type: 'long', h: 0.22, r: 0.07, color: '#e8c28a', hoof: '#b89368', x: 0.58, z: 0.6 },
+    neck: { r: 0.13, top: 0.9, z: 0.5, color: '#f6dfb4' },
+    head: { r: 0.26, w: 0.92, h: 1.0, d: 1.0, y: 1.06, z: 0.72, color: '#f6dfb4' },
+    eyes: { s: 0.2, gap: 0.55, el: 0.12, tall: 1.35 },
+    blush: '#ff9f9f',
+    ears: { type: 'round', s: 0.42, az: 0.75, el: 0.75, up: 0.3, color: '#e8c28a', inner: '#ffb3c1' },
+    snout: { type: 'muzzle', color: '#fbeccd', w: 0.52, h: 0.36, d: 0.28, el: -0.3, nose: '#e98a9a', noseS: 0.1, noseY: 0.6, lo: true },
+    tail: { type: 'puff', s: 0.08, color: '#e8c28a', y: 0.45, lo: true },
+    extras: [
+      { t: 'blobs', color: '#f0cf98', list: [{ g: 'sphM', p: [0, 0.88, -0.06], s: [0.21, 0.3, 0.21] }] },
+      { t: 'blobs', color: '#e2b777', list: [{ g: 'sphL', p: [0, 1.1, -0.06], s: [0.1, 0.07, 0.1] }] },
+      { t: 'wool', color: '#e2b777', n: 0, head: [[0, 0.98, 0.0, 0.26]] },
+    ],
+    shinyPalette: { '#f0cf98': '#ffc4dc', '#f6dfb4': '#ffe3ee', '#e8c28a': '#f2a4c6', '#e2b777': '#e68cb5', '#fbeccd': '#fff4f9' },
+  },
+
+  bactrian: {   // two humps, shaggy neck + chest fur
+    body: { w: 0.38, h: 0.36, d: 0.52, color: '#d6b08a', y: 0.43, lo: true },
+    legs: { type: 'long', h: 0.22, r: 0.072, color: '#c9a07c', hoof: '#8f6f55', x: 0.58, z: 0.6 },
+    neck: { r: 0.135, top: 0.9, z: 0.5, color: '#e6c9a6' },
+    head: { r: 0.26, w: 0.92, h: 1.0, d: 1.0, y: 1.06, z: 0.72, color: '#e6c9a6' },
+    eyes: { s: 0.2, gap: 0.55, el: 0.12, tall: 1.35 },
+    blush: '#ff9f9f',
+    ears: { type: 'round', s: 0.42, az: 0.75, el: 0.75, up: 0.3, color: '#c9a07c', inner: '#ffb3c1' },
+    snout: { type: 'muzzle', color: '#f3dcc0', w: 0.52, h: 0.36, d: 0.28, el: -0.3, nose: '#e98a9a', noseS: 0.1, noseY: 0.6, lo: true },
+    tail: { type: 'puff', s: 0.08, color: '#b88e6c', y: 0.45, lo: true },
+    extras: [
+      { t: 'blobs', color: '#d6b08a', list: [{ g: 'sphL', p: [0, 0.83, 0.1], s: [0.16, 0.26, 0.15] }, { g: 'sphL', p: [0, 0.83, -0.17], s: [0.16, 0.26, 0.15] }] },
+      { t: 'blobs', color: '#a8795a', list: [{ g: 'sphP', p: [0, 1.06, 0.1], s: [0.09, 0.07, 0.09] }, { g: 'sphP', p: [0, 1.06, -0.17], s: [0.09, 0.07, 0.09] }] },
+      { t: 'wool', color: '#a8795a', n: 0, head: [[0, 0.98, 0.0, 0.3]] },
+      { t: 'blobs', color: '#a8795a', list: [{ g: 'sphP', p: [0, 0.62, 0.36], s: 0.09 }, { g: 'sphP', p: [0.07, 0.5, 0.37], s: 0.08 }, { g: 'sphP', p: [-0.07, 0.5, 0.37], s: 0.08 }] },
+    ],
+    shinyPalette: { '#d6b08a': '#c9b8f2', '#e6c9a6': '#ded2fa', '#c9a07c': '#a994e0', '#a8795a': '#8a70cc', '#f3dcc0': '#f4eeff' },
+  },
+
+  zebra: {
+    body: { w: 0.37, h: 0.35, d: 0.48, color: '#fffdf8', y: 0.4, lo: true },
+    legs: { type: 'long', h: 0.22, r: 0.075, color: '#fffdf8', hoof: '#4a4048', x: 0.58, z: 0.62 },
+    neck: { r: 0.14, top: 0.85, z: 0.45, color: '#fffdf8' },
+    head: { r: 0.3, w: 0.95, h: 0.95, d: 1.05, y: 0.93, z: 0.58, color: '#fffdf8', lo: true },
+    eyes: { s: 0.2, gap: 0.55, el: 0.08, tall: 1.35 },
+    blush: '#ff9fb0',
+    ears: { type: 'cat', s: 0.5, az: 0.55, el: 0.82, up: 0.7, color: '#fffdf8', inner: '#ffb3c1', static: true },
+    snout: { type: 'muzzle', color: '#cfc7d2', w: 0.48, h: 0.34, d: 0.26, el: -0.4, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', n: 2, len: 0.4, r: 0.04, lift: -0.2, curve: 0.3, color: '#fffdf8', tuft: '#3a3238', y: 0.35 },
+    extras: [
+      { t: 'stripes', at: [-0.7, -0.42, -0.14, 0.14, 0.42], color: '#3a3238', th: 0.06, g: 'sphP' },
+      { t: 'mane', colors: ['#3a3238', '#fffdf8'], n: 5, s: 0.2, endZ: -0.1, lo: true },
+      { t: 'spots', color: '#3a3238', th: 0.03, list: [
+        { on: 'head', az: 0.3, el: 0.62, s: 0.3, sx: 0.28, sy: 1.3 }, { on: 'head', az: -0.3, el: 0.62, s: 0.3, sx: 0.28, sy: 1.3 },
+              ] },
+    ],
+    shinyPalette: { '#fffdf8': '#fff0fa', '#3a3238': '#6a7cf0', '#cfc7d2': '#ffd0ec' },
+  },
+
+  kangaroo: {   // upright bean, big hind feet + thick tail + belly pouch + long ears
+    body: { w: 0.34, h: 0.44, d: 0.38, color: '#e9b982', lo: true, belly: { color: '#fbe3c6', s: 0.78, dz: 0.28, dy: -0.12, lo: true } },
+    legs: { type: 'none' },
+    head: { r: 0.29, w: 0.95, h: 0.95, d: 1.0, y: 0.92, z: 0.12, color: '#efc593' },
+    eyes: { s: 0.2, gap: 0.5, el: 0.1, tall: 1.35 },
+    blush: '#ff9f9f',
+    ears: { type: 'cat', s: 0.85, az: 0.5, el: 0.8, up: 0.8, flare: 0.25, color: '#efc593', inner: '#ffb3c1', static: true },
+    snout: { type: 'muzzle', color: '#fbe3c6', w: 0.44, h: 0.32, d: 0.4, el: -0.3, nose: '#c76f7f', noseS: 0.12, noseY: 0.6, lo: true },
+    tail: { type: 'long', n: 3, len: 0.66, r: 0.13, taper: 0.22, lift: -0.05, curve: 0.1, color: '#dfa872', y: -0.5, z: 0.72 },
+    extras: [
+      { t: 'spots', color: '#f2cda3', th: 0.4, list: [{ on: 'body', az: 0, el: -0.28, s: 0.7, sx: 1.0, sy: 0.7 }] },
+      { t: 'spots', color: '#d4906a', th: 0.4, list: [{ on: 'body', az: 0, el: -0.05, s: 0.44, sx: 1.3, sy: 0.3 }] },
+      { t: 'blobs', color: '#dfa872', mirror: true, list: [
+        { g: 'sphL', p: [0.15, 0.06, 0.22], s: [0.085, 0.06, 0.24] },
+        { g: 'sphL', p: [0.2, 0.2, -0.02], s: [0.1, 0.17, 0.2] },
+        { g: 'sphL', p: [0.27, 0.55, 0.16], s: [0.055, 0.12, 0.06], r: [0.5, 0, 0.2] },
+      ] },
+    ],
+    shinyPalette: { '#e9b982': '#b4e0f5', '#efc593': '#cdeefb', '#dfa872': '#8ccbe8', '#fbe3c6': '#f4fcff', '#f2cda3': '#e3f6ff', '#d4906a': '#6cb5d9' },
+  },
+
+  bison: {   // shoulder hump + shaggy dark mane/beard, short horns
+    body: { w: 0.46, h: 0.4, d: 0.56, color: '#b08a6b' },
+    legs: { type: 'stub', h: 0.14, r: 0.105, color: '#d3b496', x: 0.55 },
+    head: { r: 0.34, w: 1.08, h: 0.92, d: 0.95, y: 0.6, z: 0.52, color: '#8d6a50' },
+    eyes: { s: 0.18, gap: 0.6, el: 0.1, tall: 1.35 },
+    blush: '#ff9f9f',
+    ears: { type: 'floppy', s: 0.55, az: 1.2, el: 0.35, color: '#8d6a50', flare: 0.55, inner: false },
+    snout: { type: 'muzzle', color: '#d9bba0', w: 0.58, h: 0.4, d: 0.3, el: -0.34, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', len: 0.36, r: 0.035, lift: 0.0, curve: 0.1, color: '#b08a6b', tuft: '#6b4a38', y: 0.5 },
+    extras: [
+      { t: 'horns', color: '#f4e8cc', s: 0.9, az: 1.0, el: 0.45, dir: [1, 0.35, -0.2], segs: 2, bend: 0.5, thick: 1.1, axis: 'x' },
+      { t: 'blobs', color: '#8d6a50', list: [{ g: 'sphL', p: [0, 0.7, 0.1], s: [0.3, 0.28, 0.27] }] },
+      { t: 'puffs', color: '#8d6a50', list: [['body', 0.14, 0.46, 0.38, 0.13], ['body', -0.14, 0.46, 0.38, 0.13]] },
+      { t: 'wool', color: '#6b4a38', n: 0, head: [[0, 0.95, 0.12, 0.62], [0.42, 0.78, 0.02, 0.34], [-0.42, 0.78, 0.02, 0.34]] },
+      { t: 'beard', color: '#6b4a38', len: 0.5 },
+    ],
+    shinyPalette: { '#b08a6b': '#f2b4c9', '#8d6a50': '#d98aa8', '#6b4a38': '#b8648a', '#d3b496': '#fbd9e4', '#d9bba0': '#fff0f5' },
+  },
+
+  crocodile: {   // long low body, long (but cute) snout with a little smile, back crest, long tail
+    body: { w: 0.3, h: 0.24, d: 0.66, color: '#93d9a0', belly: { color: '#f7f3c6', s: 0.8, dz: 0.18 } },
+    legs: { type: 'stub', h: 0.09, r: 0.07, color: '#82cc92', x: 0.95, z: 0.6 },
+    head: { r: 0.3, w: 1.0, h: 0.85, d: 0.85, y: 0.34, z: 0.4, color: '#93d9a0' },
+    eyes: { s: 0.19, gap: 0.5, el: 0.35, tall: 1.35 },
+    blush: '#ff9fb0',
+    snout: { type: 'muzzle', color: '#a9e5b4', w: 0.58, h: 0.3, d: 2.0, el: -0.2, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', n: 5, len: 0.9, r: 0.1, taper: 0.17, lift: -0.15, curve: 0.18, y: 0.05, color: '#93d9a0', colors: ['#93d9a0', '#82cc92'] },
+    extras: [
+      { t: 'spikes', color: '#6cbf82', n: 6, s: 0.1, from: 0.7, to: -0.8 },
+      { t: 'teeth', color: '#ffffff', s: 0.06, dz: 0.2, dy: 0.4 },
+    ],
+    shinyPalette: { '#93d9a0': '#f7c46a', '#82cc92': '#e8aa4a', '#a9e5b4': '#ffdf9a', '#f7f3c6': '#fff6e0', '#6cbf82': '#d98a2a' },
+  },
+
+  elephant: {   // trunk, big floppy ears, little tusks
+    body: { w: 0.5, h: 0.46, d: 0.58, color: '#b9c8de' },
+    legs: { type: 'stub', h: 0.13, r: 0.12, color: '#a8b8d2' },
+    head: { r: 0.38, w: 1.05, h: 0.95, d: 0.9, y: 0.8, z: 0.44, color: '#b9c8de' },
+    eyes: { s: 0.18, gap: 0.55, el: 0.08, tall: 1.35 },
+    blush: '#ffb0c8',
+    ears: { type: 'round', s: 0.95, az: 1.15, el: 0.3, up: 0.0, color: '#a8b8d2', inner: '#ffd6e4', static: true },
+    tail: { type: 'long', n: 3, len: 0.3, r: 0.03, lift: -0.1, curve: 0.2, color: '#a8b8d2', tuft: '#8798b8', y: 0.3 },
+    extras: [
+      { t: 'trunk', color: '#a8b8d2', len: 1.5, r: 0.22, el: -0.2, n: 4, bend: 0.55 },
+      { t: 'tusks', color: '#fbf3dc', s: 0.7, az: 0.5, el: -0.35, segs: 3, bend: 0.55 },
+    ],
+    shinyPalette: { '#b9c8de': '#f6c2dc', '#a8b8d2': '#e89ac2', '#8798b8': '#c4709e', '#ffd6e4': '#fff0f6', '#fbf3dc': '#ffe08a' },
+  },
+
+  giraffe: {   // long neck, ossicones, patches
+    body: { w: 0.34, h: 0.34, d: 0.46, color: '#f8de94', y: 0.5, lo: true },
+    legs: { type: 'long', h: 0.3, r: 0.065, color: '#f3d386', x: 0.58, z: 0.62 },
+    neck: { r: 0.115, top: 1.0, z: 0.5, color: '#f8de94' },
+    head: { r: 0.27, w: 0.92, h: 1.0, d: 1.02, y: 1.52, z: 0.62, color: '#f8de94', lo: true },
+    eyes: { s: 0.2, gap: 0.55, el: 0.1, tall: 1.35 },
+    blush: '#ff9f9f',
+    ears: { type: 'side', s: 0.55, az: 1.2, el: 0.35, color: '#f3d386', inner: false, flare: 0.3 },
+    snout: { type: 'muzzle', color: '#fff2d0', w: 0.52, h: 0.36, d: 0.26, el: -0.32, nose: '#e98a9a', noseS: 0.1, noseY: 0.6, lo: true },
+    tail: { type: 'long', n: 2, len: 0.36, r: 0.025, lift: -0.1, curve: 0.25, color: '#f8de94', tuft: '#9a6a44', y: 0.4 },
+    extras: [
+      { t: 'horns', color: '#c99a6c', s: 0.52, az: 0.28, el: 0.95, dir: [0.12, 1, -0.15], segs: 2, bend: 0.1, thick: 0.9 },
+      { t: 'blobs', color: '#9a6a44', on: 'head', mirror: true, list: [{ g: 'sphP', p: [0.075, 0.3, -0.04], s: 0.045 }] },
+      { t: 'spots', color: '#e0a15c', g: 'sphP', th: 0.3, list: [
+        { on: 'body', az: 1.1, el: 0.45, s: 0.6, sx: 1.2 }, { on: 'body', az: -1.2, el: 0.5, s: 0.5 }, { on: 'body', az: 2.2, el: 0.6, s: 0.5 },
+        { on: 'body', az: 0.2, el: 1.15, s: 0.5, sx: 1.3 },
+      ] },
+      { t: 'blobs', color: '#e0a15c', mirror: true, list: [
+        { g: 'sphP', p: [0.1, 0.875, 0.314], s: [0.03, 0.07, 0.07] }, { g: 'sphP', p: [0.1, 1.063, 0.398], s: [0.03, 0.07, 0.07] },
+      ] },
+      { t: 'blobs', color: '#9a6a44', list: [
+        { g: 'sphP', p: [0, 0.922, 0.209], s: 0.055 }, { g: 'sphP', p: [0, 1.11, 0.293], s: 0.055 }, { g: 'sphP', p: [0, 1.298, 0.377], s: 0.055 },
+      ] },
+    ],
+    shinyPalette: { '#f8de94': '#c9f0e2', '#f3d386': '#aee4d0', '#e0a15c': '#7fc9b2', '#9a6a44': '#4f9c85', '#c99a6c': '#8fd4bf', '#fff2d0': '#f2fffa' },
+  },
+
+  hippo: {   // round, huge wide muzzle, small ears + eyes on top bumps
+    body: { w: 0.5, h: 0.46, d: 0.55, color: '#cdb6e3', belly: { color: '#e7d8f3', s: 0.78, dz: 0.2 } },
+    legs: { type: 'stub', h: 0.1, r: 0.125, color: '#bda3d6', x: 0.58 },
+    head: { r: 0.4, w: 1.12, h: 0.88, d: 0.95, y: 0.62, z: 0.4, color: '#cdb6e3' },
+    eyes: { s: 0.17, gap: 0.55, el: 0.3, tall: 1.35 },
+    blush: '#ff9fc0',
+    ears: { type: 'round', s: 0.4, az: 0.7, el: 0.72, up: 0.4, color: '#bda3d6', inner: '#ffb3d0' },
+    snout: { type: 'muzzle', color: '#e9dcf5', w: 0.95, h: 0.5, d: 0.55, el: -0.32, nose: false, nostrils: true },
+    tail: { type: 'fluffy', w: 0.05, h: 0.1, d: 0.04, dy: 0.1, dz: 0.02, rot: 0.3, color: '#bda3d6', y: 0.5 },
+    extras: [
+      { t: 'teeth', color: '#ffffff', s: 0.06, dz: 0.35, dy: 0.5 },
+      { t: 'blobs', color: '#cdb6e3', mirror: true, list: [{ g: 'sphL', p: [0.19, 0.16, 0.2], s: 0.06 }] },
+    ],
+    shinyPalette: { '#cdb6e3': '#9fe0c4', '#bda3d6': '#7fcfae', '#e7d8f3': '#d2f6e8', '#e9dcf5': '#e6fbf3', '#ffb3d0': '#fff0b8' },
+  },
+
+  rhino: {   // two horns on the nose, thick plated skin
+    body: { w: 0.46, h: 0.4, d: 0.56, color: '#cdc0d2', belly: { color: '#e4dbe8', s: 0.78, dz: 0.2 } },
+    legs: { type: 'stub', h: 0.12, r: 0.115, color: '#bcaec3', x: 0.58 },
+    head: { r: 0.36, w: 1.05, h: 0.92, d: 1.0, y: 0.58, z: 0.5, color: '#cdc0d2' },
+    eyes: { s: 0.17, gap: 0.58, el: 0.1, tall: 1.35 },
+    blush: '#ffa8c0',
+    ears: { type: 'cat', s: 0.5, az: 0.8, el: 0.75, up: 0.5, color: '#bcaec3', inner: '#ffb3c1' },
+    snout: { type: 'muzzle', color: '#e6dceb', w: 0.5, h: 0.34, d: 0.3, el: -0.35, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', n: 2, len: 0.3, r: 0.03, lift: -0.2, curve: 0.2, color: '#bcaec3', tuft: '#8f819a', y: 0.4 },
+    extras: [
+      { t: 'horn', colors: ['#fbeed2', '#f0d9a8'], n: 3, s: 1.5, w: 0.36, el: 0.42, fwd: 1.4 },
+      { t: 'horn', colors: ['#fbeed2', '#f0d9a8'], n: 2, s: 0.55, w: 0.2, el: 0.82, fwd: 0.6 },
+      { t: 'blobs', color: '#bcaec3', mirror: true, list: [{ g: 'sphM', p: [0.2, 0.52, 0.2], s: [0.12, 0.17, 0.18] }] },
+    ],
+    shinyPalette: { '#cdc0d2': '#f7d58a', '#bcaec3': '#e8bb62', '#e4dbe8': '#fff0cc', '#e6dceb': '#fff4d9', '#fbeed2': '#ffb0d0', '#f0d9a8': '#ff8ab8' },
+  },
+
+  leopard: {   // gold coat with rosette spots, round ears, long spotted tail
+    body: { w: 0.34, h: 0.3, d: 0.5, color: '#f6d083', belly: { color: '#fff1d2', s: 0.8, dz: 0.22 } },
+    legs: { type: 'stub', h: 0.12, r: 0.085, color: '#f6d083' },
+    head: { r: 0.31, w: 1.08, h: 0.95, d: 0.97, y: 0.65, z: 0.36, color: '#f6d083' },
+    eyes: { s: 0.2, gap: 0.5, el: 0.12, tall: 1.35 },
+    blush: '#ff9fa8',
+    ears: { type: 'round', s: 0.5, az: 0.75, el: 0.7, up: 0.3, color: '#f6d083', inner: '#ffb3c1', static: true },
+    snout: { type: 'muzzle', color: '#fff1d2', w: 0.44, h: 0.32, d: 0.28, el: -0.3, nose: '#d9788a', noseS: 0.12, noseY: 0.6, lo: true },
+    tail: { type: 'long', n: 5, len: 0.78, r: 0.05, lift: 0.3, curve: 0.35, y: 0.2, color: '#f6d083', colors: ['#f6d083', '#6e4a3a'] },
+    extras: [
+      { t: 'spots', color: '#6e4a3a', g: 'disc', th: 1, list: [
+        { on: 'body', az: 1.2, el: 0.5, s: 0.3 }, { on: 'body', az: 1.55, el: 0.2, s: 0.28 }, { on: 'body', az: 2.1, el: 0.7, s: 0.3 },
+        { on: 'body', az: -1.2, el: 0.5, s: 0.3 }, { on: 'body', az: -1.55, el: 0.2, s: 0.28 }, { on: 'body', az: -2.1, el: 0.7, s: 0.3 },
+        { on: 'body', az: 0.45, el: 1.0, s: 0.28 }, { on: 'body', az: -0.4, el: 1.05, s: 0.28 }, { on: 'body', az: 3.0, el: 0.95, s: 0.26 },
+        { on: 'body', az: 0.9, el: 0.85, s: 0.26 }, { on: 'body', az: -0.9, el: 0.85, s: 0.26 },
+        { on: 'head', az: 0.4, el: 0.7, s: 0.14 }, { on: 'head', az: -0.4, el: 0.7, s: 0.14 }, { on: 'head', az: 0, el: 0.85, s: 0.14 },
+        { on: 'head', az: 1.0, el: 0.3, s: 0.14 }, { on: 'head', az: -1.0, el: 0.3, s: 0.14 },
+      ] },
+      { t: 'whiskers', color: '#ffffff', len: 0.45, n: 2, az: 0.3, el: -0.2 },
+    ],
+    shinyPalette: { '#f6d083': '#d9c4ff', '#fff1d2': '#f6f0ff', '#6e4a3a': '#7a4fd1', '#ffb3c1': '#ffd9ec' },
+  },
+
 };
 
 // ───────── V14: the V13 chibi recipe for every model ─────────
-// The 11 legendaries (V13) and the long-legged horse / llama / deer (V14) are tuned by hand; every other spec gets the same recipe here, in place:
+// The 11 legendaries (V13), the long-legged horse / llama / deer (V14) and the 12 savanna friends (V15) are tuned by hand; every other spec gets the same recipe here, in place:
 // sparkly eyes (larger, a little taller), a slightly bigger head, shorter muzzles / snouts / beaks. Blush stays as each spec set it.
-const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer']);
+const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer', 'lizard', 'camel', 'bactrian', 'zebra', 'kangaroo', 'bison', 'crocodile', 'elephant', 'giraffe', 'hippo', 'rhino', 'leopard']);
 export const CHIBI = { eyeMult: 1.25, eyeMax: 0.21, eyeTall: 1.3, headMult: 1.06, snoutMult: 0.8, beakMult: 0.85 };
 
 function chibify(spec) {

@@ -33,10 +33,10 @@ function vertexColors(m, eyes = false) {
 const drawCalls = m => { let n = 0; m.root.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; };
 const build = (id, over = {}) => buildPetModel(THREE, { speciesId: id, stage: 2, shiny: false, ...over }, getSpecies(id));
 
-test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends and the 13 bug friends', () => {
+test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends, the 13 bug friends and the 12 savanna friends', () => {
   assertEq(FARM.length, 21, 'farm species count');
   for (const sp of FARM) assert(hasModel(sp.id), 'no model for ' + sp.id);
-  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug', 'unexpected spec for ' + id);
+  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug' || getSpecies(id).habitat === 'savanna', 'unexpected spec for ' + id);
   for (const id of LEGEND_IDS) assert(hasModel(id), 'no model for ' + id);
 });
 
@@ -1193,4 +1193,182 @@ test('coats: shiny wins over the coat; templates are shared per coat; no extra d
   // billboards (species without a spec) never tint: just the emoji
   const bb = buildPetModel(THREE, { speciesId: 'penguin', stage: 2, coat: 'mint' }, getSpecies('penguin'));
   assertEq(bb.kind, 'billboard', 'a coated billboard is just the emoji');
+});
+
+// ── V15 §4: the 12 savanna friends ──────────────────────────────────────────
+const SAVANNA = {
+  lizard: 'common', camel: 'common', bactrian: 'common', zebra: 'uncommon', kangaroo: 'uncommon', bison: 'uncommon', crocodile: 'uncommon',
+  elephant: 'rare', giraffe: 'rare', hippo: 'rare', rhino: 'epic', leopard: 'epic',
+};
+const SAVANNA_IDS = Object.keys(SAVANNA);
+const SAVANNA_BUDGET = { tris: 1500, calls: 7 };
+
+test('savanna: every habitat-savanna species except the golden lion has a spec (the lion keeps its V13 model); rarity table matches species.js', () => {
+  const sav = SPECIES.filter(s => s.habitat === 'savanna' && s.id !== 'lion');
+  assertEq(sav.map(s => s.id).sort(), SAVANNA_IDS.slice().sort(), 'the 12 savanna friends');
+  for (const id of SAVANNA_IDS) {
+    assert(hasModel(id), 'no model for ' + id);
+    assertEq(getSpecies(id).rarity, SAVANNA[id], id + ' rarity');
+  }
+  assert(hasModel('lion'), 'the golden lion was already there');
+});
+
+test('savanna: 12 models build; budgets (<= 1500 tris + 7 draw calls), finite, standing on the ground', () => {
+  const rows = [];
+  for (const id of SAVANNA_IDS) {
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assertEq(m.kind, 'model', id);
+      assert(m.root.isGroup && m.body.isGroup && m.head && m.head.isGroup && m.body.parent === m.root, id + ' groups');
+      const t = tris(m.root), calls = drawCalls(m) - (stage === 3 ? 1 : 0);   // the crown sprite is an extra call for masters only
+      assert(t <= SAVANNA_BUDGET.tris, `${id} has ${t} triangles (budget ${SAVANNA_BUDGET.tris})`);
+      assert(calls <= SAVANNA_BUDGET.calls, `${id} uses ${calls} draw calls (budget ${SAVANNA_BUDGET.calls})`);
+      assert(Number.isFinite(m.height) && m.height > 0.4 && m.height < 2.6, `${id} height ${m.height}`);
+      assert(Number.isFinite(m.radius) && m.radius > 0.15 && m.radius < 1.5, `${id} radius ${m.radius}`);
+      m.root.updateMatrixWorld(true);
+      let bad = 0;
+      m.root.traverse(o => {
+        for (const v of [o.position, o.scale, o.quaternion]) for (const k of ['x', 'y', 'z']) if (!Number.isFinite(v[k])) bad++;
+        if (o.isMesh) for (const x of o.matrixWorld.elements) if (!Number.isFinite(x)) bad++;
+      });
+      assertEq(bad, 0, id + ' NaN transforms');
+      const box = new THREE.Box3().setFromObject(m.root);
+      assert(Math.abs(box.min.y) < 0.05, `${id} stage ${stage}: feet at y=${box.min.y}`);
+      if (stage === 2) rows.push(`${id} ${t}t/${calls}c`);
+    }
+    assertEq(buildL(id).legendary, false, id + ' is not legendary');
+  }
+  console.log('[models] savanna: ' + rows.join(', '));
+});
+
+test('savanna: the shared toon material + one eye material only; merged geometry cached per species and shiny; hand-tuned chibi eyes + blush', () => {
+  const mats = new Set();
+  for (const id of SAVANNA_IDS) {
+    materials(buildL(id).root, mats);
+    const a = buildL(id), b = buildL(id, { stage: 0 });
+    for (const n of ['bodyMesh', 'headMesh']) assert(geoOf(a, n) === geoOf(b, n), `${id} ${n} not shared`);
+    assert(geoOf(buildL(id, { shiny: true }), 'bodyMesh') !== geoOf(a, 'bodyMesh'), id + ' shiny has its own buffers');
+    assertEq(tris(buildL(id).root), tris(buildL(id, { shiny: true }).root), id + ' shiny keeps the geometry');
+    // CHIBI_TUNED: the V14 chibify pass must skip them, so the spec's own eyes are what is built (it would otherwise multiply s and clamp to 0.21)
+    const e = MODEL_SPECS[id].eyes;
+    assert(e.s >= 0.17 && e.s <= 0.21 && e.tall >= 1.3, `${id}: sparkly chibi eyes (s ${e.s}, tall ${e.tall})`);
+    assert(MODEL_SPECS[id].blush !== false, id + ' has a blush');
+  }
+  const toon = [...mats].filter(x => x.isMeshToonMaterial);
+  assertEq(toon.length, 1, 'one shared toon material for all 12');
+  assertEq([...mats].filter(x => !x.isMeshToonMaterial).length, 1, 'plus the eye material');
+});
+
+test('savanna: standard animated parts (head, eyes, anchor, tail) exist; the elephant trunk is a pivot', () => {
+  for (const id of SAVANNA_IDS) {
+    const m = buildL(id);
+    assert(m.head && m.parts.eyes.length === 1 && m.anchor && m.anchor.parent === m.head, id + ' head / eyes / anchor');
+    assert(m.parts.tail && m.parts.tail.isGroup, id + ' tail pivot');
+    if (id !== 'elephant') assertEq(m.parts.trunk, null, id + ' has no trunk pivot');
+  }
+  const el = buildL('elephant');
+  assert(el.parts.trunk && el.parts.trunk.parent === el.head, 'elephant trunk pivot on the head');
+  el.parts.trunk.rotation.x += 0.4;
+  el.root.updateMatrixWorld(true);
+  assert(new THREE.Box3().setFromObject(el.root).min.toArray().every(Number.isFinite), 'trunk can swing');
+});
+
+test('savanna: signature parts are really there (giraffe neck + patches, elephant trunk + ears + tusks, zebra stripes, kangaroo pouch + tail, camel humps, crocodile snout + crest, hippo muzzle, rhino horns, leopard spots, bison hump + mane, lizard tail)', () => {
+  const size = (m, n) => bboxOf(m, n).getSize(new THREE.Vector3());
+  const sp = id => MODEL_SPECS[id];
+  // giraffe: a very long neck (tallest of the savanna), patches on body + neck, ossicones + tuft tail
+  const gir = buildL('giraffe');
+  for (const id of SAVANNA_IDS.filter(i => i !== 'giraffe')) assert(gir.height > buildL(id).height + 0.2, 'giraffe is taller than ' + id);
+  assert(gir.height > 1.5 && sp('giraffe').head.y > 1.3 && sp('giraffe').neck, 'giraffe: head high on a long neck');
+  assert(hasColor(gir, 'bodyMesh', '#e0a15c') && hasColor(gir, 'tailMesh', '#9a6a44') && hasColor(gir, 'headMesh', '#c99a6c'), 'giraffe: patches, tail tuft, ossicones');
+  // elephant: a long trunk pivot, huge ears (wider than the head), cream tusks
+  const ele = buildL('elephant');
+  assert(size(ele, 'trunkMesh').length() > 0.35 && ele.parts.trunk.position.y < 0, 'elephant: long trunk hanging from the face');
+  assert(size(ele, 'headMesh').x > sp('elephant').head.r * 2 * 1.3, 'elephant: big ears stick out far past the head: ' + size(ele, 'headMesh').x);
+  assert(hasColor(ele, 'headMesh', '#fbf3dc') && hasColor(ele, 'headMesh', '#ffd6e4'), 'elephant: tusks + pink inner ears');
+  // zebra: dark stripes baked on the body and the head, striped mane + tail tuft
+  const zeb = buildL('zebra');
+  assert(hasColor(zeb, 'bodyMesh', '#3a3238') && hasColor(zeb, 'headMesh', '#3a3238') && hasColor(zeb, 'tailMesh', '#3a3238'), 'zebra: stripes on body, head, tail');
+  assert(sp('zebra').extras.find(e => e.t === 'stripes').at.length >= 4, 'zebra: at least 4 body stripes');
+  // kangaroo: pale belly pouch, a thick long tail on the ground, tall upright ears, big hind feet
+  const kan = buildL('kangaroo');
+  assert(hasColor(kan, 'bodyMesh', '#f2cda3') && hasColor(kan, 'bodyMesh', '#d4906a'), 'kangaroo: belly pouch with a seam');
+  assert(size(kan, 'tailMesh').length() > 0.45 && size(kan, 'tailMesh').x > 0.15, 'kangaroo: thick long tail: ' + size(kan, 'tailMesh').toArray());
+  assert(bboxOf(kan, 'headMesh').max.y > sp('kangaroo').head.r * 1.4, 'kangaroo: tall ears above the head');
+  assert(bboxOf(kan, 'bodyMesh').max.z > 0.38, 'kangaroo: big hind feet reach out in front of the body');
+  // camel: one hump, bactrian: two humps (dome blobs taller than the back)
+  const humps = id => sp(id).extras.filter(e => e.t === 'blobs').flatMap(e => e.list).filter(b => b.s[1] >= 0.2);
+  assertEq(humps('camel').length, 1, 'camel: one hump');
+  assertEq(humps('bactrian').length, 2, 'bactrian: two humps');
+  for (const id of ['camel', 'bactrian']) {
+    const b = sp(id).body, back = b.y + b.h;
+    assert(bboxOf(buildL(id), 'bodyMesh').max.y > back + 0.1, `${id}: the hump(s) rise above the back`);
+  }
+  assert(hasColor(buildL('bactrian'), 'bodyMesh', '#a8795a') && hasColor(buildL('bactrian'), 'headMesh', '#a8795a'), 'bactrian: shaggy dark fur on the chest / head');
+  assert(buildL('camel').height > buildL('crocodile').height + 0.4, 'camel stands tall on long legs');
+  // crocodile: long low body, a long (but cute) snout, back crest, long tail
+  const cro = buildL('crocodile');
+  assert(size(cro, 'bodyMesh').z > 0.9 && cro.height < 0.8, 'crocodile: long and low');
+  assert(bboxOf(cro, 'headMesh').max.z > sp('crocodile').head.r * 1.5, 'crocodile: long snout: ' + bboxOf(cro, 'headMesh').max.z);
+  assert(hasColor(cro, 'bodyMesh', '#6cbf82') && size(cro, 'tailMesh').length() > 0.6, 'crocodile: crest + long tail');
+  // hippo: very wide muzzle with nostrils + two little teeth
+  const hip = buildL('hippo');
+  assert(sp('hippo').snout.w >= 0.9 && hasColor(hip, 'headMesh', '#e9dcf5') && hasColor(hip, 'headMesh', '#ffffff'), 'hippo: wide muzzle + teeth');
+  assert(size(hip, 'headMesh').x > size(buildL('rhino'), 'headMesh').x * 0.95, 'hippo: the widest face');
+  // rhino: cream horns on the nose
+  const rhi = buildL('rhino');
+  assert(hasColor(rhi, 'headMesh', '#fbeed2') && hasColor(rhi, 'headMesh', '#f0d9a8'), 'rhino: horn colours');
+  assert(sp('rhino').extras.filter(e => e.t === 'horn').length === 2 && bboxOf(rhi, 'headMesh').max.z > sp('rhino').head.r * 1.4, 'rhino: two horns, the big one points forward');
+  // leopard: rosette spots on the body, head and tail
+  const leo = buildL('leopard');
+  assert(hasColor(leo, 'bodyMesh', '#6e4a3a') && hasColor(leo, 'headMesh', '#6e4a3a') && hasColor(leo, 'tailMesh', '#6e4a3a'), 'leopard: spots on body, head, tail');
+  assert(sp('leopard').extras.find(e => e.t === 'spots').list.length >= 14, 'leopard: lots of spots');
+  // bison: shoulder hump + a shaggy dark mane / beard and short horns
+  const bis = buildL('bison');
+  assert(bboxOf(bis, 'bodyMesh').max.y > sp('bison').body.h * 2 + 0.1, 'bison: shoulder hump');
+  assert(hasColor(bis, 'headMesh', '#6b4a38') && hasColor(bis, 'headMesh', '#f4e8cc'), 'bison: shaggy mane + horns');
+  // lizard: a long tail (longer than the body), a back crest, tiny and low
+  const liz = buildL('lizard');
+  assert(size(liz, 'tailMesh').length() > 0.7 && hasColor(liz, 'bodyMesh', '#ffd77a') && liz.height < 0.8, 'lizard: long tail + crest, low');
+});
+
+test('savanna: shiny = curated palettes (each palette really hits the model; eyes never shift; no hue-rotated fallback)', () => {
+  for (const id of SAVANNA_IDS) {
+    const spec = MODEL_SPECS[id], pal = spec.shinyPalette;
+    assert(pal && Object.keys(pal).length >= 2, id + ' has a curated palette');
+    for (const k of Object.keys(pal)) assert(k === k.toLowerCase() && /^#[0-9a-f]{6}$/.test(k) && /^#[0-9a-f]{6}$/.test(pal[k]), `${id}: palette key ${k}`);
+    const normal = buildL(id), shiny = buildL(id, { shiny: true });
+    assertEq([shiny.shiny, shiny.shinyStyle], [true, 'palette'], id + ' flag');
+    const cn = vertexColors(normal), cs = vertexColors(shiny);
+    const hit = Object.keys(pal).filter(k => cn.has(hexKey(k)));
+    assert(hit.length >= 2, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
+    for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
+    assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
+    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
+    const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
+    for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
+  }
+});
+
+test('savanna: stage scale + crown still work (master crown rides the head); masters stay inside the call budget + 1', () => {
+  for (const id of SAVANNA_IDS) {
+    for (let st = 0; st < 4; st++) {
+      const m = buildL(id, { stage: st });
+      assertEq(m.root.scale.x, STAGE_SCALE[st], `${id} scale at stage ${st}`);
+      assertEq(!!m.parts.crown, st === 3, `${id} crown at stage ${st}`);
+    }
+    const master = buildL(id, { stage: 3 });
+    assert(master.parts.crown.parent === master.head, id + ' crown on the head');
+    assert(drawCalls(master) <= SAVANNA_BUDGET.calls + 1, `${id} master calls ${drawCalls(master)}`);
+    assert(master.height > buildL(id, { stage: 2 }).height, id + ' master is bigger');
+  }
+});
+
+test('savanna: 20 savanna pets in one yard stay inside the scene budget (sum <= 20 x 7)', () => {
+  let calls = 0, trisSum = 0;
+  for (let i = 0; i < 20; i++) { const m = buildL(SAVANNA_IDS[i % SAVANNA_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
+  assert(calls <= 20 * 7, 'savanna yard of 20 pets: ' + calls + ' calls');
+  console.log(`[models] 20 savanna pets = ${calls} model draw calls, ${trisSum} tris`);
 });

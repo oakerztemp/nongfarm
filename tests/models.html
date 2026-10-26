@@ -12,8 +12,8 @@
     #bar label { display: inline-flex; gap: 4px; align-items: center; }
     #stats { margin-left: auto; font: 12px ui-monospace, Consolas, monospace; opacity: .75; }
     #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-    .tag { position: fixed; z-index: 2; transform: translate(-50%, 0); font-size: 12px; font-weight: 600; padding: 1px 7px;
-           border-radius: 9px; background: rgba(255,255,255,.8); white-space: nowrap; pointer-events: none; }
+    .tag { position: fixed; z-index: 2; transform: translate(-50%, 0); font-size: 11px; font-weight: 600; padding: 1px 7px;
+           border-radius: 9px; background: rgba(255,255,255,.8); white-space: nowrap; }
     #err { position: fixed; inset: 60px 20px auto; z-index: 5; color: #b00020; white-space: pre-wrap; font: 13px ui-monospace, Consolas, monospace; }
   </style>
 </head>
@@ -24,7 +24,7 @@
       <select id="stage"><option value="0">0 baby</option><option value="1">1 child</option><option value="2" selected>2 adult</option><option value="3">3 master</option></select>
     </label>
     <label>set
-      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="water">water (15)</option><option value="sky">sky (11)</option><option value="bug">bug (13)</option><option value="legendary">legendary row</option></select>
+      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="water">water (15)</option><option value="sky">sky (11)</option><option value="bug">bug (13)</option><option value="savanna">savanna (12)</option><option value="legendary">legendary row</option></select>
     </label>
     <label><input type="checkbox" id="shiny"> shiny</label>
     <label>coat
@@ -74,7 +74,8 @@
     // water = the 15 water friends (V9 §6, the humpback stays with the legendaries)
     // sky = the 11 sky friends (V10 §4, the eagle stays with the legendaries)
     // bug = the 13 bug friends (V11 §5, the beetle stays with the legendaries)
-    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : s.habitat === 'water' && s.rarity !== 'legendary' ? 'water' : s.habitat === 'sky' && s.rarity !== 'legendary' ? 'sky' : s.habitat === 'bug' && s.rarity !== 'legendary' ? 'bug' : 'legendary'; };
+    // savanna = the 12 savanna friends (V15 §4, the golden lion stays with the legendaries)
+    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : s.habitat === 'water' && s.rarity !== 'legendary' ? 'water' : s.habitat === 'sky' && s.rarity !== 'legendary' ? 'sky' : s.habitat === 'bug' && s.rarity !== 'legendary' ? 'bug' : s.habitat === 'savanna' && s.rarity !== 'legendary' ? 'savanna' : 'legendary'; };
     const ids = q.get('only') ? q.get('only').split(',')
       : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || setOf(id) === setName);
     const extras = [];
@@ -120,7 +121,9 @@
         h.calls = drawCalls(m.root);
         totalTris += h.tris;
         h.holder.add(m.root);
-        h.tag.textContent = `${c.label} · ${m.kind === 'model' ? h.tris + ' tris · ' + h.calls + ' calls' : 'sprite' + (m.shinyStyle ? ' \u00b7 halo' : '')}`;
+        // V15: the name only (long labels overlapped their neighbours); the budget is in the tooltip and in window.__gallery
+        h.tag.textContent = c.label;
+        h.tag.title = m.kind === 'model' ? `${h.tris} tris · ${h.calls} calls` : 'sprite' + (m.shinyStyle ? ' · halo' : '');
       }
       window.__gallery = { cells: holders.map(h => ({ id: h.c.id, tris: h.tris, calls: h.calls, kind: h.model.kind, height: h.model.height, radius: h.model.radius })), totalTris };
     }

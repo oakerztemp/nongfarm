@@ -33,10 +33,10 @@ function vertexColors(m, eyes = false) {
 const drawCalls = m => { let n = 0; m.root.traverse(o => { if (o.isMesh || o.isSprite) n++; }); return n; };
 const build = (id, over = {}) => buildPetModel(THREE, { speciesId: id, stage: 2, shiny: false, ...over }, getSpecies(id));
 
-test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends, the 13 bug friends, the 12 savanna friends and the 9 polar friends', () => {
+test('models: every farm-habitat species has a spec; the only non-farm specs are the legendaries, the 15 forest friends, the 15 water friends, the 11 sky friends, the 13 bug friends, the 12 savanna friends, the 9 polar friends and the 5 mystic friends', () => {
   assertEq(FARM.length, 21, 'farm species count');
   for (const sp of FARM) assert(hasModel(sp.id), 'no model for ' + sp.id);
-  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug' || getSpecies(id).habitat === 'savanna' || getSpecies(id).habitat === 'polar', 'unexpected spec for ' + id);
+  for (const id of Object.keys(MODEL_SPECS)) assert(FARM.some(s => s.id === id) || LEGEND_IDS.includes(id) || getSpecies(id).habitat === 'forest' || getSpecies(id).habitat === 'water' || getSpecies(id).habitat === 'sky' || getSpecies(id).habitat === 'bug' || getSpecies(id).habitat === 'savanna' || getSpecies(id).habitat === 'polar' || getSpecies(id).habitat === 'mystic', 'unexpected spec for ' + id);
   for (const id of LEGEND_IDS) assert(hasModel(id), 'no model for ' + id);
 });
 
@@ -121,17 +121,18 @@ test('models: shiny shifts the palette and exposes an anchor for sparkles', () =
   assertEq(tris(build('cow', { shiny: true }).root), tris(build('cow').root), 'shiny does not change geometry');
 });
 
+const MADE_UP = { id: 'test_common', emoji: '\u{1F9A9}', rarity: 'common' };   // every real species has a model since V17: a made-up one exercises the billboard path
 test('models: billboard fallback for species without a spec; billboard shape matches', () => {
-  const penguin = getSpecies('dodo');   // a mystic species: the polar friends all have models since V16
-  assertEq(hasModel('dodo'), false, 'dodo has no model');
-  const m = buildPetModel(THREE, { speciesId: 'dodo', stage: 2 }, penguin);
+  const penguin = MADE_UP;
+  assertEq(hasModel('test_common'), false, 'the made-up species has no model');
+  const m = buildPetModel(THREE, { speciesId: 'test_common', stage: 2 }, penguin);
   assertEq(m.kind, 'billboard', 'kind');
   assert(m.root.isGroup && m.body.isGroup, 'root/body groups');
   assert(m.height > 0 && m.radius > 0, 'size');
   let sprites = 0;
   m.root.traverse(o => { if (o.isSprite) sprites++; });
   assertEq(sprites, 1, 'one sprite');
-  const m2 = buildPetModel(THREE, { speciesId: 'dodo', stage: 3, shiny: true }, penguin);
+  const m2 = buildPetModel(THREE, { speciesId: 'test_common', stage: 3, shiny: true }, penguin);
   assertEq(m2.root.scale.x, 1.15, 'billboard stage scale');
   assert(!!m2.parts.crown, 'billboard crown');
   const t1 = kitStats(THREE).textures;
@@ -317,8 +318,8 @@ test('models: the stage-3 crown rides on the head, just above the head-top ancho
       assert(Math.hypot(c2.x - a2.x, c2.z - a2.z) / k < 0.3, `${id} crown stays on the rotated head`);
     }
   }
-  for (const sid of ['trex', 'dodo', 'lizard']) {   // billboards: centred above the sprite
-    const m = buildPetModel(THREE, { stage: 3 }, getSpecies(sid));
+  for (const sid of ['test_a', 'test_b', 'test_c']) {   // billboards: centred above the sprite
+    const m = buildPetModel(THREE, { stage: 3 }, { id: sid, emoji: '\u{1F9A9}', rarity: 'rare' });
     assertEq([m.parts.crown.position.x, m.parts.crown.position.z], [0, 0], sid + ' billboard crown centred');
     const dy = m.parts.crown.position.y - m.anchor.position.y;
     assert(dy > -0.03 && dy < 0.1, `${sid} billboard crown offset ${dy}`);
@@ -1191,7 +1192,7 @@ test('coats: shiny wins over the coat; templates are shared per coat; no extra d
     assert([...materials(m.root)].every(x => materials(p.root).has(x)), coat + ': same shared materials');
   }
   // billboards (species without a spec) never tint: just the emoji
-  const bb = buildPetModel(THREE, { speciesId: 'dodo', stage: 2, coat: 'mint' }, getSpecies('dodo'));
+  const bb = buildPetModel(THREE, { speciesId: 'test_common', stage: 2, coat: 'mint' }, MADE_UP);
   assertEq(bb.kind, 'billboard', 'a coated billboard is just the emoji');
 });
 
@@ -1549,4 +1550,158 @@ test('polar: 20 polar pets in one yard stay inside the scene budget (sum <= 20 x
   for (let i = 0; i < 20; i++) { const m = buildL(POLAR_IDS[i % POLAR_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
   assert(calls <= 20 * 7, 'polar yard of 20 pets: ' + calls + ' calls');
   console.log(`[models] 20 polar pets = ${calls} model draw calls, ${trisSum} tris`);
+});
+
+// ── V17 §1: the 5 mystic friends (the last emoji billboards) ────────────────
+const MYSTIC = { dodo: 'uncommon', blackcat: 'uncommon', naga: 'rare', sauropod: 'rare', trex: 'rare' };
+const MYSTIC_IDS = Object.keys(MYSTIC);
+const MYSTIC_BUDGET = { tris: 1500, calls: 7 };
+
+test('mystic: every habitat-mystic species except the four legendary-row ones has a spec; rarity table matches species.js; every species in the game has a model now', () => {
+  const mys = SPECIES.filter(s => s.habitat === 'mystic' && !LEGEND_IDS.includes(s.id));
+  assertEq(mys.map(s => s.id).sort(), MYSTIC_IDS.slice().sort(), 'the 5 mystic friends');
+  for (const id of MYSTIC_IDS) {
+    assert(hasModel(id), 'no model for ' + id);
+    assertEq(getSpecies(id).rarity, MYSTIC[id], id + ' rarity');
+    assert(!LEGEND_IDS.includes(id), id + ' is not in the legendary row');
+  }
+  for (const sp of SPECIES) assert(hasModel(sp.id), 'no 3D model for ' + sp.id);
+  assertEq(SPECIES.filter(s => !hasModel(s.id)).length, 0, 'no emoji billboards left');
+});
+
+test('mystic: 5 models build; budgets (<= 1500 tris + 7 draw calls), finite, standing on the ground', () => {
+  const rows = [];
+  for (const id of MYSTIC_IDS) {
+    for (const stage of [0, 2, 3]) {
+      const m = buildL(id, { stage });
+      assertEq(m.kind, 'model', id);
+      assert(m.root.isGroup && m.body.isGroup && m.head && m.head.isGroup && m.body.parent === m.root, id + ' groups');
+      const t = tris(m.root), calls = drawCalls(m) - (stage === 3 ? 1 : 0);   // the crown sprite is an extra call for masters only
+      assert(t <= MYSTIC_BUDGET.tris, `${id} has ${t} triangles (budget ${MYSTIC_BUDGET.tris})`);
+      assert(calls <= MYSTIC_BUDGET.calls, `${id} uses ${calls} draw calls (budget ${MYSTIC_BUDGET.calls})`);
+      assert(Number.isFinite(m.height) && m.height > 0.4 && m.height < 2.6, `${id} height ${m.height}`);
+      assert(Number.isFinite(m.radius) && m.radius > 0.15 && m.radius < 1.5, `${id} radius ${m.radius}`);
+      m.root.updateMatrixWorld(true);
+      let bad = 0;
+      m.root.traverse(o => {
+        for (const v of [o.position, o.scale, o.quaternion]) for (const k of ['x', 'y', 'z']) if (!Number.isFinite(v[k])) bad++;
+        if (o.isMesh) for (const x of o.matrixWorld.elements) if (!Number.isFinite(x)) bad++;
+      });
+      assertEq(bad, 0, id + ' NaN transforms');
+      const box = new THREE.Box3().setFromObject(m.root);
+      assert(Math.abs(box.min.y) < 0.05, `${id} stage ${stage}: feet at y=${box.min.y}`);
+      if (stage === 2) rows.push(`${id} ${t}t/${calls}c`);
+    }
+    assertEq(buildL(id).legendary, false, id + ' is not legendary');
+  }
+  console.log('[models] mystic: ' + rows.join(', '));
+});
+
+test('mystic: the shared toon material + one eye material only; merged geometry cached per species and shiny; hand-tuned chibi eyes + blush', () => {
+  const mats = new Set();
+  for (const id of MYSTIC_IDS) {
+    materials(buildL(id).root, mats);
+    const a = buildL(id), b = buildL(id, { stage: 0 });
+    for (const n of ['bodyMesh', 'headMesh']) assert(geoOf(a, n) === geoOf(b, n), `${id} ${n} not shared`);
+    assert(geoOf(buildL(id, { shiny: true }), 'bodyMesh') !== geoOf(a, 'bodyMesh'), id + ' shiny has its own buffers');
+    assertEq(tris(buildL(id).root), tris(buildL(id, { shiny: true }).root), id + ' shiny keeps the geometry');
+    const e = MODEL_SPECS[id].eyes;
+    assert(e.s >= 0.17 && e.s <= 0.21 && e.tall >= 1.3, `${id}: sparkly chibi eyes (s ${e.s}, tall ${e.tall})`);
+    assert(MODEL_SPECS[id].blush !== false, id + ' has a blush');
+  }
+  assertEq([...mats].filter(x => x.isMeshToonMaterial).length, 1, 'one shared toon material for all 5');
+  assertEq([...mats].filter(x => !x.isMeshToonMaterial).length, 1, 'plus the eye material');
+});
+
+test('mystic: standard animated parts (head, eyes, anchor, tail) exist; wings only on the dodo; no trunk', () => {
+  for (const id of MYSTIC_IDS) {
+    const m = buildL(id);
+    assert(m.head && m.parts.eyes.length === 1 && m.anchor && m.anchor.parent === m.head, id + ' head / eyes / anchor');
+    assert(m.parts.tail && m.parts.tail.isGroup, id + ' tail pivot');
+    assertEq(m.parts.trunk, null, id + ' has no trunk pivot');
+    assert(!m.parts.bubble, id + ' has no bubble');
+  }
+  const dod = buildL('dodo');
+  assert(dod.parts.wingL && dod.parts.wingR && dod.parts.wingL.parent === dod.body, 'dodo wings are wing pivots');
+  dod.parts.wingL.rotation.z += 0.5;
+  dod.root.updateMatrixWorld(true);
+  assert(new THREE.Box3().setFromObject(dod.root).min.toArray().every(Number.isFinite), 'dodo wings can flap');
+  for (const id of MYSTIC_IDS.filter(i => i !== 'dodo')) assert(!buildL(id).parts.wingL, id + ' has no wings');
+});
+
+test('mystic: signature parts are really there (dodo hooked beak + tail tuft, black cat glowing ring eyes + curly tail, naga hood + crest, sauropod long neck, t-rex big head + tiny arms + tail spikes)', () => {
+  const size = (m, n) => bboxOf(m, n).getSize(new THREE.Vector3());
+  const sp = id => MODEL_SPECS[id];
+  // dodo: round grey-blue body, big cream beak with a darker hook, curly feather tuft at the back
+  const dod = buildL('dodo');
+  assert(hasColor(dod, 'bodyMesh', '#a9bddb') && hasColor(dod, 'headMesh', '#b9cbe5'), 'dodo: grey-blue');
+  assert(sp('dodo').snout.type === 'beak' && sp('dodo').snout.w >= 0.3 && hasColor(dod, 'headMesh', '#ffd98a') && hasColor(dod, 'headMesh', '#e9a85c'), 'dodo: big beak with a hook');
+  assert(sp('dodo').extras.some(e => e.t === 'fan' && e.n >= 3) && sp('dodo').extras.some(e => e.t === 'wings' && e.s <= 0.3), 'dodo: tail tuft + tiny wings');
+  assertEq(sp('dodo').legs.type, 'bird', 'dodo: bird legs');
+  // black cat: dark coat, glowing yellow-green ring behind the eyes, pointy ears, long curly tail, collar + forehead star
+  const cat = buildL('blackcat');
+  assert(hasColor(cat, 'bodyMesh', '#544d68') && hasColor(cat, 'headMesh', '#5a5370'), 'black cat: dark soft-black coat');
+  assert(sp('blackcat').eyes.ring === '#d6ff6a', 'black cat: glowing eye ring');
+  assert(sp('blackcat').ears.type === 'cat' && sp('blackcat').ears.up >= 0.6, 'black cat: pointy ears');
+  assert(sp('blackcat').tail.type === 'long' && sp('blackcat').tail.n >= 5 && sp('blackcat').tail.curve >= 0.4 && hasColor(cat, 'tailMesh', '#c58aff'), 'black cat: long curly tail with a purple tip');
+  assert(hasColor(cat, 'headMesh', '#ffd45a') && hasColor(cat, 'headMesh', '#8a62e0'), 'black cat: forehead star + collar');
+  // naga: no legs, coiled low body, neck rising to a head with a big hood + gold crest, long tail
+  const nag = buildL('naga');
+  assertEq(sp('naga').legs.type, 'none', 'naga: no legs');
+  assert(sp('naga').neck && nag.height > 1.0, 'naga rears up on its neck: ' + nag.height);
+  assert(hasColor(nag, 'headMesh', '#2fae7e') && hasColor(nag, 'headMesh', '#ffd36b') && size(nag, 'headMesh').x > sp('naga').head.r * 2 * 1.15, 'naga: hood + gold crest wider than the face: ' + size(nag, 'headMesh').x);
+  assert(hasColor(nag, 'bodyMesh', '#3fb88a') && size(nag, 'bodyMesh').x > 0.9 && size(nag, 'tailMesh').length() > 0.4, 'naga: coils + a long tail');
+  // sauropod: a tall neck with a small head on top, thick pillar legs, long tail
+  const sau = buildL('sauropod');
+  assert(sp('sauropod').neck && sp('sauropod').head.y > 1.0 && sp('sauropod').head.r < 0.3, 'sauropod: small head on a long neck');
+  assert(sau.height > buildL('dodo').height, 'sauropod is taller than the dodo: ' + sau.height);
+  assert(sp('sauropod').legs.r >= 0.1 && size(sau, 'tailMesh').length() > 0.5, 'sauropod: pillar legs + long tail');
+  // t-rex: a head much bigger than the cute body, tiny arms, tail spikes, nostrils
+  const rex = buildL('trex');
+  assert(sp('trex').head.r >= 0.38 && sp('trex').head.r > sp('sauropod').head.r * 1.5, 'trex: huge head');
+  assert(size(rex, 'headMesh').x > size(sau, 'headMesh').x * 1.5, 'trex head is wider than the sauropod head: ' + size(rex, 'headMesh').x);
+  assert(sp('trex').extras.some(e => e.t === 'blobs' && e.mirror && e.list.every(b => b.s[1] <= 0.12)), 'trex: tiny arms');
+  assert(sp('trex').extras.some(e => e.t === 'spikes' && e.to <= -0.8) && hasColor(rex, 'bodyMesh', '#fff1cc'), 'trex: tail spikes + cream belly');
+  assert(sp('trex').snout.nostrils === true && sp('trex').extras.some(e => e.t === 'smile'), 'trex: nostrils + a little smile');
+});
+
+test('mystic: shiny = curated palettes (each palette really hits the model; eyes never shift; no hue-rotated fallback)', () => {
+  for (const id of MYSTIC_IDS) {
+    const spec = MODEL_SPECS[id], pal = spec.shinyPalette;
+    assert(pal && Object.keys(pal).length >= 2, id + ' has a curated palette');
+    for (const k of Object.keys(pal)) assert(k === k.toLowerCase() && /^#[0-9a-f]{6}$/.test(k) && /^#[0-9a-f]{6}$/.test(pal[k]), `${id}: palette key ${k}`);
+    const normal = buildL(id), shiny = buildL(id, { shiny: true });
+    assertEq([shiny.shiny, shiny.shinyStyle], [true, 'palette'], id + ' flag');
+    const cn = vertexColors(normal), cs = vertexColors(shiny);
+    const hit = Object.keys(pal).filter(k => cn.has(hexKey(k)));
+    assert(hit.length >= 2, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
+    for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
+    assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
+    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
+    const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
+    for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
+  }
+});
+
+test('mystic: stage scale + crown still work (master crown rides the head); masters stay inside the call budget + 1', () => {
+  for (const id of MYSTIC_IDS) {
+    for (let st = 0; st < 4; st++) {
+      const m = buildL(id, { stage: st });
+      assertEq(m.root.scale.x, STAGE_SCALE[st], `${id} scale at stage ${st}`);
+      assertEq(!!m.parts.crown, st === 3, `${id} crown at stage ${st}`);
+    }
+    const master = buildL(id, { stage: 3 });
+    assert(master.parts.crown.parent === master.head, id + ' crown on the head');
+    assert(drawCalls(master) <= MYSTIC_BUDGET.calls + 1, `${id} master calls ${drawCalls(master)}`);
+    assert(master.height > buildL(id, { stage: 2 }).height, id + ' master is bigger');
+  }
+});
+
+test('mystic: 20 mystic pets in one yard stay inside the scene budget (sum <= 20 x 7)', () => {
+  let calls = 0, trisSum = 0;
+  for (let i = 0; i < 20; i++) { const m = buildL(MYSTIC_IDS[i % MYSTIC_IDS.length]); calls += drawCalls(m); trisSum += tris(m.root); }
+  assert(calls <= 20 * 7, 'mystic yard of 20 pets: ' + calls + ' calls');
+  console.log(`[models] 20 mystic pets = ${calls} model draw calls, ${trisSum} tris`);
 });

@@ -22,6 +22,7 @@ import {
 } from '../pets.js';
 import {
   breedPreview, breed, putFamilyEggInIncubator, familyEggHatchMs, BREED_UNLOCK_LEVEL, BREED_MIN_STAGE, BREED_MIN_HEARTS, FAMILY_EGG_MAX,
+  familyTree, hasFamily,
 } from '../breeding.js';
 import { COATS, getCoat, coatOf } from '../data/coats.js';
 import { limitedOf } from '../data/limited.js';
@@ -1178,6 +1179,7 @@ function openDetails(petId) {
     <h4 class="pet-detail-h">อาหาร</h4>
     <div class="pet-detail-diet">${dietChips(sp)} <span class="pet-fav">⭐ ของโปรด: ${favoriteLabel(sp)}</span></div>
     ${familyLineHtml(pet)}
+    ${hasFamily(state, pet.id) ? '<div class="pet-detail-family"><button type="button" class="btn btn-sm" data-action="family-tree">👪 ต้นตระกูล</button></div>' : ''}
     ${favDishLineHtml(pet)}
     ${(() => { const b = breedStatus(state, pet); return `<div class="pet-detail-breed"><button type="button" class="btn btn-sm${b.ok ? ' btn-primary' : ''}" data-action="breed"${b.ok ? '' : ' disabled'}>💞 หาคู่</button> <small class="muted">${b.text}</small></div>`; })()}
     <h4 class="pet-detail-h">ตั้งชื่อ</h4>
@@ -1209,6 +1211,7 @@ function openDetails(petId) {
       };
       if (input) input.addEventListener('keydown', ev => { if (ev.key === 'Enter') save(); });
       delegate(el, {
+        'family-tree': () => openFamilyTree(petId),
         gift: () => {
           const r = run(s => claimGift(s, petId));
           if (r && r.ok) close();
@@ -1296,7 +1299,55 @@ function bindBarn(root) {
 }
 
 // ── Book ────────────────────────────────────────────────────────────────────
-function speciesInfoHtml(sp, entry) {
+/** V17 👪 ต้นตระกูล: grandparents -> parents -> the pet (+ siblings) -> children. Pets that moved away show faded with 🏡. */
+function familyCardHtml(ref, opts = {}) {
+  const p = ref.pet || null;
+  const sp = getSpecies(p ? p.speciesId : ref.speciesId);
+  const name = p ? petName(p) : ref.name;
+  const coat = p ? coatOf(p) : 'base';
+  return `<div class="fam-card${p ? '' : ' is-gone'}${opts.me ? ' is-me' : ''}" title="${p ? '' : 'ไปบ้านใหม่แล้ว'}">
+      <span class="fam-emoji" aria-hidden="true">${sp ? sp.emoji : '❓'}</span>
+      <b>${e(name)}</b><small class="muted">${sp ? e(sp.nameTh) : ''}${p ? '' : ' · 🏡'}</small>
+      ${p && coat !== 'base' ? coatChipHtml(coat) : ''}${p && p.shiny ? '<small>✨</small>' : ''}</div>`;
+}
+
+function familyTreeHtml(t) {
+  const row = (title, cards) => (cards.length ? `<div class="fam-row"><div class="fam-label">${title}</div><div class="fam-cards">${cards.join('')}</div></div>` : '');
+  const grand = t.grand.flat();
+  return `<div class="fam-tree">
+    ${row('👴👵 ปู่ย่าตายาย', grand.map(g => familyCardHtml(g)))}
+    ${row('👪 พ่อแม่', t.parents.map(p => familyCardHtml(p)))}
+    ${row(`🐣 น้อง${t.gen ? ` · รุ่นที่ ${t.gen}` : ''}`, [familyCardHtml({ pet: t.pet }, { me: true }), ...t.siblings.map(s => familyCardHtml({ pet: s }))])}
+    ${row('🍼 ลูกๆ', t.children.map(c => familyCardHtml({ pet: c })))}
+    ${!t.parents.length ? '<p class="muted">น้องตัวนี้ฟักจากไข่ทั่วไป เป็นรุ่นแรกของครอบครัว</p>' : ''}
+  </div>`;
+}
+
+function openFamilyTree(petId) {
+  const t = familyTree(getState(), petId);
+  if (!t) return;
+  openModal({ title: `👪 ต้นตระกูลของ ${petName(t.pet)}`, html: familyTreeHtml(t) });
+}
+
+/** V17 สมุดสีขน: the six coats of a species, the seen ones in colour. */
+/** "n/N": coats seen over (species owned x coats). */
+function coatBookCount(state) {
+  const book = state.coatBook || {};
+  const owned = SPECIES.filter(sp => state.collection[sp.id]);
+  const n = owned.reduce((t, sp) => t + COATS.filter(c => (book[sp.id] || {})[c.id]).length, 0);
+  return `${n}/${owned.length * COATS.length}`;
+}
+
+function speciesCoatsHtml(book) {
+  const seen = book || {};
+  const n = COATS.filter(c => seen[c.id]).length;
+  return `<h4 class="pet-detail-h">🎨 สีขนที่เคยได้ (${n}/${COATS.length})</h4>
+    <div class="sp-coats">${COATS.map(c => seen[c.id]
+      ? `<span class="sp-coat-chip">${c.emoji} ${e(c.nameTh)}</span>`
+      : '<span class="sp-coat-chip is-unknown" title="ยังไม่เคยได้ — ลองผสมพันธุ์ดูสิ">❔ ???</span>').join('')}</div>`;
+}
+
+function speciesInfoHtml(sp, entry, book) {
   return `<div class="pet-detail">
     <div class="pet-detail-top" style="--rar:${RARITIES[sp.rarity].color}">
       <span class="pet-detail-emoji pet-emoji">${sp.emoji}</span>
@@ -1307,7 +1358,8 @@ function speciesInfoHtml(sp, entry) {
     <h4 class="pet-detail-h">ความสามารถพิเศษ</h4>${traitBlock(sp)}
     <h4 class="pet-detail-h">ความถนัดงาน</h4>${jobsHtml(sp)}
     <h4 class="pet-detail-h">อาหาร</h4>
-    <div class="pet-detail-diet">${dietChips(sp)} <span class="pet-fav">⭐ ของโปรด: ${favoriteLabel(sp)}</span></div></div>`;
+    <div class="pet-detail-diet">${dietChips(sp)} <span class="pet-fav">⭐ ของโปรด: ${favoriteLabel(sp)}</span></div>
+    ${speciesCoatsHtml(book)}</div>`;
 }
 
 function rewardText(r) {
@@ -1406,7 +1458,7 @@ function renderBook(state) {
   return `<div class="book-view">
     <section class="card book-summary">
       <h2 class="barn-title">📖 สมุดสัตว์</h2>
-      <p>สะสมแล้ว <b>${have}</b> / ${total} สายพันธุ์ (${pct}%) · ✨ ไชนี่ ${shinyN} ชนิด${readyN ? ` · 🎁 รับรางวัลได้ ${readyN} ข้อ` : ''}</p>
+      <p>สะสมแล้ว <b>${have}</b> / ${total} สายพันธุ์ (${pct}%) · ✨ ไชนี่ ${shinyN} ชนิด · 🎨 สีขน ${coatBookCount(state)}${readyN ? ` · 🎁 รับรางวัลได้ ${readyN} ข้อ` : ''}</p>
       <div class="book-bar"><div class="book-bar-fill" style="width:${pct}%"></div></div>
       ${coatBookHtml(state)}
       <div class="book-goals">${globalGoals.map(g => goalHtml(state, g)).join('')}</div>
@@ -1420,7 +1472,7 @@ function bindBook(root) {
       const sp = getSpecies(btn.dataset.speciesId);
       const entry = sp && getState().collection[sp.id];
       if (!sp || !entry) return;
-      openModal({ title: `${sp.emoji} ${sp.nameTh}`, html: speciesInfoHtml(sp, entry) });
+      openModal({ title: `${sp.emoji} ${sp.nameTh}`, html: speciesInfoHtml(sp, entry, (getState().coatBook || {})[sp.id]) });
     },
     'claim-goal': btn => {
       const g = getGoal(btn.dataset.goalId);

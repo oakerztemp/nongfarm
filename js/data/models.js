@@ -1878,12 +1878,119 @@ export const MODEL_SPECS = {
     shinyPalette: { '#f1f6fb': '#e4d4ff', '#f8fbff': '#f1e8ff', '#e6eef6': '#cdb6f4', '#d3dff0': '#b49ae8', '#dbe6f2': '#c4aaf0', '#ffc2cf': '#9fe0f0' },
   },
 
+  // ───────── V17 §1: mystic (ดินแดนตำนาน) - the last 5 emoji billboards ─────────
+  // Same chibi recipe as the savanna / polar friends: big head, sparkly eyes (s 0.17-0.21, tall >= 1.3), blush, soft colours, short chubby legs, short snouts. All of them are in CHIBI_TUNED (hand tuned).
+  // Budget <= 1500 tris / <= 7 draw calls. Fixed (non-shifting) colours: nostrils / noses, whiskers, eyes.
+
+  dodo: {   // round grey-blue bird, big hooked cream beak, tiny wings, curly feather tuft for a tail
+    body: { w: 0.42, h: 0.4, d: 0.4, color: '#a9bddb', belly: { color: '#eaf1fa', s: 0.82, dz: 0.28, dy: -0.06 } },
+    legs: { type: 'bird', h: 0.13, r: 0.03, color: '#f4b860', x: 0.4 },
+    head: { r: 0.3, w: 1.06, h: 0.98, d: 1.0, y: 0.82, z: 0.16, color: '#b9cbe5' },
+    eyes: { s: 0.2, gap: 0.56, el: 0.18, tall: 1.4 },
+    blush: '#ff9fb4',
+    snout: { type: 'beak', color: '#ffd98a', w: 0.34, len: 0.42, el: -0.22 },
+    tail: { type: 'puff', s: 0.08, color: '#cfdcf0', y: 0.25 },
+    extras: [
+      { t: 'blobs', color: '#e9a85c', on: 'head', list: [{ g: 'coneP', p: [0, -0.04, 0.4], s: [0.06, 0.1, 0.06], r: [3.14, 0, 0] }] },
+      { t: 'wings', color: '#8aa3c9', s: 0.26, x: 0.97, y: 0.34, d: 0.55, rest: 0.2 },
+      { t: 'tuft', color: '#cfdcf0', s: 0.5 },
+      { t: 'fan', colors: ['#8aa3c9', '#cfdcf0', '#8aa3c9'], n: 3, s: 0.2, spread: 0.7, lean: 0.9, y: 0.45, z: 0.8, wd: 0.3 },
+    ],
+    shinyPalette: { '#a9bddb': '#ffd3a1', '#b9cbe5': '#ffe0bd', '#8aa3c9': '#f2a56b', '#cfdcf0': '#fff0dc', '#eaf1fa': '#fff8ee', '#ffd98a': '#ff9ad5', '#f4b860': '#ff7ab8', '#e9a85c': '#e0558f' },
+  },
+
+  blackcat: {   // soft-black witchy kitten: glowing lime-yellow eyes, star on the forehead, moon collar, big curly tail
+    body: { w: 0.34, h: 0.3, d: 0.4, color: '#544d68', lo: true, belly: { color: '#6b6482', s: 0.78, dz: 0.22, lo: true } },
+    legs: { type: 'stub', h: 0.1, r: 0.08, color: '#463f59' },
+    head: { r: 0.33, w: 1.14, h: 0.95, d: 0.95, y: 0.62, z: 0.24, color: '#5a5370' },
+    eyes: { s: 0.21, gap: 0.5, el: 0.12, tall: 1.4, ring: '#d6ff6a' },
+    blush: '#ff9fc2',
+    ears: { type: 'cat', s: 0.62, az: 0.66, el: 0.74, up: 0.7, color: '#4b4460', inner: '#c58aff', static: true },
+    snout: { type: 'nose', color: '#ff8fb3', s: 0.075, el: -0.12 },
+    tail: { type: 'long', n: 6, len: 0.62, r: 0.06, taper: 0.07, lift: 0.9, curve: 0.5, y: 0.2, color: '#544d68', colors: ['#544d68', '#544d68', '#544d68', '#544d68', '#544d68', '#c58aff'] },
+    extras: [
+      { t: 'cheeks', color: '#6b6482', s: 0.22, lo: true },
+      { t: 'whiskers', color: '#ffffff', len: 0.45, n: 3, az: 0.3, el: -0.2 },
+      { t: 'spots', color: '#ffd45a', g: 'disc', th: 1, list: [{ on: 'head', az: 0, el: 1.02, s: 0.14 }] },
+      { t: 'collar', color: '#8a62e0', bell: '#ffd45a' },
+    ],
+    shinyPalette: { '#544d68': '#ffb6dc', '#5a5370': '#ffc6e4', '#463f59': '#e08ac0', '#4b4460': '#e07ab4', '#6b6482': '#ffd6ee', '#c58aff': '#7affd0', '#8a62e0': '#4fc9a0', '#ffd45a': '#fff6a8' },
+  },
+
+  naga: {   // cute coiled serpent: golden-green scales, big fan hood + gold crest, rising out of its coils
+    body: { w: 0.44, h: 0.22, d: 0.44, color: '#4fc79a', lo: true, belly: { color: '#ffe9a0', s: 0.78, dz: 0.2, dy: -0.15, lo: true } },
+    legs: { type: 'none' },
+    neck: { r: 0.17, top: 0.9, z: 0.1, color: '#5ad3a4' },
+    head: { r: 0.32, w: 1.08, h: 0.95, d: 1.0, y: 0.85, z: 0.2, color: '#5ad3a4' },
+    eyes: { s: 0.2, gap: 0.5, el: 0.1, tall: 1.4 },
+    blush: '#ff9fb4',
+    snout: { type: 'nose', color: '#e9899f', s: 0.07, el: -0.15 },
+    tail: { type: 'long', n: 6, len: 0.8, r: 0.12, taper: 0.14, lift: -0.1, curve: 0.55, y: -0.3, z: 1.3, color: '#4fc79a', colors: ['#4fc79a', '#ffd36b'] },
+    extras: [
+      { t: 'blobs', color: '#3fb88a', list: [
+        { g: 'sphL', p: [0, 0.1, 0.0], s: [0.5, 0.12, 0.5] },
+        { g: 'sphL', p: [0.0, 0.3, -0.04], s: [0.34, 0.12, 0.34] },
+      ] },
+      { t: 'blobs', color: '#2fae7e', on: 'head', list: [{ g: 'sphL', p: [0, -0.04, -0.2], s: [0.5, 0.45, 0.07] }] },
+      { t: 'blobs', color: '#ffd36b', on: 'head', list: [
+        { g: 'sphL', p: [0, -0.04, -0.14], s: [0.38, 0.33, 0.06] },
+        { g: 'coneP', p: [0, 0.3, -0.12], s: [0.07, 0.24, 0.05], r: [-0.3, 0, 0] },
+        { g: 'coneP', p: [0.17, 0.26, -0.12], s: [0.06, 0.2, 0.05], r: [-0.3, 0, -0.5] },
+        { g: 'coneP', p: [-0.17, 0.26, -0.12], s: [0.06, 0.2, 0.05], r: [-0.3, 0, 0.5] },
+      ] },
+      { t: 'spots', color: '#ffd36b', g: 'disc', th: 1, list: [
+        { on: 'body', az: 0.5, el: 0.95, s: 0.4 }, { on: 'body', az: -0.6, el: 0.9, s: 0.36 }, { on: 'body', az: 2.4, el: 0.85, s: 0.4 }, { on: 'body', az: -2.3, el: 0.85, s: 0.36 },
+        { on: 'head', az: 0, el: 1.0, s: 0.15 },
+      ] },
+    ],
+    shinyPalette: { '#4fc79a': '#c6a0ff', '#5ad3a4': '#d2b0ff', '#3fb88a': '#a47ef0', '#2fae7e': '#8a62e0', '#ffd36b': '#8fe8ff', '#ffe9a0': '#e8fbff' },
+  },
+
+  sauropod: {   // pastel long-neck dino: round tummy, thick pillar legs, small head on a tall neck, long tapering tail
+    body: { w: 0.42, h: 0.36, d: 0.54, color: '#a6dcc0', belly: { color: '#fff1c8', s: 0.72, dz: 0.16, dy: -0.04 } },
+    legs: { type: 'stub', h: 0.14, r: 0.115, color: '#93cfb2', x: 0.6, z: 0.55 },
+    neck: { r: 0.17, top: 0.8, z: 0.5, color: '#a6dcc0' },
+    head: { r: 0.24, w: 1.05, h: 0.95, d: 1.05, y: 1.18, z: 0.78, color: '#b4e4cc' },
+    eyes: { s: 0.2, gap: 0.54, el: 0.12, tall: 1.4 },
+    blush: '#ff9fb4',
+    snout: { type: 'nose', color: '#e58fa0', s: 0.08, el: -0.1 },
+    tail: { type: 'long', n: 5, len: 0.8, r: 0.12, taper: 0.17, lift: -0.2, curve: 0.18, y: 0.1, color: '#a6dcc0', colors: ['#a6dcc0', '#93cfb2'] },
+    extras: [
+      { t: 'spikes', color: '#ffd77a', n: 5, s: 0.1, from: 0.6, to: -0.7 },
+      { t: 'spots', color: '#8fcbad', g: 'disc', th: 1, list: [
+        { on: 'body', az: 0.5, el: 0.95, s: 0.42 }, { on: 'body', az: -0.6, el: 0.9, s: 0.38 }, { on: 'body', az: 2.4, el: 0.85, s: 0.42 },
+        { on: 'body', az: 1.3, el: 0.55, s: 0.3 }, { on: 'body', az: -1.4, el: 0.55, s: 0.3 },
+      ] },
+    ],
+    shinyPalette: { '#a6dcc0': '#ffc6a0', '#93cfb2': '#f0a67a', '#b4e4cc': '#ffd6bd', '#8fcbad': '#e8946a', '#fff1c8': '#fff8e6', '#ffd77a': '#ff9ad5' },
+  },
+
+  trex: {   // cute rex: huge head with a tiny smile, teeny arms, sturdy legs, small tail spikes
+    body: { w: 0.4, h: 0.36, d: 0.46, color: '#f2a860', belly: { color: '#fff1cc', s: 0.8, dz: 0.22, dy: -0.1 } },
+    legs: { type: 'stub', h: 0.15, r: 0.13, color: '#e49648', x: 0.58, z: 0.4 },
+    head: { r: 0.4, w: 1.04, h: 0.96, d: 1.0, y: 0.86, z: 0.28, color: '#f2a860' },
+    eyes: { s: 0.19, gap: 0.5, el: 0.2, tall: 1.4 },
+    blush: '#ff8fa8',
+    snout: { type: 'muzzle', color: '#f9c288', w: 0.6, h: 0.34, d: 0.3, el: -0.3, nose: false, nostrils: true, lo: true },
+    tail: { type: 'long', n: 4, len: 0.6, r: 0.12, taper: 0.2, lift: 0.05, curve: 0.2, y: 0.1, color: '#f2a860', colors: ['#f2a860', '#e49648'] },
+    extras: [
+      { t: 'smile', color: '#8a4a3a', w: 0.12, el: -0.45, az: 0.4, tilt: 0.4 },
+      { t: 'blobs', color: '#e49648', mirror: true, list: [{ g: 'sphP', p: [0.22, 0.4, 0.34], s: [0.05, 0.1, 0.05], r: [0.6, 0, 0.2] }] },
+      { t: 'spikes', color: '#fff1cc', n: 4, s: 0.1, from: 0.0, to: -0.85 },
+      { t: 'spots', color: '#e49648', g: 'disc', th: 1, list: [
+        { on: 'body', az: 0.5, el: 0.95, s: 0.4 }, { on: 'body', az: -0.6, el: 0.9, s: 0.36 }, { on: 'body', az: 2.4, el: 0.85, s: 0.4 },
+        { on: 'head', az: 0.7, el: 0.9, s: 0.16 }, { on: 'head', az: -0.7, el: 0.9, s: 0.16 },
+      ] },
+    ],
+    shinyPalette: { '#f2a860': '#9be0f0', '#e49648': '#6cc4dc', '#f9c288': '#cff4fb', '#fff1cc': '#f2fdff', '#ff8fa8': '#ffd45a' },
+  },
+
 };
 
 // ───────── V14: the V13 chibi recipe for every model ─────────
 // The 11 legendaries (V13), the long-legged horse / llama / deer (V14) and the 12 savanna friends (V15) are tuned by hand; every other spec gets the same recipe here, in place:
 // sparkly eyes (larger, a little taller), a slightly bigger head, shorter muzzles / snouts / beaks. Blush stays as each spec set it.
-const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer', 'lizard', 'camel', 'bactrian', 'zebra', 'kangaroo', 'bison', 'crocodile', 'elephant', 'giraffe', 'hippo', 'rhino', 'leopard', 'penguin', 'seal', 'snowhare', 'husky', 'siberiancat', 'snowram', 'beluga', 'yak', 'arcticwolf']);
+const CHIBI_TUNED = new Set(['unicorn', 'dragon', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear', 'racehorse', 'horse', 'llama', 'deer', 'lizard', 'camel', 'bactrian', 'zebra', 'kangaroo', 'bison', 'crocodile', 'elephant', 'giraffe', 'hippo', 'rhino', 'leopard', 'penguin', 'seal', 'snowhare', 'husky', 'siberiancat', 'snowram', 'beluga', 'yak', 'arcticwolf', 'dodo', 'blackcat', 'naga', 'sauropod', 'trex']);
 export const CHIBI = { eyeMult: 1.25, eyeMax: 0.21, eyeTall: 1.3, headMult: 1.06, snoutMult: 0.8, beakMult: 0.85 };
 
 function chibify(spec) {

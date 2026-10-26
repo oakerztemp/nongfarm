@@ -230,6 +230,54 @@ export function rollFamilyGenes(egg, rng = Math.random) {
   const gen = Math.max(pa.gen || 0, pb.gen || 0) + 1;
   return {
     speciesId, inherited, habitat, personality, shiny, coat, gen,
-    family: { gen, a: { name: pa.name, speciesId: pa.speciesId }, b: { name: pb.name, speciesId: pb.speciesId } },
+    family: { gen, a: { petId: pa.petId, name: pa.name, speciesId: pa.speciesId }, b: { petId: pb.petId, name: pb.name, speciesId: pb.speciesId } },
   };
+}
+
+// ── V17 family tree ─────────────────────────────────────────────────────────
+
+const ownedPets = state => [...(state.pets || []), ...(state.nursery || []).map(e => e && e.pet)].filter(p => p && p.id);
+
+/** One parent side of pet.family -> the pet if it still lives here (by id; babies bred before V17 have no id: name + species). */
+function parentPet(state, side) {
+  if (!side) return null;
+  const pets = ownedPets(state);
+  if (side.petId) return pets.find(p => p.id === side.petId) || null;
+  return pets.find(p => p.speciesId === side.speciesId && petName(p) === side.name) || null;
+}
+
+/** Is `pet` the parent written on this family side? */
+function isParentSide(side, pet) {
+  if (!side) return false;
+  return side.petId ? side.petId === pet.id : side.speciesId === pet.speciesId && side.name === petName(pet);
+}
+
+const sideKey = side => (side ? side.petId || `${side.speciesId}|${side.name}` : '');
+
+/**
+ * The family around one pet (yard + nursery), for the 👪 ต้นตระกูล view. Pure.
+ * { pet, gen, parents: [{ name, speciesId, pet|null }] (empty for a pet that was not bred), grand: [[...], [...]] (each parent's own
+ *   parents when that parent still lives here and was bred), siblings: [pet] (same two parents), children: [pet] } — null for an unknown id.
+ */
+export function familyTree(state, petId) {
+  const pets = ownedPets(state);
+  const pet = pets.find(p => p.id === petId);
+  if (!pet) return null;
+  const f = pet.family;
+  const parentOf = side => { const p = parentPet(state, side); return p === pet ? null : p; };   // bad data never makes a pet its own parent
+  const parents = f && f.a && f.b ? [f.a, f.b].map(side => ({ name: side.name, speciesId: side.speciesId, pet: parentOf(side) })) : [];
+  const grand = parents.map(par => {
+    const pf = par.pet && par.pet.family;
+    return pf && pf.a && pf.b ? [pf.a, pf.b].map(side => ({ name: side.name, speciesId: side.speciesId, pet: parentPet(state, side) })) : [];
+  });
+  const key = f ? [sideKey(f.a), sideKey(f.b)].sort().join('+') : '';
+  const siblings = key ? pets.filter(p => p !== pet && p.family && [sideKey(p.family.a), sideKey(p.family.b)].sort().join('+') === key) : [];
+  const children = pets.filter(p => p !== pet && p.family && (isParentSide(p.family.a, pet) || isParentSide(p.family.b, pet)));
+  return { pet, gen: f ? Number(f.gen) || 1 : 0, parents, grand, siblings, children };
+}
+
+/** True when the pet has parents or children here: the 👪 button is worth showing. */
+export function hasFamily(state, petId) {
+  const t = familyTree(state, petId);
+  return !!t && (t.parents.length > 0 || t.children.length > 0);
 }

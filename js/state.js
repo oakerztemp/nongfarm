@@ -102,6 +102,7 @@ export function createNewState() {
     wardrobe: {},         // v7: accessoryId -> copies owned (worn copies included; a copy is worn by one pet at a time)
     familyEggs: [],       // v8: laid family eggs not yet in the incubator, <= FAMILY_EGG_MAX: [{ id, laidAt, habitatA, habitatB, a: parent, b: parent }] (js/breeding.js)
     coatsSeen: { base: true }, // v8: coatId -> true for every coat the player has had (the coats_all book goal)
+    coatBook: {},         // V17: speciesId -> { coatId: true } coats seen per species (สมุดสีขน); filled on hatch + from owned pets on load
     festival: newFestival(), // v9: { id, key, tasks, loginDays, seenDays, ledger, lanterns, krathongs, owned, krathong, floatDays } (js/festival.js)
     journal: [],          // v7: [{ day: 'YYYY-MM-DD', lines: [{ emoji, text, petId? }] }] oldest day first, <= JOURNAL_DAYS_MAX x JOURNAL_LINES_MAX (js/journal.js)
     mail: [],             // V12: [{ id, at, read, claimed }] newest first, <= MAIL_MAX; text + gift in js/data/mail.js (js/mail.js)
@@ -109,6 +110,21 @@ export function createNewState() {
   };
   ensureMail(s);
   return s;
+}
+
+/** V17: coatBook = known species -> known coats only, plus every coat an owned pet wears and 'base' for every species ever owned. */
+function sanitiseCoatBook(s) {
+  const book = {};
+  const mark = (sp, coat) => {
+    if (!getSpecies(sp) || !COAT_IDS.includes(coat)) return;
+    (book[sp] || (book[sp] = {}))[coat] = true;
+  };
+  for (const [sp, coats] of Object.entries(isObj(s.coatBook) ? s.coatBook : {})) {
+    for (const [c, v] of Object.entries(isObj(coats) ? coats : {})) if (v === true) mark(sp, c);
+  }
+  for (const p of [...s.pets, ...s.nursery.map(e => isObj(e) && e.pet)]) if (isObj(p)) mark(p.speciesId, COAT_IDS.includes(p.coat) ? p.coat : 'base');
+  for (const [sp, c] of Object.entries(isObj(s.collection) ? s.collection : {})) if (isObj(c) && c.owned > 0) mark(sp, 'base');
+  s.coatBook = book;
 }
 
 /** V12: delivers every system mail this save has not had yet (newest first, <= MAIL_MAX). Idempotent. */
@@ -147,7 +163,7 @@ function sanitiseMail(s) {
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 // Keys whose contents are player data, not structure: never back-fill their entries.
-const DATA_MAPS = new Set(['inventory', 'collection', 'byPet', 'inventoryDecor', 'wardrobe']);
+const DATA_MAPS = new Set(['inventory', 'collection', 'byPet', 'inventoryDecor', 'wardrobe', 'coatBook']);
 
 function fill(raw, def, key) {
   if (Array.isArray(def)) return Array.isArray(raw) ? raw : def;
@@ -594,7 +610,12 @@ export function cleanFamilyEgg(e) {
 /** A pet's family field -> { gen, a: { name, speciesId }, b } or null. */
 function cleanFamily(f) {
   if (!isObj(f) || !isObj(f.a) || !isObj(f.b)) return null;
-  const side = x => (typeof x.speciesId === 'string' && getSpecies(x.speciesId) ? { name: cleanName(x.name), speciesId: x.speciesId } : null);
+  const side = x => {   // V17: petId (the parent's id) kept when present; babies bred before V17 have none
+    if (typeof x.speciesId !== 'string' || !getSpecies(x.speciesId)) return null;
+    const out = { name: cleanName(x.name), speciesId: x.speciesId };
+    if (typeof x.petId === 'string' && x.petId) out.petId = x.petId.slice(0, 40);
+    return out;
+  };
   const a = side(f.a), b = side(f.b);
   return a && b ? { gen: Number.isInteger(f.gen) && f.gen >= 1 ? Math.min(f.gen, GEN_MAX) : 1, a, b } : null;
 }
@@ -743,6 +764,7 @@ function migrateUnsafe(raw) {
   sanitiseV8(s);
   sanitiseV9(s);
   sanitiseMail(s);
+  sanitiseCoatBook(s);
 
   for (const [id, n] of Object.entries(s.inventory)) {
     if (!Number.isFinite(n) || n <= 0) delete s.inventory[id];

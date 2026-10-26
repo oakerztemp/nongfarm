@@ -629,6 +629,12 @@ function pickSpeciesForHabitat(habitat) {
   return pickWeighted(list, s => RARITIES[s.rarity].weight / perRarity[s.rarity]);
 }
 
+/** V17 สมุดสีขน: remember that this species has been seen in this coat. */
+export function markCoatBook(state, speciesId, coat) {
+  if (!state.coatBook || typeof state.coatBook !== 'object') state.coatBook = {};
+  (state.coatBook[speciesId] || (state.coatBook[speciesId] = {}))[coat] = true;
+}
+
 export function hatchReady(state, slotIndex) {
   const slot = state.incubator[slotIndex];
   if (!slot) return fail('ไม่พบไข่ในช่องนี้');
@@ -675,6 +681,7 @@ export function hatchReady(state, slotIndex) {
   entry.owned += 1;
   entry.shiny = entry.shiny || pet.shiny;
   state.collection[species.id] = entry;
+  markCoatBook(state, species.id, 'base');
 
   addPlayerXp(state, 10);
   bumpStat(state, 'hatched');
@@ -683,6 +690,7 @@ export function hatchReady(state, slotIndex) {
     bumpStat(state, 'bred');
     if (!state.coatsSeen || typeof state.coatsSeen !== 'object') state.coatsSeen = { base: true };
     state.coatsSeen[genes.coat] = true;
+    markCoatBook(state, species.id, genes.coat);
     journalEvent(state, 'familyHatch', { petId: pet.id, name: genes.family.a.name, other: genes.family.b.name });
   }
   const rar = RARITIES[species.rarity];

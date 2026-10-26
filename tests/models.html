@@ -24,7 +24,7 @@
       <select id="stage"><option value="0">0 baby</option><option value="1">1 child</option><option value="2" selected>2 adult</option><option value="3">3 master</option></select>
     </label>
     <label>set
-      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="water">water (15)</option><option value="sky">sky (11)</option><option value="bug">bug (13)</option><option value="savanna">savanna (12)</option><option value="polar">polar (9)</option><option value="legendary">legendary row</option></select>
+      <select id="set"><option value="all">all</option><option value="farm">farm (21)</option><option value="forest">forest (15)</option><option value="water">water (15)</option><option value="sky">sky (11)</option><option value="bug">bug (13)</option><option value="savanna">savanna (12)</option><option value="polar">polar (9)</option><option value="mystic">mystic (5)</option><option value="legendary">legendary row</option></select>
     </label>
     <label><input type="checkbox" id="shiny"> shiny</label>
     <label>coat
@@ -74,8 +74,8 @@
     // water = the 15 water friends (V9 §6, the humpback stays with the legendaries)
     // sky = the 11 sky friends (V10 §4, the eagle stays with the legendaries)
     // bug = the 13 bug friends (V11 §5, the beetle stays with the legendaries)
-    // savanna = the 12 savanna friends (V15 §4, the golden lion stays with the legendaries); polar = the 9 polar friends (V16 §4, the polar bear stays with the legendaries)
-    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : s.habitat === 'water' && s.rarity !== 'legendary' ? 'water' : s.habitat === 'sky' && s.rarity !== 'legendary' ? 'sky' : s.habitat === 'bug' && s.rarity !== 'legendary' ? 'bug' : s.habitat === 'savanna' && s.rarity !== 'legendary' ? 'savanna' : s.habitat === 'polar' && s.rarity !== 'legendary' ? 'polar' : 'legendary'; };
+    // savanna = the 12 savanna friends (V15 §4, the golden lion stays with the legendaries); polar = the 9 polar friends (V16 §4, the polar bear stays with the legendaries); mystic = the 5 mystic friends (V17 §1, dragon / unicorn / mammoth / dragonhead stay with the legendaries)
+    const setOf = id => { const s = getSpecies(id); return s.habitat === 'farm' ? 'farm' : s.habitat === 'forest' && s.rarity !== 'legendary' ? 'forest' : s.habitat === 'water' && s.rarity !== 'legendary' ? 'water' : s.habitat === 'sky' && s.rarity !== 'legendary' ? 'sky' : s.habitat === 'bug' && s.rarity !== 'legendary' ? 'bug' : s.habitat === 'savanna' && s.rarity !== 'legendary' ? 'savanna' : s.habitat === 'polar' && s.rarity !== 'legendary' ? 'polar' : s.habitat === 'mystic' && (s.rarity === 'uncommon' || s.rarity === 'rare') ? 'mystic' : 'legendary'; };
     const ids = q.get('only') ? q.get('only').split(',')
       : Object.keys(MODEL_SPECS).filter(id => setName === 'all' || setOf(id) === setName);
     const extras = [];

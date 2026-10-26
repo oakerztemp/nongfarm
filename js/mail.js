@@ -5,7 +5,7 @@ import { NURSERY_SLOTS } from './state.js';
 import { getMailDef } from './data/mail.js';
 import { LIMITED_PETS } from './data/limited.js';
 import { getSpecies } from './data/species.js';
-import { ensureNursery, STAGES } from './pets.js';
+import { ensureNursery, STAGES, markCoatBook } from './pets.js';
 import { getEgg } from './data/eggs.js';
 
 const fail = reason => ({ ok: false, reason });
@@ -75,6 +75,7 @@ export function claimMail(state, id) {
   entry.owned += 1;
   entry.shiny = true;
   state.collection[species.id] = entry;
+  markCoatBook(state, species.id, 'base');
   // no XP: a guest who only took the gift stays isPristine (no "which farm?" prompt at sign-in)
   const msg = `🌌 ได้รับ ${species.emoji} ${LIMITED_PETS[pet.limited].nameTh} "${pet.nickname}" แล้ว!` +
     (toNursery ? ' — ลานเต็ม เลยพักในเปลอนุบาล 👶' : '');

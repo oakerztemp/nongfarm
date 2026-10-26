@@ -736,3 +736,16 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .kit-part.is-ok { border-color: var(--primary); }
 .pet-treat-tag { font-weight: 700; color: #e0579a; white-space: nowrap; }
 .pet-favdish small { font-weight: 400; }
+
+/* ───────── V17 family tree + coat book ───────── */
+.pet-detail-family { margin: 6px 0; }
+.fam-tree { display: grid; gap: 12px; }
+.fam-label { font-weight: 700; margin-bottom: 4px; }
+.fam-cards { display: flex; flex-wrap: wrap; gap: 8px; }
+.fam-card { display: grid; justify-items: center; gap: 2px; min-width: 86px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); text-align: center; }
+.fam-card.is-me { border: 2px solid var(--accent); }
+.fam-card.is-gone { opacity: 0.5; }
+.fam-emoji { font-size: 1.8rem; line-height: 1; }
+.sp-coats { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-coat-chip { font-size: 0.85rem; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-2); }
+.sp-coat-chip.is-unknown { opacity: 0.55; }

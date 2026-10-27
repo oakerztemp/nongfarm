@@ -407,6 +407,7 @@ async function withWorld(opts, fn) {
   host.style.cssText = 'width:360px;height:420px;position:fixed;left:0;top:0;';
   document.body.appendChild(host);
   const world = engine.createWorld(host, {}, opts);
+  world.setHour(12);   // V20: lights follow the clock; a fixed hour keeps light comparisons exact (CI runs at any time of day)
   try { await fn(world, host); } finally { world.dispose(); host.remove(); fx.setReducedMotionOverride(null); }
 }
 function addPets(world, n, meshesEach = 6) {

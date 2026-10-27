@@ -321,6 +321,8 @@ export function bubble(world, actorId, emoji, { duration = null } = {}) {
   const mine = rec;
   return {
     remove() { if (s.bubbles.get(actorId) === mine) removeBubbleRecord(s, actorId); },
+    /** V22: world size of the bubble (default 0.9), e.g. smaller in a close-up. */
+    setSize(n) { mine.size = Number(n) > 0 ? Number(n) : 0.9; },
     setEmoji(next) {
       if (s.bubbles.get(actorId) !== mine || mine.emoji === next) return;
       mine.emoji = next;

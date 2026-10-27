@@ -411,8 +411,36 @@ function makeBlobTexture() {
   return tex;
 }
 
+/**
+ * V22 wind (CONTRACT_V22 §1): grass / flowers sway in the vertex shader (no extra draw call). `wind` = { t: { value } } shared per
+ * world (seconds) or null (low tier: no sway). base = the geometry's bottom y (local), k = sway strength. Instanced meshes get
+ * their own phase from where they stand, plus a slow gust that rolls across the field.
+ */
+export function windify(mat, wind, base, k) {
+  if (!wind) return mat;
+  mat.onBeforeCompile = sh => {
+    sh.uniforms.uWindT = wind.t;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uWindT;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        {
+          vec2 wp = vec2( 0.0 );
+          #ifdef USE_INSTANCING
+            wp = instanceMatrix[ 3 ].xz;
+          #endif
+          float h = max( transformed.y - ( ${base.toFixed(3)} ), 0.0 );
+          float gust = 0.55 + 0.45 * sin( uWindT * 0.6 + wp.x * 0.18 - wp.y * 0.11 );
+          float sw = sin( uWindT * 2.1 + wp.x * 0.9 + wp.y * 0.7 ) * gust;
+          transformed.x += sw * h * h * ${k.toFixed(3)};
+          transformed.z += cos( uWindT * 1.7 + wp.y * 0.8 ) * gust * h * h * ${(k * 0.5).toFixed(3)};
+        }`);
+  };
+  mat.customProgramCacheKey = () => `nf-wind-${base}-${k}`;
+  return mat;
+}
+
 /** Builds ground island, fence, grass tufts, flowers (group) and the barn prop (barn) for a yard tier. */
-function buildEnvironment(tier, gradient, yard) {
+function buildEnvironment(tier, gradient, yard, wind = null) {
   const group = new THREE.Group();
   group.name = 'environment';
   const disposables = [];
@@ -494,7 +522,7 @@ function buildEnvironment(tier, gradient, yard) {
   // grass tufts
   const tufts_n = Math.round(tier.tufts * areaK);
   const flowers_n = Math.round(tier.flowers * areaK);
-  const tuftMat = toon(0xffffff);
+  const tuftMat = windify(toon(0xffffff), wind, -0.15, 1.3);   // V22: the cone is centred on its origin
   const tufts = new THREE.InstancedMesh(own(new THREE.ConeGeometry(0.08, 0.3, 4)), tuftMat, tufts_n);
   const green = new THREE.Color();
   for (let i = 0; i < tufts_n; i++) {
@@ -513,7 +541,7 @@ function buildEnvironment(tier, gradient, yard) {
   group.add(tufts);
 
   // flowers
-  const flowerMat = toon(0xffffff);
+  const flowerMat = windify(toon(0xffffff), wind, -0.3, 0.5);   // V22: a little nod (the head is a sphere on an unseen stem)
   const flowers = new THREE.InstancedMesh(own(new THREE.SphereGeometry(0.075, 6, 4)), flowerMat, flowers_n);
   const palette = [0xffd84a, 0xff8fb1, 0xffffff, 0xb9a0ff].map(c => new THREE.Color(c));
   for (let i = 0; i < flowers_n; i++) {
@@ -638,7 +666,7 @@ export function layoutWild(k = 1) {
  * The meadow ring beyond the fence: soft-edged ground disc + instanced grass / bushes / trees / rocks + a stream = 6 draw calls.
  * Props closer to the centre than `clearance` are hidden (scale 0); setClearance() sinks / grows them over YARD_GROW_MS.
  */
-function buildWilderness(tier, gradient, clearance) {
+function buildWilderness(tier, gradient, clearance, wind = null) {
   const group = new THREE.Group();
   group.name = 'wilderness';
   const disposables = [];
@@ -667,6 +695,7 @@ function buildWilderness(tier, gradient, clearance) {
   // shared materials / geometry
   const plainMat = own(new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: gradient }));
   const vcMat = own(new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap: gradient }));
+  const grassMat = own(windify(new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap: gradient }), wind, 0, 0.4));   // V22: trees keep vcMat (they do not sway)
   const geo = {
     grass: own(mergeStaticParts(THREE, [
       { geometry: new THREE.ConeGeometry(0.07, 0.55, 4), color: 0xffffff, position: [0, 0.27, 0] },
@@ -682,7 +711,7 @@ function buildWilderness(tier, gradient, clearance) {
     rock: own(new THREE.IcosahedronGeometry(0.4, 0)),
   };
   const kinds = {
-    grass: { y: 0, mat: vcMat, squash: 1 },
+    grass: { y: 0, mat: grassMat, squash: 1 },
     bush: { y: 0.18, mat: plainMat, squash: 0.75 },
     tree: { y: 0, mat: vcMat, squash: 1 },
     rock: { y: 0.1, mat: plainMat, squash: 0.65 },
@@ -752,6 +781,22 @@ function buildWilderness(tier, gradient, clearance) {
     const mat = own(new THREE.MeshToonMaterial({
       vertexColors: true, gradientMap: gradient, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
     }));
+    if (wind) {   // V22: glints drifting down the stream on the blue water only (not the foam / banks)
+      mat.onBeforeCompile = sh => {
+        sh.uniforms.uWindT = wind.t;
+        sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWPos;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;');
+        sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uWindT;\nvarying vec3 vWPos;')
+          .replace('#include <opaque_fragment>', `#if defined( USE_COLOR )
+            if ( vColor.b > vColor.r + 0.2 ) {
+              float s = sin( vWPos.z * 2.3 + uWindT * 1.8 + sin( vWPos.x * 3.1 ) ) * sin( vWPos.z * 0.9 - uWindT * 1.1 + vWPos.x * 1.7 );
+              outgoingLight += vec3( 0.55, 0.78, 0.9 ) * smoothstep( 0.55, 0.95, s ) * 0.55;
+            }
+          #endif
+          #include <opaque_fragment>`);
+      };
+      mat.customProgramCacheKey = () => 'nf-stream';
+    }
     const stream = new THREE.Mesh(g, mat);
     stream.name = 'stream';
     stream.userData.noPick = true;
@@ -920,10 +965,11 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     undo.push(() => { blobGeo.dispose(); blobMat.dispose(); blobTexture.dispose(); toonGradient.dispose(); });
     // ---- yard (grows with barnCapacity), static props
     let yardCfg = yardTierConfig(options.yardTier || DEFAULT_YARD_TIER);
-    let env = buildEnvironment(tier, toonGradient, yardCfg);
+    const wind = tier.name === 'low' ? null : { t: { value: 0 } };   // V22: no sway on the low tier
+    let env = buildEnvironment(tier, toonGradient, yardCfg, wind);
     undo.push(() => env.dispose());
     scene.add(env.group, env.barn);
-    const wild = buildWilderness(tier, toonGradient, wildClearance(yardCfg.name));
+    const wild = buildWilderness(tier, toonGradient, wildClearance(yardCfg.name), wind);
     undo.push(() => wild.dispose());
     scene.add(wild.group);
     let decorSpots = decorSpotsForTier(yardCfg.name);
@@ -1057,7 +1103,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       yardCfg = next;
       scene.remove(env.group, env.barn);
       env.dispose();
-      env = buildEnvironment(tier, toonGradient, next);
+      env = buildEnvironment(tier, toonGradient, next, wind);
       scene.add(env.group, env.barn);
       syncObstacles();
       rainFx.setArea(next.walk, obstacles);
@@ -1170,8 +1216,10 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       // V20 haze starts just behind the yard however far back the camera sits (portrait phones / zoomed out), less in the close-up
       const ck = close.k > 0.0005 ? close.k * close.k * (3 - 2 * close.k) : 0;
       const camDist = baseDist * view.zoom * (1 - ck) + 3 * ck;
-      scene.fog.near = camDist + FOG_NEAR - 15;
-      scene.fog.far = scene.fog.near + (FOG_FAR - FOG_NEAR);
+      // V22 close-up: the haze starts just behind the pet, so the background goes soft and the pet stands out
+      const closeNear = Math.max(5, close.fogNear || 0);   // just behind the played pet (big pets: the camera stands further back)
+      scene.fog.near = (camDist + FOG_NEAR - 15) * (1 - ck) + closeNear * ck;
+      scene.fog.far = scene.fog.near + (FOG_FAR - FOG_NEAR) * (1 - ck) + 22 * ck;
     }
 
     function resize() {
@@ -1274,6 +1322,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       lookAge += dt;
       if (lookAge >= 1) refreshLook();
       skyFx.update(dt, runTime);
+      if (wind) wind.t.value = runTime;
       updateCamera();
 
       for (const fn of [...frameFns]) {
@@ -1688,9 +1737,10 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       },
       getView: () => ({ yaw: view.yawT, pitch: view.pitchT, zoom: view.zoomT, pan: { x: panT.x, z: panT.z } }),
       /** V18 close-up: fly the camera to `pos` looking at `look` (world units; call every frame to follow a moving pet). */
-      setCloseUp({ pos, look } = {}) {
+      setCloseUp({ pos, look, fogNear } = {}) {
         if (pos) Object.assign(close.pos, pos);
         if (look) Object.assign(close.look, look);
+        close.fogNear = Number.isFinite(fogNear) ? fogNear : 0;   // V22: where the close-up haze may start (0 = default)
         close.kT = 1;
       },
       /** V18: back to the normal orbit camera (eased). */

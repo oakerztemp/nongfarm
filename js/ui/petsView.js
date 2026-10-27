@@ -28,6 +28,7 @@ import { COATS, getCoat, coatOf } from '../data/coats.js';
 import { limitedOf } from '../data/limited.js';
 import { kitchenList, cook } from '../kitchen.js';
 import { startPlayGame } from './playGame.js';
+import { avatarHtml, onPortrait, patchPortraits } from './portraits.js';
 import { favoriteDish } from '../data/recipes.js';
 import { getAccessory, ACC_SLOTS } from '../data/accessories.js';
 import { journalDays } from '../journal.js';
@@ -110,7 +111,7 @@ function openPlayModal(petId) {
   let game = null, close = () => {};
   close = openModal({
     title: `🎾 เล่นกับ${petName(pet)}`,
-    html: `<div class="pg-stage"><span class="pg-pet-wrap"><span class="pg-pet pet-emoji${pet.shiny ? ' is-shiny' : ''}${limitedOf(pet) ? ' is-limited' : ''}" aria-hidden="true">${petEmoji(pet)}</span>`
+    html: `<div class="pg-stage"><span class="pg-pet-wrap">${avatarHtml(pet, `pg-pet pet-emoji${pet.shiny ? ' is-shiny' : ''}${limitedOf(pet) ? ' is-limited' : ''}`, petEmoji(pet))}`
       + '<span class="pg-think" aria-hidden="true"></span><span class="pg-face" aria-hidden="true"></span></span></div>',
     onMount(body) {
       const stage = body.querySelector('.pg-stage');
@@ -160,6 +161,9 @@ function favToyLineHtml(pet) {
 
 /** V12: the Limited chip (empty for every other pet). */
 const limitedTag = pet => (limitedOf(pet) ? `${limitedOf(pet).icon} <span class="pet-limited-tag">${limitedOf(pet).badge}</span>` : '');
+
+// V22: a portrait that becomes ready replaces its emoji wherever it is shown (cards, sheets, crib, play window)
+onPortrait(() => patchPortraits(document));
 
 function run(fn) {
   const r = update(fn);
@@ -427,7 +431,7 @@ function renderPetCard(pet, state) {
   return `<article class="${cls.join(' ')}" data-pet-id="${e(pet.id)}" style="--rar:${rarColor}">
     <div class="pet-stage">
       <button type="button" class="pet-avatar" data-action="details" data-pet-id="${e(pet.id)}" aria-label="ดูรายละเอียด ${e(petName(pet))}">
-        <span class="pet-emoji">${petEmoji(pet)}</span>
+        ${avatarHtml(pet, 'pet-emoji', petEmoji(pet))}
         ${pet.shiny ? '<span class="pet-sparkle" aria-hidden="true">✨</span>' : ''}
         ${sleeping ? '<span class="pet-zzz" aria-hidden="true">💤</span>' : ''}
         ${pet.sick ? '<span class="pet-sicko" aria-hidden="true">🤒</span>' : ''}
@@ -475,7 +479,7 @@ function renderNursery(state) {
     const sp = getSpecies(pet.speciesId);
     const pers = persOf(pet);
     return `<div class="nursery-row${pet.shiny ? ' is-shiny' : ''}" data-pet-id="${e(pet.id)}" style="--rar:${sp ? RARITIES[sp.rarity].color : '#8e9aa6'}">
-      <span class="nursery-emoji" aria-hidden="true">${petEmoji(pet)}<i class="nursery-zzz">💤</i></span>
+      <span class="nursery-emoji" aria-hidden="true">${avatarHtml(pet, 'nursery-face', petEmoji(pet))}<i class="nursery-zzz">💤</i></span>
       <div class="nursery-info">
         <div class="nursery-name"><b>${e(petName(pet))}</b> ${sp ? rarityBadge(sp) : ''}${pet.shiny ? ' <span class="pet-shiny-tag">✨ ไชนี่</span>' : ''} ${limitedTag(pet)}</div>
         <div class="nursery-sub muted">${sp ? e(sp.nameTh) : ''} · ${pers.emoji} ${pers.nameTh} ${traitBadge(sp)}</div>
@@ -503,7 +507,7 @@ function nurserySheetHtml(pet, state, opts = {}) {
       ${pet.family ? `<div class="b3-reveal-family">💞 ลูกของ ${e(pet.family.a.name)} กับ ${e(pet.family.b.name)}</div>` : ''}
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
   return `<div class="b3-sheet-head">
-      <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
+      ${avatarHtml(pet, 'b3-sheet-emoji', petEmoji(pet))}
       <div class="b3-sheet-title"><b>${e(petName(pet))}</b>
         <small>${sp ? e(sp.nameTh) : ''} · 👶 นอนในเปลอนุบาล${pet.shiny ? ' · ✨' : ''}</small></div>
       <button type="button" class="b3-sheet-close" data-b3="close" aria-label="ปิด">✕</button></div>
@@ -927,7 +931,7 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
   const bond = bondProgress(pet);
   const head = `<div class="b3-sheet-head">
       ${mode === 'feed' || mode === 'wear' ? '<button type="button" class="btn btn-sm btn-ghost" data-b3="back" aria-label="กลับ">‹</button>' : ''}
-      <span class="b3-sheet-emoji" aria-hidden="true">${petEmoji(pet)}</span>
+      ${avatarHtml(pet, 'b3-sheet-emoji', petEmoji(pet))}
       <div class="b3-sheet-title"><b>${e(petName(pet))}</b>
         <small>${sp ? e(sp.nameTh) : ''} · ${st.icon} ${st.nameTh}${pet.shiny ? ' · ✨' : ''}${sp && sp.rarity === 'legendary' ? ' · ✦ ตำนาน' : ''}</small></div>
       <button type="button" class="b3-sheet-close" data-b3="close" aria-label="ปิด">✕</button></div>`;

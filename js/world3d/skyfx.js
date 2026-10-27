@@ -1,5 +1,5 @@
 // V20 sky extras (CONTRACT_V20 §3, §4): drifting low-poly clouds on the horizon, stars, fireflies and cloud shadows on the lawn.
-// Engine-owned, at most 4 draw calls (clouds 1, stars 1, fireflies 1, cloud shadows 1); quality tier decides what exists.
+// Engine-owned, at most 5 draw calls (clouds, stars, fireflies, cloud shadows, V22 petals); quality tier decides what exists.
 //
 //   const sky = createSkyFx(THREE, { tier: 'high'|'medium'|'low', gradient, walkRadius })
 //   scene.add(sky.group); sky.setLook(look, cloudiness)   // look = daylight.skyAt(...); call when the light changes (~1 s)
@@ -140,6 +140,26 @@ export function createSkyFx(THREE, { tier = 'medium', gradient = null, walkRadiu
     shade = { mesh, mat, tex };
   }
 
+  // ---- V22 petals: a few blossom petals drifting across the yard by day (one instanced mesh, moved on the CPU)
+  const nPetals = tier === 'high' ? 24 : tier === 'medium' ? 12 : 0;
+  let petals = null;
+  if (nPetals) {
+    const geo = own(new THREE.CircleGeometry(1, 7).scale(0.11, 0.065, 1));   // an oval petal
+    const mat = own(new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0, depthWrite: false, fog: false }));
+    const mesh = new THREE.InstancedMesh(geo, mat, nPetals);
+    mesh.userData.noPick = true;
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    const cols = [0xff9ec0, 0xffd1e0, 0xfff1a8, 0xffb8d0].map(c => new THREE.Color(c));
+    const st = [];
+    for (let i = 0; i < nPetals; i++) {
+      st.push({ x: (R() - 0.5) * 16, y: 0.3 + R() * 3, z: (R() - 0.5) * 16, ph: R() * 10, sp: 0.5 + R() * 0.5, spin: 1 + R() * 2 });
+      mesh.setColorAt(i, cols[i % cols.length]);
+    }
+    group.add(mesh);
+    petals = { mesh, mat, st, dummy: new THREE.Object3D() };
+  }
+
   let night = 0, day = 1;
 
   function setLook(look, cloudiness = 0) {
@@ -156,11 +176,29 @@ export function createSkyFx(THREE, { tier = 'medium', gradient = null, walkRadiu
       shade.mat.opacity = day * (0.13 + 0.12 * cloudiness);
       shade.mesh.visible = shade.mat.opacity > 0.01;
     }
+    if (petals) {   // daytime only, and not in the rain
+      petals.mat.opacity = Math.max(0, 1 - night * 2) * Math.max(0, 1 - cloudiness * 1.4) * 0.95;
+      petals.mesh.visible = petals.mat.opacity > 0.02;
+    }
   }
 
   function update(dt, t) {
     clouds.rotation.y += dt * 0.004;
     if (shade && shade.mesh.visible) { shade.tex.offset.x += dt * 0.006; shade.tex.offset.y += dt * 0.0025; }
+    if (petals && petals.mesh.visible) {
+      const { mesh, st, dummy } = petals, lim = Math.max(8, walkRadius * 1.6);
+      for (let i = 0; i < st.length; i++) {
+        const p = st[i];
+        // a breeze from -x: drift sideways and down, flutter, wrap around when out of the yard
+        p.x += dt * p.sp * 0.55; p.z += Math.sin(t * 0.5 + p.ph) * dt * 0.25; p.y -= dt * p.sp * 0.22;
+        if (p.y < 0.05 || p.x > lim) { p.x = -lim + Math.random() * 2; p.y = 1.5 + Math.random() * 2.5; p.z = (Math.random() - 0.5) * lim * 2; }
+        dummy.position.set(p.x, p.y + Math.sin(t * 2 + p.ph) * 0.06, p.z);
+        dummy.rotation.set(t * p.spin + p.ph, t * p.spin * 0.7, Math.sin(t + p.ph));
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    }
     if (flies && flies.pts.visible) {
       const { pos, seeds } = flies;
       for (let i = 0; i < seeds.length; i++) {
@@ -179,7 +217,8 @@ export function createSkyFx(THREE, { tier = 'medium', gradient = null, walkRadiu
   return {
     group, setLook, update,
     setArea(r) { walkRadius = r; },
-    info: () => ({ clouds: nClouds, stars: stars.visible ? nStars : 0, fireflies: flies && flies.pts.visible ? nFireflies : 0, shadows: !!(shade && shade.mesh.visible) }),
+    info: () => ({ clouds: nClouds, stars: stars.visible ? nStars : 0, fireflies: flies && flies.pts.visible ? nFireflies : 0, shadows: !!(shade && shade.mesh.visible),
+      petals: petals && petals.mesh.visible ? nPetals : 0 }),
     dispose() { for (const o of owned) o.dispose(); group.clear(); },
   };
 }

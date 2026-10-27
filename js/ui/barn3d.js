@@ -181,10 +181,41 @@ export function mountBarn3d(host, ctx) {
   // ── yard tiers: S / M / L / XL props, walk radius, "ลานกว้างขึ้น!" moment (CONTRACT_V6 §4) ──────────
   let yardTier = yardTierOf(getState().barnCapacity);
   let lanternMat = null, lanternHaloMat = null;
+  // V22 pond glint (CONTRACT_V22 §2): a soft caustic texture turning slowly on the water (1 draw call, not on the low tier)
+  let pondGlint = null, pondGlintMat = null, pondGlintGeo = null;
+  function pondGlintMesh() {
+    if (!pondGlintMat) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 128;
+      const g = c.getContext('2d');
+      g.strokeStyle = 'rgba(255,255,255,0.9)';
+      g.lineCap = 'round';
+      let seed = 7;
+      const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+      for (let i = 0; i < 26; i++) {   // short wavy light streaks
+        const x = 14 + rnd() * 100, y = 14 + rnd() * 100, len = 6 + rnd() * 14;
+        g.lineWidth = 1.2 + rnd() * 2;
+        g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + len / 2, y - 3 + rnd() * 6, x + len, y); g.stroke();
+      }
+      const fade = g.createRadialGradient(64, 64, 30, 64, 64, 64);   // keep the glints inside the round pond
+      fade.addColorStop(0, 'rgba(0,0,0,0)'); fade.addColorStop(1, 'rgba(0,0,0,1)');
+      g.globalCompositeOperation = 'destination-out';
+      g.fillStyle = fade; g.fillRect(0, 0, 128, 128);
+      const tex = own(new THREE.CanvasTexture(c));
+      pondGlintMat = own(new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+      pondGlintGeo = own(new THREE.CircleGeometry(0.95, 24));
+    }
+    const m = new THREE.Mesh(pondGlintGeo, pondGlintMat);
+    m.rotation.x = -Math.PI / 2;
+    m.renderOrder = 1;
+    return m;
+  }
   const hourIsNight = () => world.isNight();   // V20: the engine's time of day (clock / device theme / debug hour)
   const unPref = onPrefChange((name, value) => { if (name === 'sky') { world.setTimeMode(value); syncLanterns(); } });
+  let glintNight = false;   // V22: the pond glint dims at night
   function syncLanterns() {
     const n = hourIsNight();
+    glintNight = n;
     if (lanternMat) lanternMat.color.set(n ? 0xffd966 : 0xfff1c9);
     if (lanternHaloMat) lanternHaloMat.visible = n;   // no halo draw call by day
   }
@@ -194,6 +225,7 @@ export function mountBarn3d(host, ctx) {
     try { world.clearProps('yard-'); } catch { /* none yet */ }
     if (lanternMat) { lanternMat.dispose(); lanternMat = null; }
     if (lanternHaloMat) { lanternHaloMat.dispose(); lanternHaloMat = null; }
+    pondGlint = null;
     const geos = [];
     const g = o => { geos.push(o); return o; };
     const cyl = (rt, rb, h, seg = 14) => g(new THREE.CylinderGeometry(rt, rb, h, seg));
@@ -221,6 +253,11 @@ export function mountBarn3d(host, ctx) {
             { geometry: cyl(0.15, 0.15, 0.02, 10), color: '#66bb6a', position: [0.3, 0.1, -0.3] },
             { geometry: sph(0.06), color: '#ff8fb1', position: [-0.35, 0.14, 0.25] },
           ], pos, obstacle);
+          if (world.tier !== 'low') {
+            pondGlint = pondGlintMesh();
+            pondGlint.position.set(pr.x, 0.095, pr.z);
+            world.addProp('yard-pond-glint', pondGlint);   // the geometry / material are the barn's own (freed on dispose)
+          }
           break;
         case 'tree':
           merged(pr.id, [
@@ -1737,7 +1774,7 @@ export function mountBarn3d(host, ctx) {
       host,
       title: `🎾 เล่นกับ${pet ? petName(pet) : 'น้อง'}`,
       favToy: pet ? favToyOf(pet).emoji : null,
-      onWish: w => { if (playing) { playing.wish = w; setBubble(A, w); } },
+      onWish: w => { if (playing) { playing.wish = w; setBubble(A, w); if (A.bubble && A.bubble.setSize) A.bubble.setSize(0.55); } },   // V22: a smaller 💭 in the close-up
       spread: Math.min(170, Math.max(110, host.clientWidth * 0.3)),
       anchor: () => {
         if (!playing) return null;
@@ -1796,7 +1833,8 @@ export function mountBarn3d(host, ctx) {
     const cx = A.x + p.dir.x * dist, cz = A.z + p.dir.z * dist;
     world.setCloseUp({
       pos: { x: cx, y: A.y + h * 0.8 + 0.35, z: cz },
-      look: { x: A.x, y: A.y + h * 0.72 + 0.15, z: A.z },   // V20: aim above the middle: room for the 💭 wish under the top bar
+      look: { x: A.x, y: A.y + h * 0.8 + 0.18, z: A.z },
+      fogNear: dist + A.model.radius + 0.6,   // V22: the haze starts behind the pet, never on it   // V20/V22: aim above the head: room for the 💭 wish under the top bar
     });
     // other pets standing between the camera and the played pet step out of the shot (hidden, restored when play ends)
     for (const B of actors.values()) {
@@ -4126,6 +4164,7 @@ export function mountBarn3d(host, ctx) {
   let isOn = true;
   let frameFailed = false;
   const unFrame = world.onFrame((dt, t) => {
+    if (pondGlint) { pondGlint.rotation.z += dt * 0.12; pondGlintMat.opacity = (0.45 + 0.15 * Math.sin(t * 1.3)) * (glintNight ? 0.35 : 1); }   // V22
     if (frameFailed) return;
     try { frame(dt, t); } catch (err) {
       frameFailed = true;

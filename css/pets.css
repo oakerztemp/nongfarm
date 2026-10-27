@@ -806,3 +806,14 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 @keyframes pg-cry { 15%, 45%, 75% { transform: translateX(-6px) rotate(-4deg) scale(.97); } 30%, 60%, 90% { transform: translateX(6px) rotate(4deg) scale(.97); } }
 .pet-favtoy { font-size: 0.9rem; }
 @media (prefers-reduced-motion: reduce) { .pg-pet.is-cry, .pg-face.is-show, .pg-wish.is-new, .pg-think.is-new, .pg-toy.is-wrong { animation-duration: .01ms !important; } }
+
+/* ───────── V22 pet portraits (rendered from the 3D model; the emoji is the fallback) ───────── */
+img.pet-portrait { display: inline-block; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+img.pet-emoji.pet-portrait { width: 96px; height: 96px; }
+@media (max-width: 400px) { img.pet-emoji.pet-portrait { width: 80px; height: 80px; } }
+img.b3-sheet-emoji.pet-portrait { width: 44px; height: 44px; }
+img.nursery-face.pet-portrait { width: 54px; height: 54px; }
+img.pg-pet.pet-portrait { width: min(46vw, 200px); height: min(46vw, 200px); }
+/* the picture already shows the shiny colours: no emoji hue-rotate, just the glow */
+.is-shiny img.pet-emoji.pet-portrait, img.pet-emoji.pet-portrait.is-shiny { filter: drop-shadow(0 0 6px var(--accent)); }
+.pet-card.is-sick img.pet-emoji.pet-portrait { filter: saturate(0.6) brightness(0.95); }

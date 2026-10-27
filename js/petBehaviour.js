@@ -732,7 +732,7 @@ const rot = o => (o && o.rotation && Number.isFinite(o.rotation.x) ? { x: o.rota
 export function partBases(parts) {
   const p = parts || {};
   const tailScale = p.tail && p.tail.scale && Number.isFinite(p.tail.scale.x) ? { x: p.tail.scale.x, y: p.tail.scale.y, z: p.tail.scale.z } : null;
-  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke), lid: rot(p.lid), shell: rot(p.shell), legR: rot(p.legR), tailScale };
+  return { wingL: rot(p.wingL), wingR: rot(p.wingR), tail: rot(p.tail), tailTip: rot(p.tailTip), trunk: rot(p.trunk), mane: rot(p.mane), fluke: rot(p.fluke), lid: rot(p.lid), shell: rot(p.shell), legR: rot(p.legR), earL: rot(p.earL), earR: rot(p.earR), tailScale };
 }
 
 /**
@@ -760,6 +760,17 @@ export function applyPartPose(parts, base, P) {
   set('tail', 'x', 0.8 * up + 0.6 * Math.max(0, Math.min(1, P.tailCurl || 0)));   // scorpion: +x curls the tail further forward over the head (models.js V11 notes)
   if (parts.tail && parts.tail.scale && base.tailScale) parts.tail.scale.set(base.tailScale.x * (1 + up), base.tailScale.y * (1 + 0.5 * up), base.tailScale.z);
   set('legR', 'x', P.leg || 0);                   // flamingo: +x folds the foot back and up
+  // V21 ear twitch: a quick flick of one ear (P.earL / P.earR are small x offsets; 0 = the resting pose)
+  if (P.earL) set('earL', 'x', P.earL);
+  else if (parts.earL && base.earL) parts.earL.rotation.x = base.earL.x;
+  if (P.earR) set('earR', 'x', P.earR);
+  else if (parts.earR && base.earR) parts.earR.rotation.x = base.earR.x;
+}
+
+/** V21: ear twitch offset (radians) for a twitch that started `age` seconds ago: a fast flick and a softer settle, 0 after 0.5 s. */
+export function earTwitch(age) {
+  if (!(age >= 0) || age >= 0.5) return 0;
+  return -0.55 * Math.sin((age / 0.5) * Math.PI) * Math.exp(-age * 5);
 }
 
 /** A new hatch ceremony may start unless another one is still before its burst (egg still in the nest). */

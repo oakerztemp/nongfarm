@@ -26,7 +26,7 @@ import { savePhoto, downloadPhoto, sharePhoto as shareBlob, photoFilename } from
 import { getAccessory } from '../data/accessories.js';
 import { bestFriendMap, onBestFriend } from '../friends.js';
 import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, beginAction, advanceActor, angDiff,
-  signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, canStartCeremony,
+  signatureFor, SIGNATURE_TYPES, ceremonyKind, partBases, applyPartPose, earTwitch, canStartCeremony,
   configureYard, yardProps, yardTierOf, DECOR_USE,
   favoriteSpot, createStroke, handStroke, tickStroke, strokeMelt, finishActorStroke, clearStrokeState, pickGiftLabels, GIFT_LABEL_MAX,
   pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots,
@@ -400,7 +400,9 @@ export function mountBarn3d(host, ctx) {
   function rebuildModel(A, pet) {
     const grew = pet.stage > A.stage;
     A.holder.remove(A.model.root);
+    if (A.model.dispose) A.model.dispose();   // V21: its own eyes material
     A.model = buildModel(pet);
+    A.mouth = null; A.happyEyes = false;
     A.holder.add(A.model.root);
     A.headBase = A.model.head ? A.model.head.rotation.clone() : null;
     A.sig = modelSig(pet);
@@ -481,6 +483,7 @@ export function mountBarn3d(host, ctx) {
     dropTag(A.selTag); A.selTag = null;
     fx.clearBubble(world, A.id);
     world.removeActor(A.id);
+    if (A.model && A.model.dispose) A.model.dispose();
     actors.delete(A.id);
     for (let i = tags.length - 1; i >= 0; i--) if (tags[i].petId === A.id) { tags[i].el.remove(); tags.splice(i, 1); }
   }
@@ -543,6 +546,13 @@ export function mountBarn3d(host, ctx) {
     const P = A.pose || (A.pose = {});
     P.hop = 0; P.sy = 1; P.sx = 1; P.roll = 0; P.pitch = 0; P.yaw = 0; P.shake = 0;
     P.hPitch = 0; P.hYaw = 0; P.hRoll = 0; P.tail = 0; P.scale = 1; P.wing = 0; P.tailTip = 0; P.trunk = 0; P.mane = 0; P.shell = 0; P.fluke = 0; P.lift = 0; P.tailUp = 0; P.leg = 0; P.tuck = 0; P.tailCurl = 0;
+    P.earL = 0; P.earR = 0;   // V21 ear twitch: now and then one ear flicks (not while asleep)
+    if (pet.status !== 'sleeping') {
+      A.twitchIn = (A.twitchIn ?? 3 + Math.random() * 6) - dt;
+      if (A.twitchIn < 0) { A.twitchIn = 4 + Math.random() * 7; A.twitch = { side: Math.random() < 0.5 ? 'earL' : 'earR', age: 0 }; }
+    }
+    if (A.twitch && !(A.model.parts[A.twitch.side] && A.model.parts[A.twitch.side].userData.twitch)) A.twitch = null;   // fins / claws / feelers stay still
+    if (A.twitch) { A.twitch.age += dt; if (A.twitch.age >= 0.5) A.twitch = null; else P[A.twitch.side] = earTwitch(A.twitch.age); }
     if (A.hold > 0 && A.hold < SELECT_HOLD / 2) A.hold = Math.max(0, A.hold - dt);
     if (A.hidden) { if (A.stroke || A.strokeMelt) clearStrokeState(A); return P; } // a newborn waiting for its hatch ceremony
 
@@ -1166,9 +1176,21 @@ export function mountBarn3d(host, ctx) {
       if (A.blinkAt < 0) { A.blink = 0.13; A.blinkAt = 2.5 + Math.random() * 4; }
       if (A.blink > 0) A.blink -= dt;
       if (A.faceT > 0) A.faceT -= dt;
-      const face = A.faceT > 0 ? (A.face === 'happy' ? 0.26 : 0.5) : 1;   // V19 play game: ^^ when happy, droopy when crying
-      const closed = A.curl > 0.55 || A.blink > 0 ? 0.12 : A.squint > 0.5 ? 0.3 : face;
+      // V21: real "^^" eyes when happy (V19 play game) or melting under a stroke; droopy eyes when crying
+      const happy = (A.faceT > 0 && A.face === 'happy') || A.squint > 0.5;
+      const face = A.faceT > 0 && A.face !== 'happy' ? 0.5 : 1;
+      const closed = A.curl > 0.55 || A.blink > 0 ? 0.12 : happy && !m.setEyes ? 0.3 : face;
       for (const e of eyes) e.scale.y = closed;
+      if (m.setEyes && happy !== !!A.happyEyes) { A.happyEyes = happy; m.setEyes(happy ? 'happy' : null); }
+    }
+    if (m.hasMouth) {   // V21 mouth (CONTRACT_V21 §2): asleep o · sad / sick / crying frown · playing / eating / melting open · else a smile
+      const pet = A.pet, act = A.act.type;
+      const want = pet.status === 'sleeping' || A.curl > 0.55 ? 'o'
+        : (A.faceT > 0 && A.face === 'sad') || act === 'cry' || act === 'no' || act === 'sick' || pet.sick ? 'frown'
+          : (A.faceT > 0 && A.face === 'happy') || act === 'hop' || act === 'play' || act === 'wave' || act === 'party' || act === 'bathe'
+            || (act === 'eat' && Math.sin(t * 13) > 0) || A.strokeMelt > 0.3 ? 'open'
+            : A.lonely === 2 ? 'frown' : 'smile';
+      if (want !== A.mouth) { A.mouth = want; m.setFace(want); }
     }
   }
 
@@ -2171,6 +2193,7 @@ export function mountBarn3d(host, ctx) {
     if (model.head) model.head.rotation.x += 0.5;
     const eyes = model.parts && model.parts.eyes;
     if (eyes) for (const e of eyes) e.scale.y = 0.12;
+    if (model.setFace) model.setFace('o');   // V21: asleep
     holder.add(model.root);
     group.add(mesh, holder);
     group.position.set(spot.x, 0, spot.z);
@@ -2183,6 +2206,7 @@ export function mountBarn3d(host, ctx) {
   function removeCrib(c) {
     fx.clearBubble(world, c.id);
     world.removeActor(c.id);
+    if (c.model && c.model.dispose) c.model.dispose();
     cribs.delete(c.petId);
   }
 
@@ -4167,6 +4191,7 @@ export function mountBarn3d(host, ctx) {
       }
       // V18 คิดถึง / น้อยใจ: now and then a 🥺 / 😢 above a pet that misses play
       const lone = lonelyLevel(A.pet);
+      A.lonely = lone;   // V21: the mouth pouts while sulking
       if (lone && A.pet.status !== 'sleeping' && !A.spawn && !(playing && playing.A === A)) {
         A.lonelyAt = (A.lonelyAt ?? 4 + Math.random() * 6) - dt;
         if (A.lonelyAt < 0) {

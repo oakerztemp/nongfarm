@@ -10,13 +10,21 @@ const TRI_BUDGET = 1500;
 const LEGEND_IDS = ['dragon', 'unicorn', 'dragonhead', 'mammoth', 'lion', 'panda', 'humpback', 'eagle', 'beetle', 'polarbear'];
 const LEGEND_TRI_BUDGET = 1800;
 
+// V21: body / face budgets leave out the mouth shapes in the eyes mesh (4 shapes, one drawn; capped separately in v21.test.js)
 function tris(obj) {
   let t = 0;
-  obj.traverse(o => { if (o.isMesh) { const g = o.geometry; t += (g.index ? g.index.count : g.attributes.position.count) / 3; } });
+  obj.traverse(o => {
+    if (!o.isMesh) return;
+    const g = o.geometry, n = (g.index ? g.index.count : g.attributes.position.count) / 3;
+    const mouth = g.attributes.mouth, u = o.material && o.material.userData && o.material.userData.u;
+    if (!mouth || !g.index || !u) { t += n; return; }
+    for (let i = 0; i < g.index.count; i += 3) { const k = mouth.getX(g.index.getX(i)); if (!k || k > 8.5) t++; }   // the mouth (<= 60 tris) has its own check in v21.test.js
+  });
   return t;
 }
+// V21: each pet owns its eyes material (own mouth / blink uniforms); they all belong to one family (one shader)
 function materials(obj, set = new Set()) {
-  obj.traverse(o => { if (o.material) set.add(o.material); });
+  obj.traverse(o => { if (o.material) set.add((o.material.userData && o.material.userData.family) || o.material); });
   return set;
 }
 /** Set of distinct vertex colours (as "r,g,b" 3-decimals) baked into the toon meshes (or the eye mesh). */
@@ -724,8 +732,8 @@ test('water: shiny = gentle curated palettes (each palette really hits the model
     assert(hit.length >= 3, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
     for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
     assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
-    // the cheek blush is a 60 % blend of the (shifted) head colour with pink, so it follows the head: the one colour allowed to move without being listed
-    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    // the cheek blush is a 78 % blend (V21, was 60 %) of the (shifted) head colour with pink, so it follows the head: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.22 + parseInt(b.slice(i, i + 2), 16) * 0.78).toString(16).padStart(2, '0')).join('');
     const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush));
     const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
     for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
@@ -914,8 +922,8 @@ test('sky: shiny = curated palettes (each palette really hits the model; eyes ne
     assert(hit.length >= 3, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
     for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied (has target ${cs.has(hexKey(pal[k]))}, still has source ${cs.has(hexKey(k))}; meshes ${(() => { const r = []; shiny.root.traverse(o => { if (o.isMesh) r.push(o.name + ':' + o.material.type + ':' + o.geometry.attributes.position.count); }); return r.join(','); })()})`);
     assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
-    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
-    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    // the cheek blush is a 78 % blend (V21, was 60 %) of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.22 + parseInt(b.slice(i, i + 2), 16) * 0.78).toString(16).padStart(2, '0')).join('');
     const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
     const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
     for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
@@ -1084,7 +1092,7 @@ test('bugs: shiny = curated palettes (each palette really hits the model; eyes n
     assert(hit.length >= 3, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
     for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
     assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
-    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.22 + parseInt(b.slice(i, i + 2), 16) * 0.78).toString(16).padStart(2, '0')).join('');
     const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
     const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
     for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
@@ -1345,8 +1353,8 @@ test('savanna: shiny = curated palettes (each palette really hits the model; eye
     assert(hit.length >= 2, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
     for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
     assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
-    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
-    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    // the cheek blush is a 78 % blend (V21, was 60 %) of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.22 + parseInt(b.slice(i, i + 2), 16) * 0.78).toString(16).padStart(2, '0')).join('');
     const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
     const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
     for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
@@ -1523,8 +1531,8 @@ test('polar: shiny = curated palettes (each palette really hits the model; eyes 
     assert(hit.length >= 2, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
     for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
     assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
-    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
-    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    // the cheek blush is a 78 % blend (V21, was 60 %) of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.22 + parseInt(b.slice(i, i + 2), 16) * 0.78).toString(16).padStart(2, '0')).join('');
     const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
     const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
     for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);
@@ -1677,8 +1685,8 @@ test('mystic: shiny = curated palettes (each palette really hits the model; eyes
     assert(hit.length >= 2, `${id}: only ${hit.length} palette colours are used by the model (${hit.join(',')})`);
     for (const k of hit) assert(cs.has(hexKey(pal[k])) && !cs.has(hexKey(k)), `${id}: ${k} -> ${pal[k]} not applied`);
     assertEq([...vertexColors(shiny, true)].sort().join('|'), [...vertexColors(normal, true)].sort().join('|'), id + ' eyes keep their colour');
-    // the cheek blush is a 60 % blend of the (shifted) head colour with pink: the one colour allowed to move without being listed
-    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.4 + parseInt(b.slice(i, i + 2), 16) * 0.6).toString(16).padStart(2, '0')).join('');
+    // the cheek blush is a 78 % blend (V21, was 60 %) of the (shifted) head colour with pink: the one colour allowed to move without being listed
+    const mix = (a, b) => '#' + [1, 3, 5].map(i => Math.round(parseInt(a.slice(i, i + 2), 16) * 0.22 + parseInt(b.slice(i, i + 2), 16) * 0.78).toString(16).padStart(2, '0')).join('');
     const blush = hexKey(mix(spec.head.color || spec.body.color, spec.blush || '#ff8fa3'));
     const unlisted = [...cn].filter(c => !Object.keys(pal).some(k => hexKey(k) === c) && c !== blush);
     for (const c of unlisted) assert(cs.has(c), `${id}: unlisted colour ${c} changed when shiny`);

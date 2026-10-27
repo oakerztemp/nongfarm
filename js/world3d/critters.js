@@ -24,6 +24,8 @@ export const LEGENDARY_SCALE = 1.25;
 const EYE = '#2a2024';
 const NOSE = '#3a2a2e';
 const BLUSH = '#ff8fa3';
+const MOUTH_IN = '#5a2a34';   // V21 inside of an open mouth
+const TONGUE = '#ff8fa0';
 
 export function hasModel(speciesId) {
   return Object.prototype.hasOwnProperty.call(MODEL_SPECS, speciesId);
@@ -54,6 +56,8 @@ const GEO = {
   ring:  T => new T.TorusGeometry(1, 0.16, 5, 12),
   curl:  T => new T.TorusGeometry(1, 0.26, 6, 12, Math.PI * 1.75),
   hood:  T => new T.SphereGeometry(1, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.58),
+  arc:   T => new T.RingGeometry(0.74, 1.26, 6, 1, 0, Math.PI),       // V21 mouth stroke: flat upper half ring, 12 tris (rotate for a smile)
+  half:  T => new T.CircleGeometry(1, 8, Math.PI, Math.PI),           // V21 open mouth: lower half disc
 };
 // Water bubble (V9 §6): unit sphere with per-vertex alpha (faint body, a bright glint upper-left, a soft glow underneath).
 GEO.bubble = T => {
@@ -100,14 +104,71 @@ function critterMat(T, grad) {
   const g = grad || gradient(T);
   const key = 'critter|' + g.uuid;
   let m = k.mat.get(key);
-  if (!m) { m = new T.MeshToonMaterial({ vertexColors: true, gradientMap: g }); k.mat.set(key, m); }
+  if (!m) {
+    m = new T.MeshToonMaterial({ vertexColors: true, gradientMap: g });
+    // V21 (CONTRACT_V21 §1): a soft rim on the upper edges tinted by the sky light (follows the V20 time of day) and a thin dark
+    // ink edge along the silhouette - both from the view angle, so no extra outline mesh / draw call
+    m.onBeforeCompile = shader => {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <opaque_fragment>', `{
+        float facing = clamp( dot( normal, normalize( vViewPosition ) ), 0.0, 1.0 );
+        float fr = 1.0 - facing;
+        vec3 rimCol = vec3( 1.0 );
+        #if NUM_HEMI_LIGHTS > 0
+          rimCol = hemisphereLights[ 0 ].skyColor / max( 1.0, max( hemisphereLights[ 0 ].skyColor.r, max( hemisphereLights[ 0 ].skyColor.g, hemisphereLights[ 0 ].skyColor.b ) ) );
+        #endif
+        float up = clamp( normal.y * 0.6 + 0.55, 0.0, 1.0 );
+        outgoingLight += rimCol * mix( diffuseColor.rgb, vec3( 1.0 ), 0.4 ) * smoothstep( 0.5, 0.9, fr ) * 0.45 * up;
+        outgoingLight *= 1.0 - 0.55 * smoothstep( 0.8, 0.96, fr );
+      }
+      #include <opaque_fragment>`);
+    };
+    m.customProgramCacheKey = () => 'nf-critter-v21';
+    k.mat.set(key, m);
+  }
   return m;
 }
-/** Flat material for the merged eyes mesh (vertex coloured: dark dome + white highlights). */
+
+/**
+ * V21 eyes + mouth material, ONE PER MODEL (each pet shows its own mouth / blink). Same shader for all (one GPU program).
+ * The merged eyes mesh carries a `mouth` attribute: 1..4 = the mouth shapes (MOUTHS; only uMouth's is drawn, the others collapse
+ * to a point), 5 = the happy "^" eyes and 9 = the normal eyes (uEyeMode 1 swaps them), 0 = anything else. Mouth vertices undo the mesh's scale.y (blink / squint) so the mouth never moves.
+ * Dark eye pixels below the eye line blend into uIris (cartoon eye gradient).
+ */
+export const MOUTHS = { smile: 1, open: 2, frown: 3, o: 4 };
+const EYES_HAPPY = 5;   // the "^" happy eyes (shown with uEyeMode 1)
+const EYES_OPEN = 9;    // the normal eyes (hidden with uEyeMode 1)
+function makeEyeMat(T, eyeR = 0.1, iris = '#a2643f') {
+  const u = { uMouth: { value: MOUTHS.smile }, uEyeMode: { value: 0 }, uEyeS: { value: 1 }, uEyeR: { value: Math.max(1e-3, eyeR) }, uIris: { value: new T.Color(iris) } };
+  const m = new T.MeshBasicMaterial({ vertexColors: true });
+  m.userData.u = u;
+  m.onBeforeCompile = shader => {
+    Object.assign(shader.uniforms, u);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float mouth;\nuniform float uMouth;\nuniform float uEyeMode;\nuniform float uEyeS;\nvarying float vEyeY;\nvarying float vMouth;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vEyeY = transformed.y;
+        vMouth = mouth;
+        float vis = 1.0;
+        if ( mouth > 0.5 && mouth < 4.5 ) { transformed.y /= max( uEyeS, 0.05 ); vis = abs( mouth - uMouth ) < 0.5 ? 1.0 : 0.0; }
+        else if ( mouth > 4.5 && mouth < 5.5 ) vis = uEyeMode > 0.5 ? 1.0 : 0.0;
+        else if ( mouth > 8.5 ) vis = uEyeMode > 0.5 ? 0.0 : 1.0;
+        if ( vis < 0.5 ) transformed = vec3( 0.0 );`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uEyeR;\nuniform vec3 uIris;\nvarying float vEyeY;\nvarying float vMouth;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        if ( ( vMouth < 0.5 || vMouth > 8.5 ) && dot( diffuseColor.rgb, vec3( 0.299, 0.587, 0.114 ) ) < 0.08 ) {
+          float g = clamp( -vEyeY / uEyeR, 0.0, 1.0 );
+          diffuseColor.rgb = mix( diffuseColor.rgb, uIris, g * g * 0.75 );
+        }`);
+  };
+  m.customProgramCacheKey = () => 'nf-eyes-v21';
+  return m;
+}
+/** Template-time eyes material (replaced per model in buildPetModel). */
 function eyeMat(T) {
   const k = kit(T);
   let m = k.mat.get('eyes');
-  if (!m) { m = new T.MeshBasicMaterial({ vertexColors: true }); k.mat.set('eyes', m); }
+  if (!m) { m = makeEyeMat(T); k.mat.set('eyes', m); }
   return m;
 }
 
@@ -276,6 +337,12 @@ export function buildPetModel(T, pet, species, opts = {}) {
   const root = tpl.root.clone(true); // Mesh.clone shares geometry + material: no new buffers
   const find = n => root.getObjectByName(n) || null;
   const eyes = find('eyes');
+  if (eyes) {   // V21: own eyes material (own mouth + blink uniforms), same GPU program as every other pet
+    const em = makeEyeMat(T, eyes.userData.eyeR, eyes.userData.iris || undefined);
+    em.userData.family = eyeMat(T);   // tests / stats: every pet's eyes material is one family
+    eyes.material = em;
+    eyes.onBeforeRender = () => { em.userData.u.uEyeS.value = eyes.scale.y; };
+  }
   const earL = find('earL'), earR = find('earR');
   const m = {
     root, body: find('body'), head: find('head'), kind: 'model', shiny, shinyStyle: shiny ? 'palette' : null, anchor: find('anchor'),
@@ -288,6 +355,15 @@ export function buildPetModel(T, pet, species, opts = {}) {
     },
     crownY: tpl.crownY, crownLift: tpl.crownLift, baseHeight: tpl.baseHeight, baseRadius: tpl.baseRadius, height: tpl.baseHeight, radius: tpl.baseRadius,
     stage: 2, stageScale: 1,
+    /** V21: true when the model has a mouth (beaks do not). */
+    hasMouth: !!(eyes && eyes.userData.mouth),
+    /** V21: MOUTHS.smile / open / frown / o (or the name). */
+    setFace(k) { if (eyes) eyes.material.userData.u.uMouth.value = typeof k === 'string' ? MOUTHS[k] || MOUTHS.smile : k; },
+    face: () => (eyes ? eyes.material.userData.u.uMouth.value : 0),
+    /** V21: 'happy' shows the "^" eyes, anything else the normal ones. */
+    setEyes(mode) { if (eyes) eyes.material.userData.u.uEyeMode.value = mode === 'happy' ? 1 : 0; },
+    /** Frees this model's own eyes material (geometry / the rest is shared and cached). */
+    dispose() { if (eyes) eyes.material.dispose(); },
   };
   return applyStage(T, m, stage);
 }
@@ -413,10 +489,13 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     eg.userData.anim = true; // merged into the single 'eyes' mesh below
     eg.position.copy(p);
     face(eg, n);
-    if (E.ring) put(eg, 'disc', bm(E.ring), er * 1.5, er * (E.tall ?? 1.2) * 1.45, 1, 0, 0, er * 0.4);   // white rim so dark eyes stay readable on a dark mask / patch
+    const ring = E.ring ? put(eg, 'disc', bm(E.ring), er * 1.5, er * (E.tall ?? 1.2) * 1.45, 1, 0, 0, er * 0.4) : null;   // white rim so dark eyes stay readable on a dark mask / patch
     put(eg, 'sphP', fm(EYE), er, er * (E.tall ?? 1.2), er * 0.6);
-    put(eg, 'discS', bm('#ffffff'), er * 0.34, er * 0.34, 1, er * 0.32, er * 0.5, er * 0.62);
+    put(eg, 'discS', bm('#ffffff'), er * 0.4, er * 0.4, 1, er * 0.3, er * 0.48, er * 0.62);   // V21: a bigger sparkle
     put(eg, 'discS', bm('#ffffff'), er * 0.17, er * 0.17, 1, -er * 0.3, -er * 0.35, er * 0.6);
+    for (const c of eg.children) if (c !== ring) c.userData.mouth = EYES_OPEN;   // V21: the open eye, hidden while the happy ^ shows (the light ring stays under it)
+    const hap = put(eg, 'arc', fm(EYE), er * 0.85, er * 0.85, 1, 0, -er * 0.25, er * 0.62);   // V21 happy eye "^"
+    hap.userData.mouth = EYES_HAPPY;
     headG.add(eg);
     eyeGroups.push(eg);
   }
@@ -425,7 +504,7 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     const bc = spec.blush || BLUSH;
     for (const side of [-1, 1]) {
       const { p, n } = hs(side * (E.gap + 0.62), E.el - 0.3, -hr * 0.015);
-      const b = put(headG, 'disc', { hex: mixHex(pal(headColor), bc, 0.6) }, hr * 0.17, hr * 0.11, 1, p.x, p.y, p.z);
+      const b = put(headG, 'disc', { hex: mixHex(pal(headColor), bc, 0.78) }, hr * 0.19, hr * 0.12, 1, p.x, p.y, p.z);   // V21: rosier cheeks
       face(b, n);
     }
   }
@@ -440,6 +519,7 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
       outer.position.copy(p);
       const pivot = new T.Group();
       outer.add(pivot);
+      pivot.userData.twitch = ['round', 'long', 'cat', 'floppy'].includes(Ea.type);   // V21 ear twitch: real ears only
       const mat = tm(Ea.color || headColor);
       const inn = Ea.inner ? tm(Ea.inner) : null;
       switch (Ea.type) {
@@ -513,7 +593,8 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     }
   }
 
-  // snout
+  // snout (V21: each snout also says where the mouth goes; beaks have none)
+  let mouthAt = null;
   if (spec.snout && spec.snout.type !== 'none') {
     const Sn = { el: -0.25, ...spec.snout };
     const base = hs(0, Sn.el);
@@ -530,11 +611,13 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
         if (Sn.nostrils) {
           for (const sx of [-1, 1]) put(headG, 'discS', fm(NOSE), w * 0.13, w * 0.19, 1, sx * w * 0.42, bp.y + h * 0.1, cz + d * 0.93);
         }
+        mouthAt = { p: V3(0, bp.y - h * 0.32, cz + d * 0.93), n: V3(0, -0.35, 1).normalize(), s: Math.min(w, hr * 0.5) * 0.24 };
         break;
       }
       case 'nose': {
         const s = hr * (Sn.s ?? 0.1);
         put(headG, 'sphL', fm(Sn.color || NOSE), s * 1.25, s * 0.9, s * 0.8, 0, bp.y, bp.z - s * 0.2);
+        mouthAt = { ...hs(0, Sn.el - 0.17, hr * 0.004), s: hr * 0.1 };
         break;
       }
       case 'pig': {
@@ -542,6 +625,7 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
         const m = put(headG, 'cyl', tm(Sn.color), w, len, hh, 0, bp.y, bp.z - len * 0.5);
         m.rotation.x = Math.PI / 2;
         for (const sx of [-1, 1]) put(headG, 'discS', fm('#8a4a5a'), w * 0.2, hh * 0.3, 1, sx * w * 0.42, bp.y, bp.z + len * 0.5 + 0.004);
+        mouthAt = { ...hs(0, Sn.el - 0.36, hr * 0.004), s: hr * 0.09 };
         break;
       }
       case 'beak': {
@@ -559,11 +643,13 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
         const w = hr * (Sn.w ?? 0.3), h = hr * (Sn.h ?? 0.26), d = hr * (Sn.d ?? 0.6);
         put(headG, 'sphM', tm(Sn.color), w, h, d, 0, bp.y, bp.z - d * 0.35);
         put(headG, 'sphL', fm(Sn.nose || NOSE), hr * 0.1, hr * 0.085, hr * 0.085, 0, bp.y + h * 0.1, bp.z + d * 0.62);
+        mouthAt = { p: V3(0, bp.y - h * 0.5, bp.z + d * 0.32), n: V3(0, -0.45, 1).normalize(), s: hr * 0.08 };
         break;
       }
       default: break;
     }
   }
+  if (!spec.snout || spec.snout.type === 'none') mouthAt = { ...hs(0, E.el - 0.36, hr * 0.004), s: hr * 0.1 };
 
   // tail
   if (spec.tail && spec.tail.type !== 'none') {
@@ -957,6 +1043,8 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     },
     /** Sleepy smile: two tiny dark slivers forming a U below the nose. */
     smile(o) {
+      // V21: the expression mouth takes this spot (its smile shape replaces the two slivers; no double mouth)
+      if (spec.mouth !== false) { mouthAt = { ...hs(0, (o.el ?? -0.42) + 0.03, hr * 0.004), s: hr * (o.w ?? 0.085) * 1.7 }; return; }
       const w = hr * (o.w ?? 0.085);
       for (const side of [-1, 1]) {
         const { p, n } = hs(side * (o.az ?? 0.13), o.el ?? -0.42, hr * 0.004);
@@ -1183,6 +1271,23 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
     if (fn) fn(ex);
   }
 
+  // V21 mouth: 4 shapes in one spot, merged into the eyes mesh (the eyes shader shows one: MOUTHS); no extra draw call
+  const mouthGroups = [];
+  if (mouthAt && spec.mouth !== false) {
+    const s = mouthAt.s * (spec.mouthS ?? 1);
+    const mk = () => { const g = new T.Group(); g.userData.anim = true; g.position.copy(mouthAt.p); face(g, mouthAt.n); headG.add(g); mouthGroups.push(g); return g; };
+    const tag = (mesh, k) => { mesh.userData.mouth = k; return mesh; };
+    let g = mk();                                   // 1 smile: a little "ω"
+    for (const sx of [-1, 1]) tag(put(g, 'arc', fm(EYE), s * 0.5, s * 0.5, 1, sx * s * 0.48, s * 0.28, s * 0.12), MOUTHS.smile).rotation.z = Math.PI;
+    g = mk();                                       // 2 open, happy: a dark half moon with a tongue
+    tag(put(g, 'half', fm(MOUTH_IN), s * 0.95, s * 1.05, 1, 0, s * 0.3, s * 0.12), MOUTHS.open);
+    tag(put(g, 'discS', fm(TONGUE), s * 0.5, s * 0.32, 1, 0, -s * 0.38, s * 0.15), MOUTHS.open);
+    g = mk();                                       // 3 frown
+    tag(put(g, 'arc', fm(EYE), s * 0.72, s * 0.55, 1, 0, -s * 0.28, s * 0.12), MOUTHS.frown);
+    g = mk();                                       // 4 a small "o" (asleep / surprised)
+    tag(put(g, 'discS', fm(MOUTH_IN), s * 0.32, s * 0.4, 1, 0, -s * 0.05, s * 0.12), MOUTHS.o);
+  }
+
   // ---- finish: merge static parts, bubble, anchors, bounds ----
   root.updateMatrixWorld(true);
   const S = spec.size ?? 1;
@@ -1191,7 +1296,7 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
   const mat = critterMat(T, grad);
   const mergeInto = (group, meshes, material, name, offsetY = 0) => {
     if (!meshes.length) return null;
-    const g = bakeGeometry(T, group, meshes);
+    const g = bakeGeometry(T, group, meshes, name === 'eyes');
     if (offsetY) g.translate(0, -offsetY, 0);
     for (const m of meshes) m.parent.remove(m);
     const mesh = new T.Mesh(g, material);
@@ -1213,9 +1318,11 @@ function assemble(T, spec, shiny, seed, grad, coat = 'base') {
   };
   // eyes: one mesh whose origin sits on the eye line, so scale.y = blink squashes both eyes
   const eyeMeshes = eyeGroups.flatMap(g => g.children.filter(c => c.isMesh));
-  const eyeY = eyeGroups.reduce((a, g) => a + g.position.y, 0) / eyeGroups.length;
-  mergeInto(headG, eyeMeshes, eyeMat(T), 'eyes', eyeY);
-  for (const g of eyeGroups) g.parent.remove(g);
+  const mouthMeshes = mouthGroups.flatMap(g => g.children.filter(c => c.isMesh));
+  const eyeY = eyeGroups.reduce((a, g) => a + g.position.y, 0) / eyeGroups.length;   // the mouth does not move the blink pivot
+  const eyesMesh = mergeInto(headG, eyeMeshes.concat(mouthMeshes), eyeMat(T), 'eyes', eyeY);
+  if (eyesMesh) Object.assign(eyesMesh.userData, { eyeR: er * (E.tall ?? 1.2), iris: E.iris || null, mouth: mouthMeshes.length > 0 });
+  for (const g of eyeGroups.concat(mouthGroups)) g.parent.remove(g);
   // ears, tail, wings keep their pivots; head and body get everything else
   const animGroups = [];
   root.traverse(o => { if (o.userData.anim && o !== headG && !eyeGroups.includes(o)) animGroups.push(o); });
@@ -1296,12 +1403,13 @@ function mixHex(a, b, t) {
 }
 
 /** Merges meshes (positioned inside `group`) into one BufferGeometry in group space with per-vertex colours. */
-function bakeGeometry(T, group, meshes) {
+function bakeGeometry(T, group, meshes, withMouth = false) {
   const inv = group.matrixWorld.clone().invert();
   let vc = 0, ic = 0;
   for (const m of meshes) { vc += m.geometry.attributes.position.count; ic += m.geometry.index.count; }
   const pos = new Float32Array(vc * 3), nor = new Float32Array(vc * 3), col = new Float32Array(vc * 3);
   const idx = vc > 65535 ? new Uint32Array(ic) : new Uint16Array(ic);
+  const mth = withMouth ? new Float32Array(vc) : null;   // V21: which mouth shape a vertex belongs to (0 = not the mouth)
   const mat4 = new T.Matrix4(), nm = new T.Matrix3(), v = new T.Vector3(), c = new T.Color();
   let vo = 0, io = 0;
   for (const m of meshes) {
@@ -1317,6 +1425,7 @@ function bakeGeometry(T, group, meshes) {
       col.set([c.r, c.g, c.b], (vo + i) * 3);
     }
     for (let i = 0; i < g.index.count; i++) idx[io + i] = g.index.getX(i) + vo;
+    if (mth && m.userData.mouth) mth.fill(m.userData.mouth, vo, vo + gp.count);
     vo += gp.count;
     io += g.index.count;
   }
@@ -1324,6 +1433,7 @@ function bakeGeometry(T, group, meshes) {
   out.setAttribute('position', new T.BufferAttribute(pos, 3));
   out.setAttribute('normal', new T.BufferAttribute(nor, 3));
   out.setAttribute('color', new T.BufferAttribute(col, 3));
+  if (mth) out.setAttribute('mouth', new T.BufferAttribute(mth, 1));
   out.setIndex(new T.BufferAttribute(idx, 1));
   out.computeBoundingSphere();
   out.computeBoundingBox();

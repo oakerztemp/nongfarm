@@ -1152,6 +1152,8 @@ test('v9 world: rain = one streak mesh + one puddle mesh (<= 2 draw calls), none
   if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
   await withWorld({ quality: 'auto', yardTier: 'XL' }, async (world, host) => {
     assertEq(world.getWeather(), { kind: 'sunny', intensity: 1 });
+    world.setHour(12);   // V20: a fixed time of day, so only the weather changes the sky here
+    const drySky = host.style.getPropertyValue('--world-sky-top');
     await frames(world, 3);
     world.renderer.render(world.scene, world.camera);
     const dryCalls = world.renderer.info.render.calls;
@@ -1166,13 +1168,13 @@ test('v9 world: rain = one streak mesh + one puddle mesh (<= 2 draw calls), none
     world.renderer.render(world.scene, world.camera);
     assert(world.renderer.info.render.calls - dryCalls <= 2, `rain cost ${world.renderer.info.render.calls - dryCalls} draw calls`);
     assert(world.lights.hemi.intensity < dryHemi * 0.95, 'lights dimmer');
-    assert(host.style.getPropertyValue('--world-sky-top') !== '', 'sky tinted through the host custom property');
+    assert(host.style.getPropertyValue('--world-sky-top') !== drySky, 'sky tinted grey through the host custom property');
     // puddles never overlap the barn or props
     for (const p of world.puddles) assert(world.obstacles.every(o => Math.hypot(o.x - p.x, o.z - p.z) > o.r + p.r), 'puddle clear of obstacles');
     world.setWeather('sunny');
     await wait(6000);
     await frames(world, 3);
-    assertEq([world.weatherInfo().meshes, host.style.getPropertyValue('--world-sky-top')], [0, ''], 'dry again, sky restored');
+    assertEq([world.weatherInfo().meshes, host.style.getPropertyValue('--world-sky-top')], [0, drySky], 'dry again, sky restored');
     assert(Math.abs(world.lights.hemi.intensity - dryHemi) < 0.05, 'lights back to normal');
     world.setYardTier('S', { animate: false });
     const small = world.puddles;

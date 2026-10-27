@@ -33,6 +33,7 @@ import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, b
   locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot, tapReaction,
   isNightAt, HOVER_HEIGHT, antLineSpot, THREAD_ANCHOR_Y } from '../petBehaviour.js';
 import { createWorld, mergeStaticParts, WILD } from '../world3d/engine.js';
+import { getSkyPref, onPrefChange } from '../prefs.js';
 import { activeFestival, LOY_ID } from '../festival.js';
 import * as fx from '../world3d/fx.js';
 import { buildPetModel } from '../world3d/critters.js';
@@ -99,7 +100,7 @@ export function mountBarn3d(host, ctx) {
   let world;
   try {
     world = createWorld(stage, { onTap: id => { if (tapFn) tapFn(id); }, onTapGround: () => { if (groundFn) groundFn(); } },
-      { yardTier: yardTierOf(getState().barnCapacity) });
+      { yardTier: yardTierOf(getState().barnCapacity), timeMode: getSkyPref() });
   } catch (err) {
     host.innerHTML = '';
     throw err;
@@ -179,13 +180,20 @@ export function mountBarn3d(host, ctx) {
 
   // ── yard tiers: S / M / L / XL props, walk radius, "ลานกว้างขึ้น!" moment (CONTRACT_V6 §4) ──────────
   let yardTier = yardTierOf(getState().barnCapacity);
-  let lanternMat = null;
-  const hourIsNight = () => { const h = new Date().getHours(); return h >= 18 || h < 6; };
+  let lanternMat = null, lanternHaloMat = null;
+  const hourIsNight = () => world.isNight();   // V20: the engine's time of day (clock / device theme / debug hour)
+  const unPref = onPrefChange((name, value) => { if (name === 'sky') { world.setTimeMode(value); syncLanterns(); } });
+  function syncLanterns() {
+    const n = hourIsNight();
+    if (lanternMat) lanternMat.color.set(n ? 0xffd966 : 0xfff1c9);
+    if (lanternHaloMat) lanternHaloMat.visible = n;   // no halo draw call by day
+  }
 
   /** Builds the static scenery of the current tier as a few merged / instanced props (<= +15 draw calls at XL). */
   function buildYardProps(tier, animate = false) {
     try { world.clearProps('yard-'); } catch { /* none yet */ }
     if (lanternMat) { lanternMat.dispose(); lanternMat = null; }
+    if (lanternHaloMat) { lanternHaloMat.dispose(); lanternHaloMat = null; }
     const geos = [];
     const g = o => { geos.push(o); return o; };
     const cyl = (rt, rb, h, seg = 14) => g(new THREE.CylinderGeometry(rt, rb, h, seg));
@@ -268,6 +276,11 @@ export function mountBarn3d(host, ctx) {
       lanternMat = new THREE.MeshBasicMaterial({ color: hourIsNight() ? 0xffd966 : 0xfff1c9 });
       world.addInstancedProp('yard-lantern-glow', new THREE.SphereGeometry(0.14, 8, 6),
         lanterns.map(l => ({ position: [l.x, 1.18, l.z] })), { material: lanternMat, ownGeometry: true });
+      // V20: a soft glow around each lantern at night
+      lanternHaloMat = new THREE.MeshBasicMaterial({ color: 0xffc766, transparent: true, opacity: 0.32, visible: hourIsNight(), depthWrite: false,
+        blending: THREE.AdditiveBlending, fog: false });
+      world.addInstancedProp('yard-lantern-halo', new THREE.SphereGeometry(0.42, 12, 8),
+        lanterns.map(l => ({ position: [l.x, 1.18, l.z] })), { material: lanternHaloMat, ownGeometry: true });
     }
     // sources were cloned by mergeStaticParts: free them now
     for (const geo of geos) geo.dispose();
@@ -1438,7 +1451,7 @@ export function mountBarn3d(host, ctx) {
     }
     const wantTier = yardTierOf(state.barnCapacity);
     if (wantTier !== yardTier) applyYardTier(wantTier, synced);
-    if (lanternMat) lanternMat.color.set(hourIsNight() ? 0xffd966 : 0xfff1c9);
+    syncLanterns();
     syncFriends(state);
     syncBirthday(state);
     syncPoops(state);
@@ -1761,7 +1774,7 @@ export function mountBarn3d(host, ctx) {
     const cx = A.x + p.dir.x * dist, cz = A.z + p.dir.z * dist;
     world.setCloseUp({
       pos: { x: cx, y: A.y + h * 0.8 + 0.35, z: cz },
-      look: { x: A.x, y: A.y + h * 0.5, z: A.z },
+      look: { x: A.x, y: A.y + h * 0.72 + 0.15, z: A.z },   // V20: aim above the middle: room for the 💭 wish under the top bar
     });
     // other pets standing between the camera and the played pet step out of the shot (hidden, restored when play ends)
     for (const B of actors.values()) {
@@ -4220,7 +4233,7 @@ export function mountBarn3d(host, ctx) {
   const unWeather = bindWeather(world, { onChange: onWeather });   // real-hour weather (js/weather.js); ?weather=rain forces it
   if (/[?&]debug=1/.test(location.search)) host.__b3debug = { world, actors: () => actors, cribs: () => cribs, decor: () => decorInst, tap: id => onTap(id), stroke: (id, phase, region, point, ms) => onStroke({ id, phase, region, point: point || { x: 0, y: 0.5, z: 0 }, durationMs: ms }), greet: d => { greetDigest = d; greetWait = 0; }, kick: id => { const i = decorInst.get(id); if (i) kickBall(null, i); },
     weather: k => { wxDebug = true; world.setWeather(k, 1); onWeather({ kind: k, intensity: 1 }); }, photo: () => enterPhoto(), info: () => ({ party, rainSt, wxKind, photo, stats: world.getStats() }), applyWear: id => applyWear(actors.get(id)), breedScene: (a, b) => breedScene(a, b), breedInfo: () => breedSc && { t: breedSc.t, nt: breedSc.nt, arrived: breedSc.arrived, egg: !!breedSc.egg },
-    krathong: id => krathongScene(id), night: on => { nightForce = on === null || on === undefined ? null : !!on; },
+    krathong: id => krathongScene(id), night: on => { nightForce = on === null || on === undefined ? null : !!on; }, hour: h => { world.setHour(h); syncLanterns(); refreshUi(); },
     fest: () => ({ id: festDeco && festDeco.fest, calls: festDeco ? festDeco.calls : 0, sky: !!(festDeco && festDeco.sky && festDeco.sky.body.visible), krathongs: krList.length, kr: krList.map(k => [k.phase, +k.grp.position.x.toFixed(2), +k.grp.position.y.toFixed(2), +k.grp.position.z.toFixed(2), +k.mat.opacity.toFixed(2)]), stats: world.getStats() }) };
 
   return {
@@ -4251,6 +4264,7 @@ export function mountBarn3d(host, ctx) {
       clearFestDeco();
       disposed = true;
       unsub();
+      unPref();
       unFrame();
       for (const id of timers) clearTimeout(id);
       timers.clear();
@@ -4267,7 +4281,7 @@ export function mountBarn3d(host, ctx) {
       for (const tg of tags) tg.el.remove();
       try { world.dispose(); } catch (e) { console.error(e); }
       for (const o of owned) { try { o.dispose(); } catch { /* already disposed */ } }
-      if (lanternMat) lanternMat.dispose();
+      if (lanternMat) lanternMat.dispose(); if (lanternHaloMat) lanternHaloMat.dispose();
       unWeather();
       clearRainbow();
       if (photoRO) photoRO.disconnect();

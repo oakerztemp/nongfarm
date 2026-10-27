@@ -72,7 +72,10 @@
 // minimum 44 px radius, so small pets are easy to hit (set `userData.noPick = true` on a mesh to exclude it).
 //
 // Rendering: toon (MeshToonMaterial) look - use world.toonGradient as `gradientMap` for visual consistency. Lights:
-// hemisphere + directional, NO shadow maps; actors get a blob shadow (pass { shadow:false } to skip). 30 fps cap while
+// hemisphere + directional; actors get a blob shadow (pass { shadow:false } to skip). V20 (CONTRACT_V20): the lights, the CSS sky
+// and a distance fog follow the local clock (js/world3d/daylight.js; world.setTimeMode('clock'|'theme'), world.setHour(h|null),
+// world.daylight(), world.isNight()); clouds / stars / fireflies / cloud shadows live in js/world3d/skyfx.js; on the 'high' tier
+// the sun casts ONE soft shadow map over the yard (opaque actor meshes and props cast, the ground receives). 30 fps cap while
 // nothing is interacting; call world.boost(ms) for full rate during a special animation (e.g. hatch ceremony).
 // world.worldToScreen(vec3) -> { x, y, visible } in CSS px relative to the host, for DOM overlays.
 // world.pick(clientX, clientY) -> { id, point } uses the same picking as taps. world.getStats() -> debug numbers.
@@ -83,6 +86,8 @@ import * as THREE from '../../vendor/three.module.min.js';
 import { getQualityPref } from '../prefs.js';
 import { prefersReducedMotion as reducedMotion } from './support.js';
 import { createRain, weatherTargets, weatherLight } from './rain.js';
+import { skyAt, themeSky, hourOf, isNightHour } from './daylight.js';
+import { createSkyFx } from './skyfx.js';
 
 export { weatherTargets, weatherLight, puddleLayout } from './rain.js';
 
@@ -120,6 +125,8 @@ export const DOUBLE_TAP_PX = 36;
 export const WILD = { meadow: 40, rMin: 6.0, rMax: 24, seed: 20261024, streamX: 12.5, streamAmp: 1.6, streamFreq: 0.22, streamHalf: 20 };
 export const WILD_CLEARANCE_MARGIN = 0.3;
 const MAX_DT = 0.1;
+const FOG_NEAR = 24;      // V20 distance haze: the yard (~15 from the camera) stays clear, the far meadow / trees fade into the sky
+const FOG_FAR = 64;
 const MAX_SHADOWS = 128; // actors beyond this simply have no blob shadow
 const YAW_PER_PX = 0.008;
 const PITCH_PER_PX = 0.005;
@@ -852,42 +859,58 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     const hemi = new THREE.HemisphereLight(0xfff6e6, 0x86b86a, 1.9);
     const sun = new THREE.DirectionalLight(0xfff0d0, 1.9);
     sun.position.set(-4, 9, 6);
-    scene.add(hemi, sun, blobMesh);
+    scene.add(hemi, sun, sun.target, blobMesh);
     const darkMq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
     let lightScale = 1;            // fx.dimScene tweens this (1 = normal, lower = dimmer scene)
     const shakeOffset = { x: 0, y: 0, z: 0 }; // fx.shake jitters the camera by this much (world units)
     // weather (CONTRACT_V9 §4): cloud / rain ease towards the targets set by world.setWeather; lights and the CSS sky follow
     const weather = { kind: 'sunny', intensity: 1, cloud: 0, rain: 0, tCloud: 0, tRain: 0, skyKey: '' };
-    const hemiBase = hemi.color.clone(), groundBase = hemi.groundColor.clone(), sunBase = sun.color.clone();
+    // V20 time of day: colours from daylight.js, refreshed about once a second (they change over minutes)
+    let timeMode = options.timeMode === 'theme' ? 'theme' : 'clock';
+    let hourOverride = null;       // debug / previews: a fixed hour
+    let look = skyAt(12);
+    let lookAge = 0;
+    let skyFx = null;              // created with the yard below
     const stormGrey = new THREE.Color(0xc4ccd6);
     const skyColor = new THREE.Color();
     const skyGrey = new THREE.Color();
+    scene.fog = new THREE.Fog(0xcfe9e4, FOG_NEAR, FOG_FAR);
+    const nightGrey = new THREE.Color(0x3b4653);
+    const setGrey = () => skyGrey.set(0xb9c3cd).lerp(nightGrey, look.night);   // storm grey darkens smoothly into the night
     const applyMood = () => {
-      const dark = !!(darkMq && darkMq.matches);
       const wl = weatherLight(weather.cloud, weather.rain);
-      hemi.intensity = (dark ? 1.35 : 1.9) * lightScale * wl.hemi;
-      sun.intensity = (dark ? 1.3 : 1.9) * lightScale * wl.sun;
-      hemi.color.copy(hemiBase).lerp(stormGrey, wl.grey);
-      hemi.groundColor.copy(groundBase).lerp(stormGrey, wl.grey * 0.4);
-      sun.color.copy(sunBase).lerp(stormGrey, wl.grey);
+      hemi.intensity = look.hemi.intensity * lightScale * wl.hemi;
+      sun.intensity = look.sun.intensity * lightScale * wl.sun;
+      hemi.color.set(look.hemi.sky).lerp(stormGrey, wl.grey);
+      hemi.groundColor.set(look.hemi.ground).lerp(stormGrey, wl.grey * 0.4);
+      sun.color.set(look.sun.color).lerp(stormGrey, wl.grey);
+      const d = look.sun.dir;
+      sun.position.set(d.x * 20, d.y * 20, d.z * 20);
+      setGrey();
+      scene.fog.color.set(look.fog).lerp(skyGrey, 0.5 * weather.cloud);
     };
     // The CSS sky gradient lives behind the (transparent) canvas: tint it through inline custom properties on the host.
     const applySky = () => {
-      const key = weather.cloud.toFixed(2);
+      const key = `${look.skyTop}${look.skyBottom}${weather.cloud.toFixed(2)}`;
       if (key === weather.skyKey) return;
       weather.skyKey = key;
-      if (weather.cloud < 0.01) { hostEl.style.removeProperty('--world-sky-top'); hostEl.style.removeProperty('--world-sky-bottom'); return; }
-      try {
-        const cs = getComputedStyle(document.documentElement);
-        skyGrey.set(darkMq && darkMq.matches ? 0x3b4653 : 0xb9c3cd);
-        for (const [prop, fallback] of [['--world-sky-top', '#bfe6ff'], ['--world-sky-bottom', '#e9f7d8']]) {
-          skyColor.set(cs.getPropertyValue(prop).trim() || fallback).lerp(skyGrey, 0.62 * weather.cloud);
-          hostEl.style.setProperty(prop, `#${skyColor.getHexString()}`);
-        }
-      } catch { /* style access not available */ }
+      setGrey();
+      for (const [prop, c] of [['--world-sky-top', look.skyTop], ['--world-sky-bottom', look.skyBottom]]) {
+        hostEl.style.setProperty(prop, `#${skyColor.set(c).lerp(skyGrey, 0.62 * weather.cloud).getHexString()}`);
+      }
     };
-    const onScheme = () => { weather.skyKey = ''; applyMood(); applySky(); };
-    applyMood();
+    let syncShadowFlags = () => {};   // set once the yard exists (high tier only does anything)
+    function refreshLook() {
+      look = hourOverride != null ? skyAt(hourOverride)
+        : timeMode === 'theme' ? themeSky(!!(darkMq && darkMq.matches)) : skyAt(hourOf(new Date()));
+      lookAge = 0;
+      applyMood();
+      applySky();
+      if (skyFx) skyFx.setLook(look, weather.cloud);
+      syncShadowFlags();
+    }
+    const onScheme = () => { weather.skyKey = ''; refreshLook(); };
+    refreshLook();
     if (darkMq && darkMq.addEventListener) darkMq.addEventListener('change', onScheme);
     undo.push(() => {
       if (darkMq && darkMq.removeEventListener) darkMq.removeEventListener('change', onScheme);
@@ -909,6 +932,10 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     scene.add(rainFx.group);
     rainFx.setArea(yardCfg.walk, obstacles);
     undo.push(() => rainFx.dispose());
+    skyFx = createSkyFx(THREE, { tier: tier.name, gradient: toonGradient, walkRadius: yardCfg.walk });
+    scene.add(skyFx.group);
+    skyFx.setLook(look, weather.cloud);
+    undo.push(() => skyFx.dispose());
     let weatherBusy = false;
     function updateWeather(dt) {
       weatherBusy = Math.abs(weather.tCloud - weather.cloud) > 0.002 || Math.abs(weather.tRain - weather.rain) > 0.002;
@@ -920,6 +947,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         if (Math.abs(weather.tRain - weather.rain) <= 0.002) weather.rain = weather.tRain;
         applyMood();
         applySky();
+        if (skyFx) skyFx.setLook(look, weather.cloud);
         rainFx.setRain(weather.rain);
       }
       rainFx.update(dt);
@@ -987,6 +1015,41 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       return addProp(id, mesh, { ...opts, ownGeometry: !!opts.ownGeometry });
     }
 
+    // V20 sun shadows (high tier only): one 1024 soft shadow map fitted to the island. Flags are re-synced with the light
+    // (~1 s), so actors, accessories and props added later cast too. Transparent / additive meshes (auras, glows) never cast.
+    const opaque = m => (Array.isArray(m) ? m.every(opaque) : !!m && !m.transparent && m.blending !== THREE.AdditiveBlending && !m.isMeshBasicMaterial);
+    syncShadowFlags = () => {
+      const on = sun.castShadow;
+      if (on) {
+        const c = sun.shadow.camera, r = yardCfg.island + 1.5;
+        if (c.right !== r) { c.left = -r; c.right = r; c.top = r; c.bottom = -r; c.updateProjectionMatrix(); }
+      }
+      if (on === shadowFlagsOn && !on) return;
+      shadowFlagsOn = on;
+      env.group.traverse(o => { if (o.isMesh) o.receiveShadow = on; });
+      env.barn.traverse(o => { if (o.isMesh) { o.castShadow = on; o.receiveShadow = on; } });
+      wild.group.traverse(o => { if (o.isMesh) o.receiveShadow = on; });
+      for (const pr of props.values()) pr.object.traverse(o => { if (o.isMesh) { const k = on && opaque(o.material); o.castShadow = k; o.receiveShadow = on; } });
+      for (const a of actors.values()) a.object.traverse(o => { if (o.isMesh) { o.castShadow = on && opaque(o.material); o.receiveShadow = on; } });
+    };
+    let shadowFlagsOn = false;
+    function setupShadows() {
+      const on = tier.name === 'high';
+      const was = renderer.shadowMap.enabled;
+      renderer.shadowMap.enabled = on;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      sun.castShadow = on;
+      if (on) {
+        sun.shadow.mapSize.set(1024, 1024);
+        sun.shadow.camera.near = 1; sun.shadow.camera.far = 50;
+        sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03;
+      }
+      blobMat.opacity = on ? 0.5 : 1;   // a faint blob still grounds the pet under its real shadow
+      shadowFlagsOn = !on;              // force a full sync
+      syncShadowFlags();
+      if (was && !on && sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }   // three recompiles programs itself (lights hash)
+    }
+
     function setYardTier(tierOrCapacity, { animate = true } = {}) {
       const next = yardTierConfig(tierOrCapacity);
       if (next.name === yardCfg.name) return next.name;
@@ -998,6 +1061,9 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       scene.add(env.group, env.barn);
       syncObstacles();
       rainFx.setArea(next.walk, obstacles);
+      skyFx.setArea(next.walk);
+      shadowFlagsOn = !sun.castShadow;   // the new lawn / barn meshes need their flags
+      syncShadowFlags();
       decorSpots = decorSpotsForTier(next.name);
       wild.setClearance(wildClearance(next.name), animate);
       const keep = clampPan(panT.x, panT.z, next.island);
@@ -1101,6 +1167,11 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         camera.lookAt(target.x, target.y, target.z);
       }
       camera.position.x += shakeOffset.x; camera.position.y += shakeOffset.y; camera.position.z += shakeOffset.z;
+      // V20 haze starts just behind the yard however far back the camera sits (portrait phones / zoomed out), less in the close-up
+      const ck = close.k > 0.0005 ? close.k * close.k * (3 - 2 * close.k) : 0;
+      const camDist = baseDist * view.zoom * (1 - ck) + 3 * ck;
+      scene.fog.near = camDist + FOG_NEAR - 15;
+      scene.fog.far = scene.fog.near + (FOG_FAR - FOG_NEAR);
     }
 
     function resize() {
@@ -1160,6 +1231,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       const next = nextTierDown(tier.name);
       if (!next || pref === 'low') return;
       tier = tierWithRatio(next, window.devicePixelRatio || 1);
+      setupShadows();   // V20: sun shadows are high-tier only
       renderer.setPixelRatio(tier.pixelRatio);
       renderer.setSize(width, height, false);
     }
@@ -1199,6 +1271,9 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       updateYardAnim(dt);
       wild.update(dt);
       updateWeather(dt);
+      lookAge += dt;
+      if (lookAge >= 1) refreshLook();
+      skyFx.update(dt, runTime);
       updateCamera();
 
       for (const fn of [...frameFns]) {
@@ -1531,6 +1606,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (intersectionObserver) intersectionObserver.disconnect();
     });
     if (options.__failForTest) throw new Error('forced failure (test)');
+    setupShadows();
     resize();
     applyRunState();
 
@@ -1637,6 +1713,15 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       setShakeOffset(x = 0, y = 0, z = 0) { shakeOffset.x = x; shakeOffset.y = y; shakeOffset.z = z; },
       /** Lights, for fx that need to tint the scene. */
       lights: { hemi, sun },
+      /** V20: 'clock' (lights follow the local time, default) or 'theme' (day, or a soft night with a dark device theme). */
+      setTimeMode(mode) { timeMode = mode === 'theme' ? 'theme' : 'clock'; weather.skyKey = ''; refreshLook(); lastRenderTs = -Infinity; },
+      /** V20: show a fixed hour (0..24, previews / debug); null = back to the mode. */
+      setHour(h) { hourOverride = h == null || !Number.isFinite(Number(h)) ? null : Number(h); weather.skyKey = ''; refreshLook(); lastRenderTs = -Infinity; },
+      /** V20: { mode, hour (null in theme mode), night 0..1, warm 0..1, sky: skyFx info, shadows } as drawn now. */
+      daylight: () => ({ mode: timeMode, hour: hourOverride != null ? hourOverride : timeMode === 'theme' ? null : hourOf(new Date()), night: look.night, warm: look.warm,
+        sky: skyFx.info(), shadows: !!sun.castShadow }),
+      /** V20: lanterns / fireflies time (same rule everywhere): the fixed hour, the theme, or the clock. */
+      isNight: () => (hourOverride != null ? isNightHour(hourOverride) : timeMode === 'theme' ? !!(darkMq && darkMq.matches) : isNightHour(hourOf(new Date()))),
       pick, worldToScreen,
       getStats() {
         return {

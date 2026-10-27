@@ -5,7 +5,7 @@ import {
   APP_VERSION, canInstall, isInstalled, onInstallChange, promptInstall,
   notificationsSupported, notificationPermission, requestNotificationPermission,
 } from '../pwa.js';
-import { getBarnViewPref, setBarnViewPref, getQualityPref, setQualityPref } from '../prefs.js';
+import { getBarnViewPref, setBarnViewPref, getQualityPref, setQualityPref, getSkyPref, setSkyPref } from '../prefs.js';
 
 function choiceRow(label, name, options, current, hint) {
   const buttons = options.map(([value, text]) =>
@@ -48,6 +48,8 @@ export function openSettings() {
           'เลือกว่าจะดูน้องๆ เป็นฉาก 3 มิติหรือเป็นการ์ดรายการ (จำไว้เฉพาะในเครื่องนี้ · ถ้าเปิดโหมดลดการเคลื่อนไหวหรือเครื่องไม่รองรับ จะแสดงเป็นรายการเอง)') +
         choiceRow('คุณภาพกราฟิก', 'quality', [['auto', '✨ อัตโนมัติ'], ['low', '🔋 ต่ำ']], getQualityPref(),
           'ต่ำ = ประหยัดแบตเตอรี่และลื่นขึ้นบนเครื่องเก่า (มีผลเมื่อเปิดฉาก 3 มิติครั้งถัดไป)') +
+        choiceRow('ช่วงเวลาในลาน 3 มิติ', 'sky', [['clock', '🕒 ตามเวลาจริง'], ['theme', '🌗 ตามธีมเครื่อง']], getSkyPref(),
+          'ตามเวลาจริง = เช้า กลางวัน เย็นสีทอง กลางคืนมีดาวและหิ่งห้อย ตามนาฬิกาเครื่อง · ตามธีมเครื่อง = สว่างตอนธีมสว่าง กลางคืนตอนธีมมืด') +
         `<div class="settings-install" data-install>${installSection()}</div>` +
         `<p class="muted settings-version">เวอร์ชันเกม ${escapeHtml(APP_VERSION)} · โครงสร้างเซฟ v${STATE_VERSION}</p>` +
       '</div>',
@@ -75,6 +77,7 @@ export function openSettings() {
           const { pref, value } = choice.dataset;
           if (pref === 'barnView') setBarnViewPref(value);
           else if (pref === 'quality') setQualityPref(value);
+          else if (pref === 'sky') setSkyPref(value);
           for (const b of el.querySelectorAll(`[data-pref="${pref}"]`)) {
             const on = b === choice;
             b.classList.toggle('btn-primary', on);

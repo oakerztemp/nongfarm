@@ -264,6 +264,21 @@ export function emojiPop(world, pos, emoji) {
   });
 }
 
+/** V19: a small tear (or any emoji) that drips down from `pos` and fades. */
+export function tearDrop(world, pos, emoji = '💧') {
+  const s = stateFor(world);
+  const p = vec(pos);
+  spawn(s, {
+    texture: emojiTexture(world, emoji), size: 0.3, duration: 0.85,
+    tick(u, sprite, e) {
+      sprite.position.set(p.x, p.y - u * u * 0.55, p.z);
+      sprite.material.opacity = fadeOut(u, 0.6);
+      const sz = e.size * Math.min(1, 0.3 + u / 0.15);
+      sprite.scale.set(sz * 0.8, sz, 1);
+    },
+  });
+}
+
 /** An emoji flies on an arc from `from` to `to`; onDone() runs when it arrives. */
 export function flyEmoji(world, fromPos, toPos, emoji, onDone) {
   const s = stateFor(world);

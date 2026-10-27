@@ -815,14 +815,35 @@ export function lonelyLevel(pet, t = now()) {
   return since >= SULK_AFTER_MS ? 2 : since >= MISS_AFTER_MS ? 1 : 0;
 }
 
+// V19: the play game's toys; every pet has one favourite (fixed by its id), found by tapping it while the pet asks for it
+export const PLAY_TOYS = [
+  { id: 'ball', emoji: '🎾', nameTh: 'ลูกบอล' },
+  { id: 'feather', emoji: '🪶', nameTh: 'ไม้ขนนก' },
+  { id: 'yarn', emoji: '🧶', nameTh: 'ไหมพรม' },
+  { id: 'bubble', emoji: '🫧', nameTh: 'ฟองสบู่' },
+  { id: 'star', emoji: '⭐', nameTh: 'ดาวของเล่น' },
+  { id: 'bone', emoji: '🦴', nameTh: 'กระดูกยาง' },
+  { id: 'balloon', emoji: '🎈', nameTh: 'ลูกโป่ง' },
+];
+export function favToyOf(pet) {
+  return PLAY_TOYS[(hashId(String(pet && pet.id)) >>> 3) % PLAY_TOYS.length];
+}
+
 /**
  * V18 a real play session (the zoomed-in play mode, js/ui/playGame.js): resets คิดถึง, happy +20 (+2 per point, at most
  * PLAY_SCORE_MAX points), bond +3 (+1 per 5 points, at most +2; the daily bond cap still applies). Allowed with full happy.
+ * V19 favFound: the favourite toy was tapped while the pet asked for it -> favToyKnown + a diary line (first time only).
  */
-export function playSession(state, petId, score = 0) {
+export function playSession(state, petId, score = 0, { favFound = false } = {}) {
   const pet = getPet(state, petId);
   const blocked = playBlocker(state, petId);
   if (blocked) return fail(blocked);
+  const favNew = !!favFound && !pet.favToyKnown;
+  if (favNew) {
+    pet.favToyKnown = true;
+    const fav = favToyOf(pet);
+    journalEvent(state, 'favToy', { petId, acc: `${fav.emoji} ${fav.nameTh}` });
+  }
   const pts = Math.max(0, Math.min(PLAY_SCORE_MAX, Math.floor(Number(score) || 0)));
   const p = PERSONALITIES[pet.personality] || PERSONALITIES.cheerful;
   const wasLonely = lonelyLevel(pet);
@@ -834,7 +855,8 @@ export function playSession(state, petId, score = 0) {
   bumpStat(state, 'played');
   addBond(state, petId, 3 + Math.min(2, Math.floor(pts / 5)));
   const mood = wasLonely === 2 ? ' หายน้อยใจแล้ว 💞' : wasLonely === 1 ? ' หายคิดถึงแล้ว 💕' : '';
-  return { ok: true, msg: `🎾 เล่นกับ${nong(pet)}สนุกมาก! ได้ ${pts} แต้ม${mood}`, score: pts };
+  const found = favNew ? ` ค้นพบของเล่นโปรด ${favToyOf(pet).emoji}!` : '';
+  return { ok: true, msg: `🎾 เล่นกับ${nong(pet)}สนุกมาก! ได้ ${pts} แต้ม${mood}${found}`, score: pts, favNew };
 }
 
 export function playWithPet(state, petId) {

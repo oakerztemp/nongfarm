@@ -11,7 +11,7 @@ import { SPECIES, HABITATS, RARITIES, JOBS, getSpecies } from '../data/species.j
 import { getTraitDef, TRAIT_SCALE } from '../data/traits.js';
 import {
   STAGES, PERSONALITIES, petEmoji, petName, petMood, getPet,
-  putEggInIncubator, hatchReady, feedPet, playWithPet, cleanPet, pickPoop, playSession, playBlocker, lonelyLevel,
+  putEggInIncubator, hatchReady, feedPet, playWithPet, cleanPet, pickPoop, playSession, playBlocker, lonelyLevel, favToyOf,
   giveToy, healPet, toggleSleep, renamePet, rehomePet, rehomeDust, foodEffect,
   collectYard, collectPetGift, petGift, yardPreview, stationStatus,
   getTrait, bondProgress, giftAvailable, claimGift, BOND_DAILY_CAP, GIFT_MIN_HEARTS,
@@ -110,18 +110,30 @@ function openPlayModal(petId) {
   let game = null, close = () => {};
   close = openModal({
     title: `🎾 เล่นกับ${petName(pet)}`,
-    html: `<div class="pg-stage"><span class="pg-pet pet-emoji${pet.shiny ? ' is-shiny' : ''}${limitedOf(pet) ? ' is-limited' : ''}" aria-hidden="true">${petEmoji(pet)}</span></div>`,
+    html: `<div class="pg-stage"><span class="pg-pet-wrap"><span class="pg-pet pet-emoji${pet.shiny ? ' is-shiny' : ''}${limitedOf(pet) ? ' is-limited' : ''}" aria-hidden="true">${petEmoji(pet)}</span>`
+      + '<span class="pg-think" aria-hidden="true"></span><span class="pg-face" aria-hidden="true"></span></span></div>',
     onMount(body) {
       const stage = body.querySelector('.pg-stage');
       const big = body.querySelector('.pg-pet');
+      const think = body.querySelector('.pg-think');
+      const face = body.querySelector('.pg-face');
+      // V19: the big emoji bounces + 😍 on a right toy, shakes + 😭 💧 on a wrong one
+      const feel = (cls, emoji) => {
+        big.classList.remove('is-bounce', 'is-cry'); void big.offsetWidth; if (cls) big.classList.add(cls);
+        face.textContent = emoji; face.classList.remove('is-show'); void face.offsetWidth; face.classList.add('is-show');
+      };
       game = startPlayGame({
         host: stage,
         title: '',
+        favToy: favToyOf(pet).emoji,
         spread: Math.min(150, Math.max(100, stage.clientWidth * 0.36)),
-        onHit: () => { big.classList.remove('is-bounce'); void big.offsetWidth; big.classList.add('is-bounce'); },
-        onEnd: (score, counted) => {
+        onWish: w => { think.textContent = w; think.classList.remove('is-new'); void think.offsetWidth; think.classList.add('is-new'); },
+        onHit: (n, el, combo, { fav }) => feel('is-bounce', fav ? '😍' : combo % 2 ? '🥰' : '😆'),
+        onWrong: () => feel('is-cry', '😭💧'),
+        onMissWish: () => feel('', '🥺'),   // a toy that got away: just a little face, no crying
+        onEnd: (score, counted, { favFound } = {}) => {
           game = null;
-          if (counted) run(s => playSession(s, petId, score));
+          if (counted) run(s => playSession(s, petId, score, { favFound }));
           else notify('ยังไม่ทันได้เล่นเลย น้องยังอยากเล่นอยู่นะ 🥺', 'info');
           close();
         },
@@ -138,6 +150,12 @@ function favDishLineHtml(pet) {
   const fav = favoriteDish(getSpecies(pet.speciesId));
   if (!fav) return '';
   return `<div class="b3-station pet-favdish">🍽️ เมนูโปรด: ${pet.favDishKnown ? `${fav.emoji} ${e(fav.nameTh)}` : '??? <small class="muted">(ลองทำอาหารในครัว 🍳 ป้อนดูสิ)</small>'}</div>`;
+}
+
+/** V19: this pet's favourite toy, a riddle until found in the play game. */
+function favToyLineHtml(pet) {
+  const fav = favToyOf(pet);
+  return `<div class="b3-station pet-favtoy">🧸 ของเล่นโปรด: ${pet.favToyKnown ? `${fav.emoji} ${e(fav.nameTh)}` : '??? <small class="muted">(เล่นกับน้อง 🎾 แล้วสังเกตว่าน้องอยากได้อะไรบ่อยๆ)</small>'}</div>`;
 }
 
 /** V12: the Limited chip (empty for every other pet). */
@@ -928,7 +946,7 @@ function petSheetHtml(pet, state, mode = 'main', opts = {}) {
       ${pet.family ? `<div class="b3-reveal-family">💞 ลูกของ ${e(pet.family.a.name)} กับ ${e(pet.family.b.name)}</div>` : ''}
       <small class="muted">นิสัย ${pers.emoji} ${pers.nameTh} · ${e(sp.desc)}</small></div>` : '';
   const br = breedStatus(state, pet);
-  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}${familyLineHtml(pet)}${favDishLineHtml(pet)}${lonelyLevel(pet) ? `<div class="b3-station pet-lonely-line">${lonelyTag(pet)} ${lonelyLevel(pet) === 2 ? 'ป่วยง่ายขึ้นนะ' : ''} — เล่นด้วยกัน 🎾 หรือให้ของเล่น 🧸</div>` : ''}
+  return `${head}<div class="b3-sheet-body">${reveal}${stationLine}${familyLineHtml(pet)}${favDishLineHtml(pet)}${favToyLineHtml(pet)}${lonelyLevel(pet) ? `<div class="b3-station pet-lonely-line">${lonelyTag(pet)} ${lonelyLevel(pet) === 2 ? 'ป่วยง่ายขึ้นนะ' : ''} — เล่นด้วยกัน 🎾 หรือให้ของเล่น 🧸</div>` : ''}
       <div class="b3-sheet-line"><span class="pet-status">${statusLabel(pet, state)}</span>
         <span class="pet-hearts" title="ความผูกพัน ${bond.hearts}/5">${heartsHtml(bond.hearts)}</span></div>
       <div class="b3-stats">
@@ -1221,6 +1239,7 @@ function openDetails(petId) {
     ${familyLineHtml(pet)}
     ${hasFamily(state, pet.id) ? '<div class="pet-detail-family"><button type="button" class="btn btn-sm" data-action="family-tree">👪 ต้นตระกูล</button></div>' : ''}
     ${favDishLineHtml(pet)}
+    ${favToyLineHtml(pet)}
     ${lonelyLevel(pet) ? `<div class="b3-station pet-lonely-line">${lonelyTag(pet)} ${lonelyLevel(pet) === 2 ? 'ไม่ได้เล่นด้วยกันนานแล้ว ความสุขลดเร็ว และป่วยง่ายขึ้น' : 'ไม่ได้เล่นด้วยกันมาวันนึงแล้ว'} — กด 🎾 เล่น หรือให้ 🧸 ของเล่น</div>` : ''}
     ${(() => { const b = breedStatus(state, pet); return `<div class="pet-detail-breed"><button type="button" class="btn btn-sm${b.ok ? ' btn-primary' : ''}" data-action="breed"${b.ok ? '' : ' disabled'}>💞 หาคู่</button> <small class="muted">${b.text}</small></div>`; })()}
     <h4 class="pet-detail-h">ตั้งชื่อ</h4>

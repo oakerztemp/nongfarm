@@ -753,13 +753,46 @@ const BAG_GROUPS = [
   { type: 'egg', title: '🥚 ไข่' },
 ];
 
+// V19: the quantity picked per item survives the every-second re-render; back to 1 after a sale
+const sellQty = new Map();
+const pickedQty = (id, count) => Math.max(1, Math.min(count, Math.floor(sellQty.get(id) || 1)));
+const sellLabel = (it, q) => `ขาย x${num(q)} +${num(it.sell * q)}🪙`;
+
+function sellHtml(id, it, count) {
+  const sid = esc(id);
+  if (count <= 1) return `<button class="btn btn-sm btn-primary" data-action="sell" data-item="${sid}" data-qty="1">ขาย +${num(it.sell)}🪙</button>`;
+  const q = pickedQty(id, count);
+  return `<div class="sell-qty" data-item="${sid}">
+      <button class="btn btn-sm sell-step" data-action="sell-step" data-item="${sid}" data-step="-1" aria-label="ลดจำนวน" ${q <= 1 ? 'disabled' : ''}>−</button>
+      <input class="sell-num" type="number" inputmode="numeric" min="1" max="${count}" step="1" value="${q}" data-item="${sid}" aria-label="จำนวนที่จะขาย">
+      <button class="btn btn-sm sell-step" data-action="sell-step" data-item="${sid}" data-step="1" aria-label="เพิ่มจำนวน" ${q >= count ? 'disabled' : ''}>+</button>
+    </div>
+    <button class="btn btn-sm btn-primary sell-go" data-action="sell" data-item="${sid}" data-qty="pick">${sellLabel(it, q)}</button>
+    <button class="btn btn-sm" data-action="sell" data-item="${sid}" data-qty="all">ทั้งหมด</button>`;
+}
+
+/** Writes a new picked quantity straight into the row (no re-render needed). */
+function setSellQty(row, id, q) {
+  const it = getItem(id);
+  const count = invOf(getState(), id);
+  if (!it || !row || count < 1) return;
+  q = Math.max(1, Math.min(count, Math.floor(Number(q) || 1)));
+  sellQty.set(id, q);
+  const input = row.querySelector('.sell-num');
+  if (input && document.activeElement !== input) input.value = String(q);
+  const [minus, plus] = row.querySelectorAll('.sell-step');
+  if (minus) minus.disabled = q <= 1;
+  if (plus) plus.disabled = q >= count;
+  const go = row.querySelector('.sell-go');
+  if (go) go.textContent = sellLabel(it, q);
+}
+
 function bagRow(id, count) {
   const it = getItem(id);
   if (!it) return '';
   let acts = '';
   if (it.sell != null) {
-    acts = `<button class="btn btn-sm" data-action="sell" data-item="${esc(id)}" data-qty="1">ขาย x1</button>`
-      + (count > 1 ? `<button class="btn btn-sm btn-primary" data-action="sell" data-item="${esc(id)}" data-qty="all">ขายทั้งหมด +${num(it.sell * count)}🪙</button>` : '');
+    acts = sellHtml(id, it, count);
   } else if (it.type === 'egg') {
     acts = '<span class="muted farm-small">ฟักที่แท็บลาน</span>';
   } else {
@@ -767,7 +800,7 @@ function bagRow(id, count) {
   }
   const sub = [it.sell != null ? `ขาย ${num(it.sell)}🪙/ชิ้น` : (it.type === 'care' || it.type === 'food' ? 'ใช้ที่แท็บลาน' : ''),
     YARD_MATERIALS[id] ? `🏡 ${YARD_MATERIALS[id]}` : ''].filter(Boolean).join(' · ');
-  return `<div class="bag-row">
+  return `<div class="bag-row" data-key="bag-${esc(id)}">
     <span class="bag-emoji">${it.emoji}</span>
     <div class="bag-info"><div><b>${esc(it.nameTh)}</b> <span class="badge">x${num(count)}</span></div>
       ${sub ? `<div class="muted farm-small">${sub}</div>` : ''}</div>
@@ -796,7 +829,28 @@ function bagRender(state) {
 
 function bagBind(rootEl) {
   delegate(rootEl, {
-    sell: d => run(s => sellItem(s, d.item, d.qty === 'all' ? (Number(s.inventory[d.item]) || 0) : Number(d.qty) || 1)),
+    sell: d => {
+      const q = s => (d.qty === 'all' ? invOf(s, d.item) : d.qty === 'pick' ? pickedQty(d.item, invOf(s, d.item)) : Number(d.qty) || 1);
+      const r = run(s => sellItem(s, d.item, q(s)));
+      if (r && r.ok) {
+        sellQty.delete(d.item);
+        // Safari keeps focus in the box after tapping a button: morph would leave the old number there
+        const a = document.activeElement;
+        if (a && a.classList && a.classList.contains('sell-num')) a.blur();
+      }
+    },
+    'sell-step': (d, el) => setSellQty(el.closest('.bag-row'), d.item, pickedQty(d.item, invOf(getState(), d.item)) + Number(d.step)),
+  });
+  rootEl.addEventListener('input', ev => {
+    const el = ev.target;
+    if (!el.classList || !el.classList.contains('sell-num') || el.value === '') return;
+    setSellQty(el.closest('.bag-row'), el.dataset.item, el.value);
+  });
+  rootEl.addEventListener('change', ev => {   // leaving the box: show the clamped number
+    const el = ev.target;
+    if (!el.classList || !el.classList.contains('sell-num')) return;
+    const id = el.dataset.item;
+    el.value = String(pickedQty(id, invOf(getState(), id)));
   });
 }
 

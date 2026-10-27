@@ -782,3 +782,27 @@ button.book-cell:focus-visible { outline: 3px solid var(--accent); outline-offse
 .pet-lonely-tag { font-weight: 700; color: #6a8ad8; white-space: nowrap; }
 .pet-lonely-tag.is-sulk { color: #d8577a; }
 @media (prefers-reduced-motion: reduce) { .pg-toy, .pg-pet.is-bounce, .pg-hint { animation-duration: .01ms !important; } }
+
+/* ───────── V19 play game: the pet's wish 💭, wrong toys, happy / crying faces ───────── */
+.pg-wish { font-weight: 700; white-space: nowrap; font-size: 1.25rem; line-height: 1; padding: 4px 10px; border-radius: 99px;
+  background: var(--surface-2); font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.pg-wish:empty { display: none; }
+.pg-wish.is-new, .pg-think.is-new { animation: pg-wish-pop .35s ease-out; }
+@keyframes pg-wish-pop { 0% { transform: scale(.6); } 70% { transform: scale(1.18); } 100% { transform: scale(1); } }
+.pg-toy.is-wrong { animation: pg-wrong .42s ease-in forwards; background: radial-gradient(circle, rgba(255,215,215,.95) 0 55%, rgba(255,120,120,.4) 56%); }
+@keyframes pg-wrong { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 20% { transform: translate(-62%, -50%); } 40% { transform: translate(-38%, -50%); }
+  60% { transform: translate(-58%, -50%); } 80% { transform: translate(-42%, -50%); opacity: .8; } 100% { opacity: 0; } }
+.pg-pet-wrap { position: relative; display: inline-block; }
+.pg-think { position: absolute; top: -30%; right: -22%; min-width: 1.6em; padding: 6px 10px; border-radius: 22px; background: #fff; color: #222;
+  font-size: min(9vw, 36px); line-height: 1; text-align: center; box-shadow: 0 3px 10px rgba(0,0,0,.18);
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.pg-think:empty { display: none; }
+.pg-think::after { content: ''; position: absolute; left: 6px; bottom: -10px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: -8px 8px 0 -3px #fff; }
+.pg-face { position: absolute; left: -18%; top: -6%; font-size: min(10vw, 40px); line-height: 1; opacity: 0; pointer-events: none;
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif; }
+.pg-face.is-show { animation: pg-face-pop .9s ease-out; }
+@keyframes pg-face-pop { 0% { opacity: 0; transform: scale(.4); } 20% { opacity: 1; transform: scale(1.15); } 70% { opacity: 1; transform: translateY(-10px); } 100% { opacity: 0; transform: translateY(-22px); } }
+.pg-pet.is-cry { animation: pg-cry .7s ease; }
+@keyframes pg-cry { 15%, 45%, 75% { transform: translateX(-6px) rotate(-4deg) scale(.97); } 30%, 60%, 90% { transform: translateX(6px) rotate(4deg) scale(.97); } }
+.pet-favtoy { font-size: 0.9rem; }
+@media (prefers-reduced-motion: reduce) { .pg-pet.is-cry, .pg-face.is-show, .pg-wish.is-new, .pg-think.is-new, .pg-toy.is-wrong { animation-duration: .01ms !important; } }

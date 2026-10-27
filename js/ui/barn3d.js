@@ -15,7 +15,7 @@ import { getSpecies } from '../data/species.js';
 import { getEgg } from '../data/eggs.js';
 import { getItem } from '../data/items.js';
 import {
-  getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop, playSession, playBlocker, lonelyLevel,
+  getPet, petName, patPet, feedPet, playWithPet, cleanPet, giveToy, healPet, toggleSleep, claimGift, pickPoop, playSession, playBlocker, lonelyLevel, favToyOf,
   hatchReady, foodEffect, petGift, yardPreview, collectPetGift, collectYard, nurseryPets, NURSERY_SLOTS,
   strokePet, wearOf, wearAccessory, takeOffAccessory,
 } from '../pets.js';
@@ -651,6 +651,13 @@ export function mountBarn3d(host, ctx) {
         P.hPitch = 0.4 + Math.sin(A.act.t * 13) * 0.14;
         break;
       }
+      case 'cry': {   // V19: a wrong toy in the play game: head down, sobbing shakes
+        const u = Math.min(1, A.act.t / (A.act.dur || 1.2));
+        const k = Math.sin(Math.min(1, u * 4) * Math.PI / 2) * (1 - Math.max(0, u - 0.75) * 4);
+        P.hPitch = 0.42 * k; P.sy = 1 - 0.07 * k; P.sx = 1 + 0.03 * k;
+        P.shake = Math.sin(A.act.t * 34) * 0.016 * k; P.hRoll = Math.sin(A.act.t * 9) * 0.08 * k; P.tail = -0.3 * k;
+        break;
+      }
       case 'no': {
         const u = A.act.t / (A.act.dur || 0.7);
         P.hYaw = Math.sin(A.act.t * 20) * 0.5 * (1 - u);
@@ -1145,7 +1152,9 @@ export function mountBarn3d(host, ctx) {
       A.blinkAt -= dt;
       if (A.blinkAt < 0) { A.blink = 0.13; A.blinkAt = 2.5 + Math.random() * 4; }
       if (A.blink > 0) A.blink -= dt;
-      const closed = A.curl > 0.55 || A.blink > 0 ? 0.12 : A.squint > 0.5 ? 0.3 : 1;
+      if (A.faceT > 0) A.faceT -= dt;
+      const face = A.faceT > 0 ? (A.face === 'happy' ? 0.26 : 0.5) : 1;   // V19 play game: ^^ when happy, droopy when crying
+      const closed = A.curl > 0.55 || A.blink > 0 ? 0.12 : A.squint > 0.5 ? 0.3 : face;
       for (const e of eyes) e.scale.y = closed;
     }
   }
@@ -1265,7 +1274,7 @@ export function mountBarn3d(host, ctx) {
       }
       n.ready = !!slot && t >= slot.readyAt;
       n.slot = slot || null;
-      const wantBubble = !photo && n.ready && !ceremonyOwnsNest(n.i);
+      const wantBubble = !photo && !playing && n.ready && !ceremonyOwnsNest(n.i);
       if (wantBubble) fx.bubble(world, n.id, '🐣'); else fx.clearBubble(world, n.id);
     }
   }
@@ -1417,6 +1426,7 @@ export function mountBarn3d(host, ctx) {
       // thought bubbles
       const b = bubbleFor(pet);
       const napping = !!A.act.nap && (A.act.type === 'sleep' || !!A.act.arrived);
+      if (playing) { setBubble(A, playing.A === A ? playing.wish || '' : ''); continue; }   // V19: only the played pet's wish (other bubbles would read as wishes)
       setBubble(A, photo ? '' : b ? b.emoji : napping ? '💤' : birthdayPending(pet) ? '🎂' : '');   // no thought bubbles in a photo
     }
     for (const A of [...actors.values()]) {
@@ -1641,7 +1651,32 @@ export function mountBarn3d(host, ctx) {
   }
 
   // ── V18 เล่นกับน้อง: the camera flies in close, toys pop up around the pet (js/ui/playGame.js), the score goes to playSession ──
-  let playing = null;   // { A, dir: { x, z }, game }
+  let playing = null;   // { A, dir: { x, z }, game, wish }
+
+  /** V19: a short facial expression (eyes) + a pose: 'happy' (^^ hop) or 'sad' (cry, tears). */
+  function playFace(A, kind, strong = true) {
+    if (!strong) {   // a wished toy got away: a little 🥺 now and then, no sad eyes (it happens often)
+      if (playing && performance.now() - (playing.poutAt || 0) > 2500) { playing.poutAt = performance.now(); fx.emojiPop(world, playSide(A, 1), '🥺'); }
+      return;
+    }
+    A.face = kind;
+    A.faceT = kind === 'happy' ? 0.9 : 1.4;
+    if (kind === 'happy') return;
+    react(A, 'cry', { dur: 1.3 });
+    fx.emojiPop(world, playSide(A, 1), '😭');
+    const h = headPos(A), r = Math.max(0.12, A.model.radius * 0.28);
+    const sx = playing ? playing.dir.z : 1, sz = playing ? -playing.dir.x : 0;   // across the camera's view: a tear under each eye
+    for (const [k, side] of [[0, -1], [1, 1], [2, -1], [3, 1], [4, -1]]) {
+      later(80 + k * 200, () => alive(A.id) && fx.tearDrop(world, { x: A.x + sx * side * r, y: h.y - 0.12, z: A.z + sz * side * r }));
+    }
+  }
+
+  /** V19: a spot beside the played pet's head (-1 / 1 = either side on screen), so reaction emojis do not hide behind its wish bubble. */
+  function playSide(A, side) {
+    const h = headPos(A), d = Math.max(0.38, A.model.radius * 0.7) * side;
+    const sx = playing ? playing.dir.z : 1, sz = playing ? -playing.dir.x : 0;
+    return { x: h.x + sx * d, y: h.y - 0.15, z: h.z + sz * d };
+  }
 
   function startPlay(petId) {
     const A = actors.get(petId);
@@ -1653,38 +1688,47 @@ export function mountBarn3d(host, ctx) {
     // a pet near the middle is seen from the side the player was already looking from
     const toMid = Math.hypot(A.x, A.z);
     const dx = toMid > 0.9 ? -A.x : camPos.x - A.x, dz = toMid > 0.9 ? -A.z : camPos.z - A.z, len = Math.hypot(dx, dz) || 1;
-    playing = { A, dir: { x: dx / len, z: dz / len }, game: null };
+    playing = { A, dir: { x: dx / len, z: dz / len }, game: null, wish: '' };
     A.hold = 9999;
     A.pinned = true;
     begin(A, { type: 'idle', dur: 999 });
     host.classList.add('b3-playing');
+    for (const B of actors.values()) if (B !== A) setBubble(B, '');
+    for (const n of nests) fx.clearBubble(world, n.id);   // nest / crib bubbles would read as wishes too
+    for (const c of cribs.values()) fx.clearBubble(world, c.id);
     world.boost(PLAY_MS + 4000);
     const pet = getPet(getState(), petId);
     playing.game = startPlayGame({
       host,
       title: `🎾 เล่นกับ${pet ? petName(pet) : 'น้อง'}`,
+      favToy: pet ? favToyOf(pet).emoji : null,
+      onWish: w => { if (playing) { playing.wish = w; setBubble(A, w); } },
       spread: Math.min(170, Math.max(110, host.clientWidth * 0.3)),
       anchor: () => {
         if (!playing) return null;
         const p = world.worldToScreen({ x: A.x, y: A.y + Math.max(0.5, A.model.height) * 0.55, z: A.z });
         return { x: p.x, y: p.y };
       },
-      onHit: (n, el, combo) => {
+      onHit: (n, el, combo, { fav }) => {
         if (!playing) return;
         const h = headPos(A);
-        if (n % 2) react(A, 'hop', { dur: 0.75, hops: 1, height: 0.38 }); else react(A, 'wave', { dur: 0.9 });
-        fx.emojiPop(world, h, el.textContent || '💕');
-        if (combo && combo % 5 === 0) { fx.sparkle(world, A.id); fx.confetti(world, h, 10); }
-        else if (n % 3 === 0) fx.heart(world, h);
+        playFace(A, 'happy');
+        if (combo % 2) react(A, 'hop', { dur: 0.75, hops: 1, height: 0.38 }); else react(A, 'wave', { dur: 0.9 });
+        fx.emojiPop(world, playSide(A, combo % 2 ? -1 : 1), fav ? '😍' : combo % 2 ? '🥰' : '😆');
+        if (fav) { fx.heart(world, h); fx.sparkle(world, A.id); }
+        if (combo && combo % 5 === 0) fx.confetti(world, h, 10);
       },
-      onEnd: (score, counted) => endPlay(score, counted),
+      onWrong: () => { if (playing) playFace(A, 'sad'); },
+      onMissWish: () => { if (playing) playFace(A, 'sad', false); },
+      onEnd: (score, counted, extra) => endPlay(score, counted, extra),
     });
   }
 
-  function endPlay(score, counted = true) {
+  function endPlay(score, counted = true, { favFound = false } = {}) {
     const p = playing;
     if (!p) return;
     playing = null;
+    setBubble(p.A, '');
     host.classList.remove('b3-playing');
     world.clearCloseUp();
     unhidePlayShot();
@@ -1694,7 +1738,8 @@ export function mountBarn3d(host, ctx) {
     begin(A, { type: 'idle', dur: 1 });   // the play pose was a 999 s idle: let the pet go back to its day
     if (disposed || !alive(A.id)) return;
     if (!counted) { notify('ยังไม่ทันได้เล่นเลย น้องยังอยากเล่นอยู่นะ 🥺', 'info'); react(A, 'no'); refreshUi(); return; }
-    const r = ctx.run(s => playSession(s, A.id, score));
+    const r = ctx.run(s => playSession(s, A.id, score, { favFound }));
+    if (r && r.ok && r.favNew) later(900, () => alive(A.id) && fx.emojiPop(world, headPos(A), favToyOf(A.pet).emoji));
     if (r && r.ok) {
       react(A, 'play', { dur: 2.4 });
       later(500, () => alive(A.id) && fx.heart(world, headPos(A)));

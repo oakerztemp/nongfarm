@@ -19,6 +19,7 @@ export const YARD = {
   bowl: { x: 1.7, z: 2.3 },          // food bowl, front right
   bowlClear: 0.9,                    // wander targets keep this far from the bowl centre
   kitchen: { x: 4.17, z: -4.7, r: 1.1 }, // the kitchen hut (V23 section 3), right behind the yard; also an obstacle
+  landmarks: { mailbox: { x: 3.3, z: 3.6, r: 0.35 }, board: { x: 3.6, z: -2.1, r: 0.6 }, bench: { x: -3.4, z: 3.4, r: 0.7 } }, // V24 section 2 (also obstacles)
   playground: null,                  // { x, z, r } of the playground prop (L+), where cheerful pets like to play
   obstacles: [],                     // static prop circles { x, z, r } of the current yard tier (pond, tree, kitchen ...)
   flowers: [],                       // where a bee may visit: flowerbed blooms and pond lilies of the current tier (V11 §5)
@@ -47,7 +48,7 @@ export function yardProps(tier) {
   const rank = TIER_RANK[tier] ?? 0;
   const out = [];
   if (rank >= 1) out.push({ id: 'pond', kind: 'pond', x: 4.3, z: 1.4, r: 1.1 }, { id: 'tree', kind: 'tree', x: -4.6, z: -1.6, r: 0.55 });
-  if (rank >= 2) out.push({ id: 'flowerbed', kind: 'flowerbed', x: -3.4, z: 4.6, r: 0.9 }, { id: 'playground', kind: 'playground', x: -5.4, z: 1.6, r: 1.0 });
+  if (rank >= 2) out.push({ id: 'flowerbed', kind: 'flowerbed', x: -3.4, z: 5.8, r: 0.9 }, { id: 'playground', kind: 'playground', x: -5.4, z: 1.6, r: 1.0 });
   if (rank >= 3) {
     out.push({ id: 'hill', kind: 'hill', x: -6.6, z: -3.6, r: 1.3 });
     for (const [i, [x, z]] of [[-6.6, 4.8], [6.6, 4.8], [-2.2, 7.4], [2.2, 7.4]].entries()) out.push({ id: `lantern${i}`, kind: 'lantern', x, z, r: 0.25 });
@@ -61,6 +62,22 @@ export function kitchenSpot(tier) {
   return { x: 3.0 + (lay.walk - 5) * 0.45, z: lay.barnZ + 1.1, r: 1.1 };
 }
 
+/**
+ * The three tappable landmarks (CONTRACT_V24 section 2): mailbox (postcards), notice board (journal), bench (photo / album).
+ * Per-tier coordinates, all inside the default view (|x| <= 3.6, z <= 4.6), each clear (>= 0.8 edge to edge) of props, kitchen, decor spots, bowl, nests, cribs, the barn box and
+ * each other, outside the central lawn and the back strip, and away from the greet row and the party spot.
+ */
+const LANDMARKS = {
+  S: { mailbox: { x: 3.2, z: 3.4, r: 0.35 }, board: { x: 2.7, z: -0.6, r: 0.6 }, bench: { x: -3.3, z: 3.2, r: 0.7 } },
+  M: { mailbox: { x: 3.3, z: 3.6, r: 0.35 }, board: { x: 3.2, z: -1.6, r: 0.6 }, bench: { x: -3.4, z: 3.4, r: 0.7 } },
+  L: { mailbox: { x: 3.3, z: 3.6, r: 0.35 }, board: { x: 3.6, z: -2.1, r: 0.6 }, bench: { x: -3.4, z: 3.4, r: 0.7 } },
+  XL: { mailbox: { x: 3.3, z: 3.6, r: 0.35 }, board: { x: 3.6, z: -2.8, r: 0.6 }, bench: { x: -3.4, z: 3.4, r: 0.7 } },
+};
+export function landmarkSpots(tier) {
+  const l = LANDMARKS[tier] || LANDMARKS.L;
+  return { mailbox: { ...l.mailbox }, board: { ...l.board }, bench: { ...l.bench } };
+}
+
 /** Re-targets the behaviour layout (walk radius, nest row, blocked props) when the yard changes tier. */
 export function configureYard(tier = 'L') {
   const lay = YARD_TIER_LAYOUT[tier] || YARD_TIER_LAYOUT.L;
@@ -70,7 +87,8 @@ export function configureYard(tier = 'L') {
   const props = yardProps(tier);
   YARD.kitchen = kitchenSpot(YARD_TIER_LAYOUT[tier] ? tier : 'L');
   YARD.playground = props.find(p => p.kind === 'playground') || null;
-  YARD.obstacles = [...props.map(({ x, z, r }) => ({ x, z, r })), { ...YARD.kitchen }];
+  YARD.landmarks = landmarkSpots(YARD_TIER_LAYOUT[tier] ? tier : 'L');
+  YARD.obstacles = [...props.map(({ x, z, r }) => ({ x, z, r })), { ...YARD.kitchen }, ...Object.values(YARD.landmarks).map(l => ({ ...l }))];
   YARD.trees = props.filter(p => p.kind === 'tree').map(({ id, x, z }) => ({ id, x, z }));
   YARD.flowers = [];
   for (const p of props) {

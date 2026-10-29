@@ -833,3 +833,72 @@ img.pg-pet.pet-portrait { width: min(46vw, 200px); height: min(46vw, 200px); }
 }
 .b3-dish-fly { position: fixed; left: 0; top: 0; z-index: 1000; font-size: 42px; line-height: 1; pointer-events: none; will-change: transform, opacity; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.35)); }
 @media (max-width: 480px) { .b3-feed-tag { font-size: 0.74rem; padding: 1px 8px; max-width: 55%; } }
+
+/* ── V24 §1: one-row yard header + full-height scene on phones ── */
+.barn-head-l { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.barn-head-3d { margin-bottom: 8px; }
+.barn-head-3d .barn-head-r { flex-wrap: nowrap; flex: none; gap: 6px; }
+.barn-head-3d .barn-title { margin: 0; font-size: 1.1rem; white-space: nowrap; }
+.fest-chip-compact { min-height: 34px; padding: 0 10px; gap: 4px; font-size: 0.82rem; flex: 0 1 auto; }
+.fest-chip-compact .fest-chip-e { font-size: 1rem; }
+.fest-chip-compact .fest-chip-n { padding: 0 6px; font-size: 0.7rem; }
+@media (min-width: 768px) {
+  .b3 { min-height: 64vh; }
+}
+@media (max-width: 767.98px) {
+  .view-root:has(.barn-3d) { padding: 8px 10px 6px; }
+  .barn-3d .barn-title { display: none; }
+  .barn-head-3d { margin-bottom: 6px; min-height: 36px; }
+  /* screen - top bar - tab bar - yard header (40 + 10 gap) - paddings (8 top + 8 bottom incl. 2px slack) */
+  .barn-3d .b3 {
+    --yard-chrome: 66px;
+    height: calc(100vh - var(--app-top-h, 120px) - var(--tab-bar-h, var(--tab-h)) - var(--yard-chrome));
+    min-height: 320px;
+  }
+}
+@supports (height: 100dvh) {
+  @media (max-width: 767.98px) {
+    .barn-3d .b3 { height: calc(100dvh - var(--app-top-h, 120px) - var(--tab-bar-h, var(--tab-h)) - var(--yard-chrome)); }
+  }
+}
+
+/* ── V24 §4: pins on buildings, collapsible food tray, bench sheet ── */
+.b3-pin {
+  position: absolute; left: 0; top: 0; width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+  border-radius: 50%; border: 2px solid var(--accent); background: var(--surface); color: var(--text); font-size: 1rem; line-height: 1;
+  box-shadow: var(--shadow); cursor: pointer; pointer-events: auto; will-change: transform; transform: translate(-50%, -100%);
+  -webkit-tap-highlight-color: transparent;
+}
+.b3-pin[hidden] { display: none; }
+.b3-pin:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.b3-pin-n {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center;
+  border-radius: 99px; background: var(--danger, #d2433f); color: #fff; font-size: 0.68rem; font-weight: 700; font-style: normal; line-height: 1;
+  border: 1px solid var(--surface);
+}
+.b3-pin.is-bounce { animation: b3-pin-bounce 1.6s ease-in-out infinite; }
+@keyframes b3-pin-bounce {
+  0%, 100% { margin-top: 0; }
+  50% { margin-top: -6px; }
+}
+@media (prefers-reduced-motion: reduce) { .b3-pin.is-bounce { animation: none; } }
+
+.b3-tray-toggle {
+  flex: none; position: sticky; left: 0; z-index: 1; width: 48px; height: 48px; display: grid; place-items: center;
+  border: 2px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--text); font-size: 1.25rem; cursor: pointer;
+  box-shadow: 2px 0 6px color-mix(in srgb, var(--surface) 80%, transparent);
+}
+.b3-tray-toggle:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.b3-tray.is-collapsed {
+  right: auto; width: 56px; height: 56px; padding: 3px; overflow: hidden; border-radius: 50%; justify-content: center; align-items: center;
+}
+.b3-tray.is-collapsed > :not(.b3-tray-toggle) { display: none; }
+.b3-tray.is-collapsed .b3-tray-toggle { position: static; box-shadow: none; }
+
+.b3-bench-sheet {
+  position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); z-index: 4; display: flex; gap: 8px; padding: 8px;
+  max-width: calc(100% - 24px); border-radius: var(--radius); background: color-mix(in srgb, var(--surface) 96%, transparent);
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.b3-bench-sheet[hidden] { display: none; }
+.b3-bench-sheet .btn { min-height: 44px; white-space: nowrap; }

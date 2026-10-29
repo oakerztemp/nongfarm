@@ -108,7 +108,7 @@ test('v23 props: every prop keeps the unlock coordinates of the contract', () =>
   const pos = (t, id) => { const p = yardProps(t).find(x => x.id === id); return p && [p.x, p.z, p.r]; };
   assertEq(pos('M', 'pond'), [4.3, 1.4, 1.1]);
   assertEq(pos('M', 'tree'), [-4.6, -1.6, 0.55]);
-  assertEq(pos('L', 'flowerbed'), [-3.4, 4.6, 0.9]);
+  assertEq(pos('L', 'flowerbed'), [-3.4, 5.8, 0.9]);
   assertEq(pos('L', 'playground'), [-5.4, 1.6, 1.0]);
   assertEq(pos('XL', 'hill'), [-6.6, -3.6, 1.3]);
   assertEq(yardProps('S'), []);

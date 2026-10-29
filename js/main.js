@@ -433,6 +433,27 @@ function onUserChange(user) {
 
 // ---- start ----
 
+/** CONTRACT_V24 §1: publish the measured heights of the top bar / bottom tab bar so css/pets.css can size the 3D yard to the rest of the screen. */
+function watchLayoutHeights() {
+  const root = document.documentElement;
+  const measure = () => {
+    const top = document.querySelector('.app-top');
+    const tabs = $('tab-bar');
+    if (top) root.style.setProperty('--app-top-h', `${Math.round(top.getBoundingClientRect().height)}px`);
+    // on desktop the tab bar sits inside .app-top (not fixed), so it takes no extra height from the screen
+    if (tabs) root.style.setProperty('--tab-bar-h', getComputedStyle(tabs).position === 'fixed' ? `${Math.round(tabs.getBoundingClientRect().height)}px` : '0px');
+  };
+  measure();
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(measure);
+    const top = document.querySelector('.app-top');
+    if (top) ro.observe(top);
+    if ($('tab-bar')) ro.observe($('tab-bar'));
+  }
+  window.addEventListener('resize', measure);
+  window.addEventListener('orientationchange', measure);
+}
+
 async function start() {
   onNotify(showToast);
 
@@ -442,6 +463,7 @@ async function start() {
 
   buildViews(await loadViews());
   initQuestBar($('quest-bar'), showTab);
+  watchLayoutHeights();
   updateHeader();
   renderUser();
   $('hdr-user').addEventListener('click', onUserAction);

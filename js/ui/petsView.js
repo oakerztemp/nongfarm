@@ -864,14 +864,13 @@ function renderBarn(state) {
   const mode = barnMode();
   const toggle = barnToggleHtml(mode);
   let festChip = '';
-  try { festChip = festChipHtml(state); festivalDailyCheck(); } catch (err) { console.warn('festival chip unavailable', err); }
+  try { festChip = festChipHtml(state, { compact: mode === '3d' || mode === 'loading' }); festivalDailyCheck(); } catch (err) { console.warn('festival chip unavailable', err); }
   if (mode === '3d' || mode === 'loading') {
     return `<div class="barn-view barn-3d">
       ${renderFamilyEggs(state)}
       <section class="barn-section">
-        <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
-          <div class="barn-head-r">${memoryBtnsHtml(true)}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
-        ${festChip}
+        <div class="barn-head barn-head-3d"><div class="barn-head-l"><h2 class="barn-title">🏡 ลานน้องๆ</h2>${festChip}</div>
+          <div class="barn-head-r"><span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
         ${mode === '3d'
           ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
           : '<div class="b3 b3-loading" data-key="barn3d-loading">กำลังโหลดลาน 3 มิติ…</div>'}
@@ -1019,6 +1018,10 @@ const barnCtx = {
   openKitchen: () => openKitchen(),
   openDetails: id => openDetails(id),
   openEggPicker: () => openEggPicker(),
+  openPostcards: () => openMailbox(),
+  openJournal: () => openJournal(),
+  openAlbum: () => { openAlbum(); },
+  postcardUnread: state => arrivedPostcards(state).filter(c => !c.read).length,
   revealHatch: (pet, toNursery) => openHatchReveal(pet, !!toNursery), // the list's normal reveal, used when the 3D ceremony is cut short
   nurserySheetHtml,
   takeGreeting,

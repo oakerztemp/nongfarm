@@ -1,6 +1,10 @@
 // V23 buildings (CONTRACT_V23 s5): the cottage kitchen (2 merged meshes + night halo + one smoke InstancedMesh) and the dirt path ribbon.
 //   buildKitchen(THREE, { gradient, tier }) -> { group, radius, height, doorLocal, chimneyLocal, setCooking(sec), setNight(bool), update(dt, t), info(), dispose() }
 //   buildPathMesh(THREE, polylines, { width, color, gradient }) -> one Mesh (y = 0.015, soft alpha edges, receives shadow, noPick)
+// V24 landmarks (CONTRACT_V24 s2): front = +z, origin = footprint centre on the ground, merged vertex-coloured toon meshes.
+//   buildMailbox(THREE, { gradient, tier }) -> { group, radius 0.35, height, setFlag(bool), update(dt, t), dispose() }   (2 draw calls: box + flag)
+//   buildNoticeBoard(THREE, { gradient, tier }) -> { group, radius 0.6, height, dispose() }   (1 draw call)
+//   buildBench(THREE, { gradient, tier }) -> { group, radius 0.7, height, dispose() }   (1 draw call)
 
 const PATH_Y = 0.015;
 
@@ -243,4 +247,154 @@ export function buildPathMesh(THREE, polylines, { width = 0.9, color = 0xc9a26b,
   mesh.renderOrder = 1;
   mesh.userData.noPick = true;
   return mesh;
+}
+
+// ---------------------------------------------------------------- V24 landmarks
+
+function toonMesh(THREE, name, parts, gradient) {
+  const geo = mergeColored(THREE, parts);
+  const mat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradient });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = name;
+  return mesh;
+}
+
+function disposeGroup(group, meshes) {
+  for (const m of meshes) { m.geometry.dispose(); m.material.dispose(); }
+  if (group.parent) group.parent.remove(group);
+  group.clear();
+}
+
+function heartGeo(THREE, size, depth) {
+  const h = new THREE.Shape();
+  h.moveTo(0, -0.5); h.bezierCurveTo(-0.9, 0.05, -0.55, 0.7, 0, 0.3); h.bezierCurveTo(0.55, 0.7, 0.9, 0.05, 0, -0.5);
+  const g = new THREE.ExtrudeGeometry(h, { depth, bevelEnabled: false, curveSegments: 5 });
+  g.scale(size, size, 1);
+  return g;
+}
+
+const WOOD_D = 0x7a4a2a, WOOD_M = 0xc98f55, WOOD_L = 0xdcab72, CREAM_L = 0xf5e6c8;
+
+export function buildMailbox(THREE, { gradient, tier = 'high' } = {}) {
+  const group = new THREE.Group();
+  group.name = 'mailbox';
+  const seg = tier === 'low' ? 8 : 14;
+  const BLUE = 0x4f8fd6, BLUE_D = 0x3a6fae, RED = 0xe0463c;
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const parts = [
+    { geo: box(0.22, 0.04, 0.22), color: 0x8f9a6a, pos: [0, 0.02, 0] },                                       // footing
+    { geo: box(0.09, 0.68, 0.09), color: WOOD_M, pos: [0, 0.34, 0] },                                        // post
+    { geo: box(0.07, 0.07, 0.3), color: WOOD_D, pos: [0, 0.66, 0.0] },                                       // shelf brace
+    { geo: box(0.3, 0.13, 0.5), color: BLUE, pos: [0, 0.745, 0] },                                           // lower box
+  ];
+  parts.push({ geo: new THREE.CylinderGeometry(0.15, 0.15, 0.5, seg), color: BLUE, pos: [0, 0.81, 0], rot: [Math.PI / 2, 0, 0] });   // rounded lid (axis along z)
+  parts.push({ geo: box(0.31, 0.13, 0.03), color: BLUE_D, pos: [0, 0.745, 0.255] });                         // door (lower half)
+  parts.push({ geo: new THREE.CylinderGeometry(0.152, 0.152, 0.03, seg), color: BLUE_D, pos: [0, 0.81, 0.255], rot: [Math.PI / 2, 0, 0] }); // door (round top)
+  parts.push({ geo: heartGeo(THREE, 0.1, 0.012), color: RED, pos: [0, 0.8, 0.27] });                         // heart on the door
+  parts.push({ geo: box(0.05, 0.03, 0.02), color: 0xf2c14e, pos: [0, 0.69, 0.275] });                        // latch
+  parts.push({ geo: box(0.015, 0.09, 0.14), color: CREAM_L, pos: [-0.155, 0.8, 0.0] });                      // envelope on the left side
+  parts.push({ geo: box(0.02, 0.02, 0.1), color: RED, pos: [-0.158, 0.8, 0.0], rot: [0.5, 0, 0] });
+  const body = toonMesh(THREE, 'mailbox-body', parts, gradient);
+  group.add(body);
+
+  // flag: pivots about the x axis on the right side; rotation.x 0 = up, FLAG_DOWN = lowered
+  const FLAG_DOWN = -1.45;
+  const flagGeo = mergeColored(THREE, [
+    { geo: box(0.025, 0.17, 0.025), color: RED, pos: [0, 0.085, 0] },
+    { geo: box(0.02, 0.07, 0.11), color: RED, pos: [0, 0.14, 0.06] },
+    { geo: new THREE.SphereGeometry(0.03, 6, 5), color: 0xb8312a, pos: [0, 0, 0] },
+  ]);
+  const flagMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradient });
+  const flag = new THREE.Mesh(flagGeo, flagMat);
+  flag.name = 'mailbox-flag';
+  flag.position.set(0.175, 0.78, -0.09);
+  flag.rotation.x = FLAG_DOWN;
+  group.add(flag);
+
+  let want = false;
+  return {
+    group, radius: 0.35, height: 0.97,
+    /** Raise (true) or lower (false) the red flag; the motion happens in update(). */
+    setFlag(on) { want = !!on; },
+    update(dt, t = 0) {
+      const target = want ? 0 : FLAG_DOWN;
+      const d = target - flag.rotation.x;
+      if (Math.abs(d) > 1e-4) flag.rotation.x += d * Math.min(1, dt * 7);
+      else flag.rotation.x = target;
+      flag.rotation.z = want && Math.abs(d) < 0.02 ? Math.sin(t * 5) * 0.03 : 0;      // tiny wiggle while it is up
+    },
+    dispose() { disposeGroup(group, [body, flag]); },
+  };
+}
+
+export function buildNoticeBoard(THREE, { gradient, tier = 'high' } = {}) {
+  const group = new THREE.Group();
+  group.name = 'noticeboard';
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const rise = 0.17, half = 0.29, a = Math.atan2(rise, half), slab = Math.hypot(half, rise) + 0.08;
+  const parts = [
+    { geo: box(0.1, 1.15, 0.1), color: WOOD_M, pos: [-0.44, 0.575, 0] },                                     // posts
+    { geo: box(0.1, 1.15, 0.1), color: WOOD_M, pos: [0.44, 0.575, 0] },
+    { geo: box(0.2, 0.05, 0.2), color: 0x8f9a6a, pos: [-0.44, 0.025, 0] },                                   // footings
+    { geo: box(0.2, 0.05, 0.2), color: 0x8f9a6a, pos: [0.44, 0.025, 0] },
+    { geo: box(1.0, 0.66, 0.05), color: WOOD_L, pos: [0, 0.74, 0.0] },                                       // board
+    { geo: box(1.04, 0.05, 0.08), color: WOOD_D, pos: [0, 1.085, 0.015] },                                   // frame
+    { geo: box(1.04, 0.05, 0.08), color: WOOD_D, pos: [0, 0.395, 0.015] },
+    { geo: box(0.05, 0.66, 0.08), color: WOOD_D, pos: [-0.5, 0.74, 0.015] },
+    { geo: box(0.05, 0.66, 0.08), color: WOOD_D, pos: [0.5, 0.74, 0.015] },
+    // coloured notes (slightly rotated, with pins)
+    { geo: box(0.24, 0.28, 0.012), color: 0xffe27a, pos: [-0.3, 0.8, 0.032], rot: [0, 0, 0.08] },
+    { geo: box(0.2, 0.22, 0.012), color: 0xf59ab5, pos: [-0.02, 0.84, 0.034], rot: [0, 0, -0.1] },
+    { geo: box(0.26, 0.2, 0.012), color: 0x8ed0f0, pos: [0.28, 0.82, 0.032], rot: [0, 0, 0.06] },
+    { geo: box(0.28, 0.2, 0.012), color: 0xa8e08a, pos: [-0.14, 0.55, 0.034], rot: [0, 0, -0.05] },
+    { geo: box(0.2, 0.24, 0.012), color: 0xffffff, pos: [0.22, 0.56, 0.036], rot: [0, 0, 0.12] },
+  ];
+  const pin = (x, y, c) => parts.push({ geo: new THREE.SphereGeometry(0.022, 6, 5), color: c, pos: [x, y, 0.048] });
+  pin(-0.3, 0.92, 0xe0463c); pin(-0.02, 0.94, 0x4f8fd6); pin(0.28, 0.91, 0xe0463c); pin(-0.14, 0.64, 0x4f8fd6); pin(0.22, 0.67, 0xe0463c);
+  // little "writing" lines on the white note
+  parts.push({ geo: box(0.13, 0.015, 0.006), color: 0x6b5a4a, pos: [0.22, 0.6, 0.044], rot: [0, 0, 0.12] });
+  parts.push({ geo: box(0.1, 0.015, 0.006), color: 0x6b5a4a, pos: [0.22, 0.54, 0.044], rot: [0, 0, 0.12] });
+  // small gabled roof
+  const tri = new THREE.Shape(); tri.moveTo(-0.26, 0); tri.lineTo(0.26, 0); tri.lineTo(0, rise); tri.closePath();
+  const gable = new THREE.ExtrudeGeometry(tri, { depth: 1.0, bevelEnabled: false });
+  gable.translate(0, 0, -0.5); gable.rotateY(Math.PI / 2);
+  parts.push({ geo: gable, color: CREAM_L, pos: [0, 1.15, 0] });
+  for (const s of [1, -1]) parts.push({ geo: box(1.16, 0.06, slab), color: 0xe2763a, pos: [0, 1.15 + rise / 2 + 0.03, s * half / 2], rot: [s * a, 0, 0] });
+  parts.push({ geo: box(1.18, 0.07, 0.09), color: 0xc9602b, pos: [0, 1.15 + rise + 0.05, 0] });
+  const body = toonMesh(THREE, 'noticeboard-body', parts, gradient);
+  group.add(body);
+  return { group, radius: 0.6, height: 1.4, dispose() { disposeGroup(group, [body]); } };
+}
+
+export function buildBench(THREE, { gradient, tier = 'high' } = {}) {
+  const group = new THREE.Group();
+  group.name = 'bench';
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const seg = tier === 'low' ? 7 : 12;
+  const parts = [];
+  for (const sx of [-1, 1]) {                                                                                  // side frames
+    parts.push({ geo: box(0.07, 0.36, 0.06), color: WOOD_D, pos: [sx * 0.43, 0.18, 0.14] });
+    parts.push({ geo: box(0.07, 0.36, 0.06), color: WOOD_D, pos: [sx * 0.43, 0.18, -0.12] });
+    parts.push({ geo: box(0.08, 0.04, 0.4), color: WOOD_D, pos: [sx * 0.43, 0.38, 0.01] });                    // arm rest
+    parts.push({ geo: box(0.06, 0.52, 0.05), color: WOOD_D, pos: [sx * 0.43, 0.6, -0.17], rot: [-0.12, 0, 0] }); // back post
+  }
+  for (const z of [0.14, 0.01, -0.12]) parts.push({ geo: box(1.0, 0.045, 0.12), color: WOOD_M, pos: [0, 0.4, z] }); // seat planks
+  for (const [y, c] of [[0.58, WOOD_L], [0.7, WOOD_M]]) parts.push({ geo: box(0.94, 0.09, 0.03), color: c, pos: [0, y, -0.2 - (y - 0.4) * 0.12], rot: [-0.12, 0, 0] }); // back slats
+  // flower pot beside the bench
+  const px = 0.58, pz = 0.06;
+  parts.push({ geo: new THREE.CylinderGeometry(0.1, 0.075, 0.17, seg), color: 0xc8603a, pos: [px, 0.085, pz] });
+  parts.push({ geo: new THREE.CylinderGeometry(0.108, 0.108, 0.035, seg), color: 0xb04f2e, pos: [px, 0.18, pz] });
+  parts.push({ geo: new THREE.CylinderGeometry(0.09, 0.09, 0.02, seg), color: 0x5a3e2b, pos: [px, 0.19, pz] });
+  const flowers = tier === 'low' ? 2 : 4;
+  const spots = [[-0.04, 0.0, 0xf59ab5, 0.33], [0.04, -0.03, 0xffe27a, 0.38], [0.0, 0.05, 0xffffff, 0.3], [0.05, 0.04, 0xf08a5d, 0.35]];
+  parts.push({ geo: new THREE.SphereGeometry(0.075, 7, 5), color: 0x6fae4f, pos: [px, 0.24, pz] });             // leaves
+  for (let i = 0; i < flowers; i++) {
+    const [dx, dz, c, y] = spots[i];
+    parts.push({ geo: box(0.014, y - 0.2, 0.014), color: 0x4f8f3f, pos: [px + dx, 0.2 + (y - 0.2) / 2, pz + dz] });
+    parts.push({ geo: new THREE.SphereGeometry(0.04, 7, 5), color: c, pos: [px + dx, y + 0.01, pz + dz] });
+    parts.push({ geo: new THREE.SphereGeometry(0.016, 5, 4), color: 0xf2c14e, pos: [px + dx, y + 0.03, pz + dz + 0.03] });
+  }
+  const body = toonMesh(THREE, 'bench-body', parts, gradient);
+  group.add(body);
+  return { group, radius: 0.7, height: 0.85, dispose() { disposeGroup(group, [body]); } };
 }

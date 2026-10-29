@@ -432,6 +432,17 @@ body.tab-syncing .tab-banner { animation: fade-in 0.2s 0.4s both; }
   .quest-bar { gap: 8px; padding: 6px 10px; }
 }
 
+/* CONTRACT_V24 §1: quest bar on phones = one line (step + title + button); tap the title to open the hint and reward */
+@media (max-width: 767.98px) {
+  .quest-bar { gap: 8px; padding: 5px 10px; }
+  .quest-hint, .quest-reward { display: none; }
+  .quest-text { cursor: pointer; }
+  .quest-bar.is-open .quest-title { white-space: normal; }
+  .quest-bar.is-open .quest-hint { display: block; white-space: normal; }
+  .quest-bar.is-open .quest-reward { display: block; flex-basis: 100%; order: 5; }
+  .quest-bar.is-open { flex-wrap: wrap; }
+}
+
 /* ---------- main ---------- */
 
 .view-root {

@@ -33,7 +33,10 @@ export function initQuestBar(rootEl, showTab) {
 
   rootEl.addEventListener('click', e => {
     const btn = e.target.closest('[data-qb]');
-    if (!btn) return;
+    if (!btn) {
+      if (e.target.closest('.quest-text')) rootEl.classList.toggle('is-open'); // mobile: tap the title to expand / collapse
+      return;
+    }
     if (btn.dataset.qb === 'go') {
       showTab(btn.dataset.tab);
       return;

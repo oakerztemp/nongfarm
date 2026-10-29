@@ -799,6 +799,22 @@ export function feedPet(state, petId, itemId) {
   return r;
 }
 
+/**
+ * V24 bowl feeding (CONTRACT_V24 section 3): the yard pets (not the nursery, not away working / exploring) that feedPet(itemId) would
+ * accept and that are hungry enough (hunger < 70), hungriest first, at most min(max, items in the bag). Pure; unknown / non-food item -> [].
+ */
+export function bowlFeedPlan(state, itemId, max = 4) {
+  const item = getItem(itemId);
+  if (!item || !item.food) return [];
+  const n = Math.min(Math.max(0, Math.floor(Number(max) || 0)), countItem(state, itemId));
+  if (n <= 0) return [];
+  return (state.pets || [])
+    .filter(p => p && p.status !== 'nursery' && p.status !== 'working' && !careBlocker(p) && p.stats && p.stats.hunger < 70)
+    .sort((a, b) => a.stats.hunger - b.stats.hunger)
+    .slice(0, n)
+    .map(p => p.id);
+}
+
 /** V18: why this pet can't start a play session right now (a Thai sentence), or null. Checked before the play mode opens. */
 export function playBlocker(state, petId) {
   const pet = getPet(state, petId);

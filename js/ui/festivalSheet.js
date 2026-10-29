@@ -10,14 +10,15 @@ import { petEmoji } from '../pets.js';
 const e = escapeHtml;
 
 /** "🏮 🌾 เทศกาลเก็บเกี่ยว · เหลือ 3 วัน": reads the state only (never rolls the tasks). */
-export function festChipHtml(state) {
+export function festChipHtml(state, opts = {}) {
   const fest = activeFestival(now());
   const f = state && state.festival;
   const claim = f && f.key === fest.key && Array.isArray(f.tasks) ? f.tasks.filter(t => t && !t.claimed && t.progress >= t.target).length : 0;
   const left = festivalDaysLeft(fest);
   const icon = fest.emoji === '🏮' ? '🏮' : `🏮 ${fest.emoji}`;
-  return `<button type="button" class="fest-chip fest-${fest.kind}${claim ? ' has-claim' : ''}" data-action="open-festival" aria-label="เทศกาล ${e(fest.nameTh)} เหลือ ${left} วัน${claim ? ` มีรางวัลให้รับ ${claim}` : ''}">
-    <span class="fest-chip-e" aria-hidden="true">${icon}</span><span class="fest-chip-t">${e(fest.nameTh)}</span><span class="fest-chip-d">· เหลือ ${left} วัน</span>${claim ? `<b class="fest-chip-n">รับ ${claim}</b>` : ''}</button>`;
+  const compact = !!opts.compact;
+  return `<button type="button" class="fest-chip fest-${fest.kind}${compact ? ' fest-chip-compact' : ''}${claim ? ' has-claim' : ''}" data-action="open-festival" aria-label="เทศกาล ${e(fest.nameTh)} เหลือ ${left} วัน${claim ? ` มีรางวัลให้รับ ${claim}` : ''}">
+    <span class="fest-chip-e" aria-hidden="true">${compact ? fest.emoji : icon}</span>${compact ? '' : `<span class="fest-chip-t">${e(fest.nameTh)}</span>`}<span class="fest-chip-d">${compact ? '' : '· '}เหลือ ${left} วัน</span>${claim ? `<b class="fest-chip-n">รับ ${claim}</b>` : ''}</button>`;
 }
 
 const itemList = recipe => Object.entries(recipe).map(([id, n]) => { const it = getItem(id); return `${it ? it.emoji : ''}×${n}`; }).join(' + ');

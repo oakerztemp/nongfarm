@@ -38,6 +38,7 @@ import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, b
   pickFeedTarget, createFeedDrag, FEED_RANGE, greetingPlan, greetSpots,
   locomotionOf, shelterSpots, puddleSpots, isRainKind, partySpot, tapReaction,
   isNightAt, HOVER_HEIGHT, antLineSpot, THREAD_ANCHOR_Y } from '../petBehaviour.js';
+import * as PETS from '../pets.js';           // namespace: bowlFeedPlan is read defensively (V24)
 import * as PB from '../petBehaviour.js';   // namespace: kitchenSpot / YARD_TIER_LAYOUT are read defensively (V23)
 import { createWorld, mergeStaticParts, WILD } from '../world3d/engine.js';
 import { getSkyPref, onPrefChange } from '../prefs.js';
@@ -91,15 +92,17 @@ export function mountBarn3d(host, ctx) {
       '<button type="button" class="b3-chip b3-top-chip" data-b3="collect-all" hidden></button>' +
       '<button type="button" class="b3-photo-btn btn btn-sm" data-b3="photo" aria-label="ถ่ายรูป" title="ถ่ายรูปน้องๆ">📸</button>' +
       '<button type="button" class="b3-photo-btn b3-mapbtn btn btn-sm" data-b3="whole-farm" aria-pressed="false" aria-label="ดูทั้งฟาร์ม" title="ดูทั้งฟาร์ม">🗺️</button>' +
-      '<button type="button" class="b3-decor-btn btn btn-sm" data-b3="decor-mode" aria-pressed="false" hidden>🎀 ตกแต่ง</button>' +
-      '<button type="button" class="b3-egg-btn btn btn-sm" data-b3="put-egg" hidden>🥚 ใส่ไข่</button></div></div>' +
+      '<button type="button" class="b3-decor-btn btn btn-sm" data-b3="decor-mode" aria-pressed="false" hidden>🎀 ตกแต่ง</button></div></div>' +
     '<div class="b3-labels" aria-hidden="true"></div>' +
     '<div class="b3-hint" hidden></div>' +
     '<div class="b3-tray" role="group" aria-label="ถาดอาหาร"></div>' +
+    '<div class="b3-bench-sheet" role="dialog" aria-label="ม้านั่งชมวิว" hidden>' +
+      '<button type="button" class="btn" data-b3="bench-photo">📸 ถ่ายรูป</button>' +
+      '<button type="button" class="btn" data-b3="bench-album">🖼️ อัลบั้ม</button></div>' +
     '<div class="b3-sheet" role="dialog" aria-label="ข้อมูลน้อง" hidden></div>';
   const stage = host.querySelector('.b3-stage');
   const signEl = host.querySelector('.b3-sign');
-  const eggBtn = host.querySelector('.b3-egg-btn');
+  const benchSheet = host.querySelector('.b3-bench-sheet');
   const chipEl = host.querySelector('.b3-chip');
   const decorBtn = host.querySelector('.b3-decor-btn');
   const mapBtn = host.querySelector('.b3-mapbtn');
@@ -247,6 +250,8 @@ export function mountBarn3d(host, ctx) {
     if (lanternHaloMat) { lanternHaloMat.dispose(); lanternHaloMat = null; }
     pondGlint = null;
     refreshKitchenCirc();
+    refreshLmCircs();
+    placeBarnPick();
     const geos = [];
     const g = o => { geos.push(o); return o; };
     const cyl = (rt, rb, h, seg = 14) => g(new THREE.CylinderGeometry(rt, rb, h, seg));
@@ -383,6 +388,7 @@ export function mountBarn3d(host, ctx) {
     loadBuildings().then(m => {
       if (!m || disposed || seq !== bldSeq) return;
       try { placeKitchen(m); } catch (e) { console.warn('kitchen failed', e); }
+      try { placeLandmarks(m); } catch (e) { console.warn('landmarks failed', e); }
       try { placePaths(m); } catch (e) { console.warn('paths failed', e); }
     });
   }
@@ -428,6 +434,210 @@ export function mountBarn3d(host, ctx) {
     world.addProp('yard-paths', mesh, { ownGeometry: true });
     pathMesh = mesh;
   }
+  // ── V24 ของในแมพที่กดได้: ตู้จดหมาย / กระดาน / ม้านั่ง + ประตูโรงนา + หมุด (CONTRACT_V24 §2) ───────────────────────
+  const LM_DEFS = [
+    { key: 'mailbox', build: 'buildMailbox', id: 'lm-mailbox' },
+    { key: 'board', build: 'buildNoticeBoard', id: 'lm-board' },
+    { key: 'bench', build: 'buildBench', id: 'lm-bench' },
+  ];
+  const landmarks = new Map();   // key -> { model, tier, glide }
+  let lmCircs = [];              // [{ x, z, r }]: strays are pushed out of these
+  let mailboxFlag = null;
+  const lmSpotsOf = tier => {
+    try { if (typeof PB.landmarkSpots === 'function') return PB.landmarkSpots(tier) || null; } catch { /* fall through */ }
+    return YARD.landmarks || null;
+  };
+  function refreshLmCircs() {
+    const sp = lmSpotsOf(yardTier);
+    lmCircs = sp ? LM_DEFS.map(d => sp[d.key]).filter(Boolean).map(o => ({ x: o.x, z: o.z, r: o.r || 0.5 })) : [];
+  }
+  const faceCentre = (g, x, z) => { g.rotation.y = Math.atan2(-x, -z); };   // models face +z: turn them toward the yard centre
+  function removeLandmarks() {
+    for (const [key, L] of landmarks) {
+      const def = LM_DEFS.find(d => d.key === key);
+      try { world.removeActor(def.id); } catch { /* gone */ }
+      try { L.model.dispose(); } catch (e) { console.warn('landmark.dispose failed', e); }
+    }
+    landmarks.clear();
+    mailboxFlag = null;
+  }
+  function placeLandmarks(m) {
+    const spots = lmSpotsOf(yardTier);
+    if (!spots) return;
+    for (const def of LM_DEFS) {
+      const spot = spots[def.key];
+      if (!spot || typeof m[def.build] !== 'function') continue;
+      const L = landmarks.get(def.key);
+      if (L) {
+        if (L.tier !== yardTier) {   // the yard grew: it slides to its new spot with the fence
+          L.glide = { fx: L.model.group.position.x, fz: L.model.group.position.z, tx: spot.x, tz: spot.z, t: 0 };
+          L.tier = yardTier;
+          faceCentre(L.model.group, spot.x, spot.z);
+        }
+        continue;
+      }
+      let model;
+      try { model = m[def.build](THREE, { gradient: world.toonGradient, tier: world.tier }); } catch (e) { console.warn(def.build + ' failed', e); continue; }
+      if (!model || !model.group) continue;
+      model.group.position.set(spot.x, 0, spot.z);
+      faceCentre(model.group, spot.x, spot.z);
+      world.addActor(def.id, model.group, { radius: model.radius || spot.r || 0.5, height: model.height || 1, stroke: false, shadowScale: 1.1 });
+      landmarks.set(def.key, { model, tier: yardTier, glide: null });
+    }
+    mailboxFlag = null;
+    syncMailboxFlag(getState());
+  }
+  function stepLandmarks(dt, t) {
+    for (const L of landmarks.values()) {
+      const g = L.glide;
+      if (g) {
+        g.t += dt / 0.9;
+        const e = ease.outCubic(Math.min(1, g.t));
+        L.model.group.position.set(g.fx + (g.tx - g.fx) * e, 0, g.fz + (g.tz - g.fz) * e);
+        if (g.t >= 1) L.glide = null;
+      }
+      if (typeof L.model.update === 'function') L.model.update(dt, t);
+    }
+  }
+  function unreadPostcards(state) {
+    try { return typeof ctx.postcardUnread === 'function' ? Math.max(0, Number(ctx.postcardUnread(state)) || 0) : 0; } catch { return 0; }
+  }
+  function syncMailboxFlag(state) {
+    const L = landmarks.get('mailbox');
+    if (!L || typeof L.model.setFlag !== 'function') return;
+    const up = unreadPostcards(state) > 0;
+    if (up === mailboxFlag) return;
+    mailboxFlag = up;
+    try { L.model.setFlag(up); } catch (e) { console.warn('mailbox.setFlag failed', e); }
+  }
+
+  // the barn door: the barn prop is not pickable, so an invisible box (no draw call) stands over it
+  let barnPickGeo = null, barnPickMat = null, barnPickOn = false;
+  const barnZOf = tier => { const lay = PB.YARD_TIER_LAYOUT && PB.YARD_TIER_LAYOUT[tier]; return lay && Number.isFinite(lay.barnZ) ? lay.barnZ : YARD.nestZ - 2.35; };
+  function placeBarnPick() {
+    if (!barnPickGeo) {
+      barnPickGeo = own(new THREE.BoxGeometry(2.8, 2.1, 2.3));
+      barnPickMat = own(new THREE.MeshBasicMaterial({ visible: false }));
+    }
+    if (!barnPickOn) {
+      const mesh = new THREE.Mesh(barnPickGeo, barnPickMat);
+      mesh.position.y = 1.05;
+      const grp = new THREE.Group();
+      grp.add(mesh);
+      world.addActor('barn-door', grp, { radius: 1.3, height: 2.1, stroke: false, shadow: false });
+      barnPickOn = true;
+    }
+    const a = world.getActor && world.getActor('barn-door');
+    if (a) a.object.position.set(0, 0, barnZOf(yardTier));
+  }
+  const eggsInBag = state => Object.entries(state.inventory || {}).some(([id, n]) => n > 0 && (getItem(id) || {}).type === 'egg') || (state.familyEggs || []).length > 0;
+  const canPutEgg = state => state.incubator.length < state.incubatorCapacity && eggsInBag(state);
+  function onBarnTap() {
+    if (selected || selectedCrib) closeSheet();
+    const st = getState();
+    if (canPutEgg(st)) { ctx.openEggPicker(); return; }
+    const used = st.incubator.length, cap = st.incubatorCapacity;
+    notify(used >= cap ? `🥚 ตู้ฟักเต็มแล้ว (${used}/${cap} ช่อง) — รอไข่ฟักก่อนนะ` : `🥚 ตู้ฟักว่าง ${cap - used} ช่อง (ใช้อยู่ ${used}/${cap}) แต่ไม่มีไข่ในกระเป๋า — ไปซื้อที่ร้านค้าได้เลย 🛒`, 'info');
+  }
+
+  // bench sheet
+  function openBench() {
+    if (selected || selectedCrib) closeSheet();
+    benchSheet.hidden = false;
+    const b = benchSheet.querySelector('button');
+    if (b) { try { b.focus({ preventScroll: true }); } catch { /* not focusable */ } }
+  }
+  function closeBench() { if (!benchSheet.hidden) benchSheet.hidden = true; }
+  const onBenchOutside = ev => { if (!benchSheet.hidden && !benchSheet.contains(ev.target)) closeBench(); };
+  document.addEventListener('pointerdown', onBenchOutside, true);
+
+  function onLandmarkTap(key) {
+    if (key === 'mailbox') { if (typeof ctx.openPostcards === 'function') ctx.openPostcards(); }
+    else if (key === 'board') { if (typeof ctx.openJournal === 'function') ctx.openJournal(); }
+    else if (key === 'bench') openBench();
+  }
+
+  // pins (.b3-pin in .b3-labels): round buttons that float over the buildings; a tap = a tap on the building
+  const PIN_DEFS = [
+    { key: 'barn', emoji: '🥚', label: 'ใส่ไข่ในตู้ฟัก' },
+    { key: 'mailbox', emoji: '💌', label: 'โปสการ์ดใหม่', count: true },
+    { key: 'kitchen', emoji: '🍳', label: 'โรงครัว' },
+    { key: 'board', emoji: '📔', label: 'สมุดบันทึก' },
+    { key: 'bench', emoji: '📸', label: 'ม้านั่งชมวิว' },
+  ];
+  const pins = new Map();   // key -> { el, nEl, want, num }
+  for (const d of PIN_DEFS) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'b3-pin';
+    el.tabIndex = -1;
+    el.hidden = true;
+    el.dataset.b3 = 'pin';
+    el.dataset.pin = d.key;
+    el.setAttribute('aria-label', d.label);
+    el.appendChild(document.createTextNode(d.emoji));
+    let nEl = null;
+    if (d.count) { nEl = document.createElement('span'); nEl.className = 'b3-pin-n'; el.appendChild(nEl); }
+    labelsEl.appendChild(el);
+    pins.set(d.key, { el, nEl, want: d.key !== 'barn' && d.key !== 'mailbox', num: 0 });
+  }
+  function syncPins(state) {
+    const barn = pins.get('barn'), mail = pins.get('mailbox');
+    barn.want = canPutEgg(state);
+    barn.el.classList.toggle('is-bounce', barn.want);
+    mail.num = unreadPostcards(state);
+    mail.want = mail.num > 0;
+    if (mail.nEl) { const txt = mail.num > 9 ? '9+' : String(mail.num); if (mail.nEl.textContent !== txt) mail.nEl.textContent = txt; }
+  }
+  function pinAnchor(key) {
+    if (key === 'barn') return { x: 0, y: 2.0, z: barnZOf(yardTier) };
+    if (key === 'kitchen') return kitchen ? { x: kitchen.group.position.x, y: (kitchen.height || 2) + 0.2, z: kitchen.group.position.z } : null;
+    const L = landmarks.get(key);
+    return L ? { x: L.model.group.position.x, y: (L.model.height || 1) + 0.25, z: L.model.group.position.z } : null;
+  }
+  function placePins() {
+    const suppress = !!photo || !!playing || !!selected || !!selectedCrib;
+    const sr = stage.getBoundingClientRect(), sw = sr.width, sh = sr.height;
+    let trayTop = Infinity;
+    if (!trayEl.hidden) { const tr = trayEl.getBoundingClientRect(); if (tr.width > 0 && tr.height > 0) trayTop = tr.top - sr.top; }
+    for (const [key, P] of pins) {
+      const a = !suppress && P.want ? pinAnchor(key) : null;
+      const p = a ? world.worldToScreen(a) : null;
+      // hidden (not clamped) when the anchor is off the stage, behind the camera or under the top of the shown tray
+      const show = !!p && p.visible && p.x >= 0 && p.x <= sw && p.y >= 0 && p.y <= sh && p.y < trayTop;
+      if (P.el.hidden === show) P.el.hidden = !show;
+      if (!show) continue;
+      P.el.style.left = p.x.toFixed(0) + 'px';
+      P.el.style.top = Math.max(34, p.y).toFixed(0) + 'px';   // only the top edge: the pin must not poke out of the stage
+      P.el.style.visibility = 'visible';
+    }
+  }
+  function onPinTap(key) {
+    if (key === 'barn') onBarnTap();
+    else if (key === 'kitchen') onKitchenTap();
+    else onLandmarkTap(key);
+  }
+
+  // tray fold button (remembered)
+  const TRAY_PREF = 'nongfarm_pref_tray';
+  const trayToggle = document.createElement('button');
+  trayToggle.type = 'button';
+  trayToggle.className = 'b3-tray-toggle';
+  trayToggle.dataset.b3 = 'tray-toggle';
+  function setTrayCollapsed(on, save) {
+    trayEl.classList.toggle('is-collapsed', !!on);
+    trayToggle.textContent = on ? '🍽️' : '‹';
+    trayToggle.setAttribute('aria-label', on ? 'เปิดถาดอาหาร' : 'พับถาดอาหาร');
+    trayToggle.setAttribute('aria-expanded', String(!on));
+    if (save) { try { localStorage.setItem(TRAY_PREF, on ? '1' : '0'); } catch { /* private mode */ } }
+  }
+  {
+    let saved = false;
+    try { saved = localStorage.getItem(TRAY_PREF) === '1'; } catch { /* private mode */ }
+    setTrayCollapsed(saved, false);
+  }
+  const ensureTrayToggle = () => { if (trayToggle.parentNode !== trayEl || trayEl.firstChild !== trayToggle) trayEl.insertBefore(trayToggle, trayEl.firstChild); };
+
   function stepKitchen(dt, t) {
     if (!kitchen) return;
     if (kitchenGlide) {
@@ -1448,6 +1658,12 @@ export function mountBarn3d(host, ctx) {
         const d = dist2(a.x, a.z, kitchenCirc.x, kitchenCirc.z), min = kitchenCirc.r + ra * 0.3;
         if (d < min) { const k = d > 1e-4 ? (min - d) / d : 0; a.x += (a.x - kitchenCirc.x) * k; a.z += (a.z - kitchenCirc.z) * k; }
       }
+      if (a.loco.kind !== 'hover') {   // V24: nor into the mailbox / board / bench
+        for (const o of lmCircs) {
+          const d = dist2(a.x, a.z, o.x, o.z), min = o.r + ra * 0.3;
+          if (d < min) { const k = d > 1e-4 ? (min - d) / d : 0; a.x += (a.x - o.x) * k; a.z += (a.z - o.z) * k; }
+        }
+      }
       for (const n of nests) {
         const d = dist2(a.x, a.z, n.x, n.z), min = 0.55 + ra * 0.5;
         if (d < min) { const k = d > 1e-4 ? (min - d) / d : 0; a.x += (a.x - n.x) * k; a.z += (a.z - n.z) * k; }
@@ -1574,11 +1790,18 @@ export function mountBarn3d(host, ctx) {
       tg.el.style.transform = `translate(${p.x.toFixed(0)}px, ${p.y.toFixed(0)}px) translate(-50%, -100%)`;
     }
     placeFeedTag();
+    placeBowlHeap();
   }
 
   /** V23 §6: the name pill over the pet that would eat the dragged food, following its head every frame. */
   function placeFeedTag() {
     if (!feedTag) return;
+    if (feedTag.bowl) {
+      const bp = world.worldToScreen({ x: YARD.bowl.x, y: 0.9, z: YARD.bowl.z });
+      feedTag.el.style.transform = `translate(${bp.x.toFixed(0)}px, ${bp.y.toFixed(0)}px) translate(-50%, -100%)`;
+      feedTag.el.style.visibility = bp.visible ? 'visible' : 'hidden';
+      return;
+    }
     const A = actors.get(feedTag.petId);
     if (!A || A.hidden) { setFeedTag(null); return; }
     const p = world.worldToScreen({ x: A.x, y: A.y + A.model.height + 0.45, z: A.z });
@@ -1586,10 +1809,24 @@ export function mountBarn3d(host, ctx) {
     feedTag.el.style.visibility = p.visible ? 'visible' : 'hidden';
   }
 
-  function setFeedTag(petId) {
+  function setFeedTag(petId, bowlText) {
+    if (bowlText) {   // V24: over the bowl: the pill sits above the bowl
+      if (!feedTag) {
+        const el = document.createElement('div');
+        el.className = 'b3-feed-tag';
+        el.style.visibility = 'hidden';
+        labelsEl.appendChild(el);
+        feedTag = { el, petId: null, bowl: true };
+      }
+      feedTag.bowl = true; feedTag.petId = null;
+      if (feedTag.el.textContent !== bowlText) feedTag.el.textContent = bowlText;
+      placeFeedTag();
+      return;
+    }
     if (!petId) { if (feedTag) { feedTag.el.remove(); feedTag = null; } return; }
     const A = actors.get(petId);
     if (!A) { setFeedTag(null); return; }
+    if (feedTag && feedTag.bowl) { feedTag.el.remove(); feedTag = null; }
     if (!feedTag) {
       const el = document.createElement('div');
       el.className = 'b3-feed-tag';
@@ -1743,8 +1980,6 @@ export function mountBarn3d(host, ctx) {
     signEl.hidden = !lines.length;
     const signText = lines.join('\n');
     if (signEl.textContent !== signText) signEl.textContent = signText;
-    const freeSlots = state.incubator.length < state.incubatorCapacity;
-    eggBtn.hidden = !freeSlots;
     refreshUi(state);
     synced = true;
   }
@@ -1790,6 +2025,7 @@ export function mountBarn3d(host, ctx) {
     trayEl.hidden = !!pet || (!state.pets.length) || !hasFood && !state.pets.length;
     if (!trayEl.hidden) {
       setHtml(trayEl, ctx.foodTrayHtml(state, null, armedFood), false);
+      ensureTrayToggle();
       // V23: a new fresh dish chip (data-fresh="1") that was not there before: scroll the tray back to the start so it is seen
       const fresh = trayEl.querySelector('[data-fresh="1"]');
       const fid = fresh ? (fresh.dataset.itemId || 'x') : '';
@@ -1810,6 +2046,8 @@ export function mountBarn3d(host, ctx) {
     hintEl.hidden = !hint;
     if (hintEl.textContent !== hint) hintEl.textContent = hint;
     hintEl.classList.toggle('is-armed', !!armedFood);
+    syncMailboxFlag(state);
+    syncPins(state);
   }
 
   // ── interactions ───────────────────────────────────────────────────────
@@ -1817,6 +2055,7 @@ export function mountBarn3d(host, ctx) {
     if (photo || playing) return;
     if (armedFood) { armedFood = null; refreshUi(); }   // V23: a tap on empty ground cancels the armed food
     if (selected || selectedCrib) closeSheet();
+    closeBench();
   }
 
   function onTap(id) {
@@ -1827,7 +2066,9 @@ export function mountBarn3d(host, ctx) {
     }
     if (id.startsWith('cake-')) { onPetTap(id.slice(5)); return; }
     if (id === 'kitchen') { onKitchenTap(); return; }
-    if (id === 'bowl') { notify('🍽️ ถาดอาหาร — เลือกอาหารจากถาดด้านล่าง แล้วแตะน้องที่อยากให้กิน', 'info'); return; }
+    if (id === 'barn-door') { onBarnTap(); return; }
+    if (id.startsWith('lm-')) { onLandmarkTap(id.slice(3)); return; }
+    if (id === 'bowl') { notify('🍽️ ชามข้าว — ลากอาหารจากถาดมาใส่ชาม น้องๆ ที่หิวจะเดินมากินเอง หรือจะแตะป้อนทีละตัวก็ได้', 'info'); return; }
     if (id.startsWith('nest-')) { onNestTap(Number(id.slice(5))); return; }
     if (id.startsWith('poop-')) { onPoopTap(id); return; }
     if (id.startsWith('crib-')) { onCribTap(id.slice(5)); return; }
@@ -1934,21 +2175,94 @@ export function mountBarn3d(host, ctx) {
       if (disposed || !alive(petId)) return; // the pet left while the food was flying: no stray toast
       const r = ctx.run(s => feedPet(s, petId, itemId));
       if (r && r.ok) {
-        react(A, 'eat', { dur: 1.7, then: AA => {
-          fx.heart(world, headPos(AA));
-          if (r.favDish) {   // V16: the species' favourite dish: a little party
-            fx.sparkle(world, AA.id); fx.confetti(world, headPos(AA), 18); fx.emojiPop(world, headPos(AA), '💕');
-            AA.hold = 0; react(AA, 'hop', { dur: 1.8, hops: 4, height: 0.42 });
-          } else if (r.dish) { fx.emojiPop(world, headPos(AA), '😋'); AA.hold = 0; react(AA, 'hop', { dur: 1.2, hops: 2 }); }
-          else if (favorite) { fx.sparkle(world, AA.id); AA.hold = 0; react(AA, 'hop', { dur: 1.4, hops: 3 }); }
-          if (r.dish) AA.treatAt = 4;
-        } });
+        eatReaction(A, r, favorite);
         if (!(getState().inventory[itemId] > 0)) armedFood = null;
       } else {
         react(A, 'no');
       }
       refreshUi();
     });
+  }
+
+  /** The usual eating pose + the reaction that follows (shared by the tap / drag feed and the bowl). */
+  function eatReaction(A, r, favorite, after) {
+    react(A, 'eat', { dur: 1.7, then: AA => {
+      fx.heart(world, headPos(AA));
+      if (r.favDish) {   // V16: the species' favourite dish: a little party
+        fx.sparkle(world, AA.id); fx.confetti(world, headPos(AA), 18); fx.emojiPop(world, headPos(AA), '💕');
+        AA.hold = 0; react(AA, 'hop', { dur: 1.8, hops: 4, height: 0.42 });
+      } else if (r.dish) { fx.emojiPop(world, headPos(AA), '😋'); AA.hold = 0; react(AA, 'hop', { dur: 1.2, hops: 2 }); }
+      else if (favorite) { fx.sparkle(world, AA.id); AA.hold = 0; react(AA, 'hop', { dur: 1.4, hops: 3 }); }
+      if (r.dish) AA.treatAt = 4;
+      if (after) after();
+    } });
+  }
+
+  // ── V24 §3 ป้อนผ่านชามข้าว: drop the dragged food on the bowl, the hungry pets walk over and eat one after another ──
+  const BOWL_DROP_R = 1.0;
+  let bowlJob = null;   // { itemId, left: Set(petId), heap: element }
+  const bowlPlanOf = itemId => {
+    try { return typeof PETS.bowlFeedPlan === 'function' ? (PETS.bowlFeedPlan(getState(), itemId) || []) : []; } catch { return []; }
+  };
+  /** After dragTargetAt(): is the food over the bowl (<= 1.0) with no pet nearer than the bowl? */
+  function overBowl(petId) {
+    if (!dragPtOk) return false;
+    const d = dist2(dragPt.x, dragPt.z, YARD.bowl.x, YARD.bowl.z);
+    if (d > BOWL_DROP_R) return false;
+    const A = petId && actors.get(petId);
+    return !(A && dist2(dragPt.x, dragPt.z, A.x, A.z) < d);
+  }
+  function endBowl() {
+    if (!bowlJob) return;
+    bowlJob.heap.remove();
+    bowlJob = null;
+  }
+  function bowlPetDone(id) {
+    if (!bowlJob) return;
+    bowlJob.left.delete(id);
+    if (!bowlJob.left.size) endBowl();
+  }
+  function placeBowlHeap() {
+    if (!bowlJob) return;
+    const p = world.worldToScreen({ x: YARD.bowl.x, y: 0.5, z: YARD.bowl.z });
+    bowlJob.heap.style.transform = `translate(${p.x.toFixed(0)}px, ${p.y.toFixed(0)}px) translate(-50%, -100%)`;
+    bowlJob.heap.style.visibility = p.visible ? 'visible' : 'hidden';
+  }
+  function startBowlFeed(itemId, plan) {
+    const it = getItem(itemId);
+    const heap = document.createElement('div');
+    heap.className = 'b3-bowl-heap';
+    heap.setAttribute('aria-hidden', 'true');
+    heap.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;font-size:1.6rem;line-height:1;white-space:nowrap;visibility:hidden';
+    heap.textContent = (it ? it.emoji : '🍖').repeat(Math.min(3, Math.max(1, plan.length)));
+    labelsEl.appendChild(heap);
+    bowlJob = { itemId, left: new Set(plan), heap };
+    placeBowlHeap();
+    world.boost(9000);
+    plan.forEach((id, k) => later(k * 450, () => sendToBowl(id, itemId)));
+  }
+  function sendToBowl(id, itemId) {
+    const A = actors.get(id);
+    if (!bowlJob || bowlJob.itemId !== itemId) return;
+    if (!A || A.hidden || !alive(id)) { bowlPetDone(id); return; }
+    let finished = false;
+    const finish = () => { if (finished) return; finished = true; A.greeting = false; bowlPetDone(id); };
+    A.greeting = true; A.hold = 0; A.stroke = null;
+    let spot = null;
+    try { spot = PB.bowlSpot(id); } catch { /* fall back below */ }
+    if (!spot) spot = { x: YARD.bowl.x, z: YARD.bowl.z + 0.9 };
+    later(15000, finish);   // stuck on the way: let go
+    begin(A, { type: 'walkTo', target: spot, speed: 2.2, onArrive: AA => {
+      if (finished) return;
+      if (!alive(id)) { finish(); return; }
+      AA.heading = Math.atan2(YARD.bowl.x - AA.x, YARD.bowl.z - AA.z);
+      const pet = getPet(getState(), id), item = getItem(itemId);
+      const favorite = pet && item ? foodEffect(pet, item).favorite : false;
+      const r = ctx.run(s => feedPet(s, id, itemId));
+      if (r && r.ok) eatReaction(AA, r, favorite, finish);
+      else { react(AA, 'no'); finish(); }
+      refreshUi();
+    } });
   }
 
   // ── V18 เล่นกับน้อง: the camera flies in close, toys pop up around the pet (js/ui/playGame.js), the score goes to playSession ──
@@ -3010,15 +3324,18 @@ export function mountBarn3d(host, ctx) {
   const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.45);
   const dragRay = new THREE.Raycaster();
   const dragPt = new THREE.Vector3();
+  let dragPtOk = false;          // dragPt holds the ground point of the last dragTargetAt()
 
   /** The pet under the dragged food: pointer -> ground-ish world point -> nearest pet within FEED_RANGE. */
   function dragTargetAt(cx, cy) {
+    dragPtOk = false;
     const r = stage.getBoundingClientRect();
     if (!r.width || !r.height) return null;
     const ndc = new THREE.Vector2(((cx - r.left) / r.width) * 2 - 1, -(((cy - r.top) / r.height) * 2 - 1));
     world.camera.updateMatrixWorld();
     dragRay.setFromCamera(ndc, world.camera);
     if (!dragRay.ray.intersectPlane(dragPlane, dragPt)) return null;
+    dragPtOk = true;
     const cands = [];
     for (const A of actors.values()) if (!A.hidden && !A.spawn) cands.push({ id: A.id, x: A.x, z: A.z });
     return pickFeedTarget({ x: dragPt.x, z: dragPt.z }, cands, FEED_RANGE);
@@ -3074,8 +3391,10 @@ export function mountBarn3d(host, ctx) {
     ev.preventDefault();
     ghostTo(drag.ghost, ev.clientX, ev.clientY);
     drag.targetId = dragTargetAt(ev.clientX, ev.clientY);
+    drag.bowl = overBowl(drag.targetId);   // V24: over the bowl = the bowl is the target, no single pet
+    if (drag.bowl) drag.targetId = null;
     drag.feed.hover(drag.targetId);
-    setFeedTag(drag.targetId);
+    setFeedTag(drag.targetId, drag.bowl ? `ชามข้าว · ${bowlPlanOf(drag.itemId).length} ตัว` : null);
     drag.px = ev.clientX; drag.py = ev.clientY;
     world.boost(250);
   }
@@ -3083,7 +3402,24 @@ export function mountBarn3d(host, ctx) {
   function onDragUp(ev) {
     if (!drag || ev.pointerId !== drag.pointerId) return;
     if (!drag.active) { drag = null; return; }   // it was a click: the normal arm / disarm handler runs
-    if (ev.type !== 'pointercancel') drag.feed.hover(dragTargetAt(ev.clientX, ev.clientY));   // the drop point decides: nobody near = spring back, no feeding
+    if (ev.type !== 'pointercancel') {   // the drop point decides: nobody near = spring back, no feeding
+      const tid = dragTargetAt(ev.clientX, ev.clientY);
+      drag.bowl = overBowl(tid);
+      drag.feed.hover(drag.bowl ? null : tid);
+    }
+    if (drag.bowl && ev.type !== 'pointercancel') {   // V24 §3: food dropped on the bowl
+      const itemId = drag.itemId, bg = drag.ghost;
+      const plan = bowlJob ? [] : bowlPlanOf(itemId);
+      if (!plan.length) {
+        notify(bowlJob ? 'น้องๆ กำลังกินอยู่ รอแป๊บนะ 🍽️' : 'ยังไม่มีน้องหิวเลย 🍽️', 'info');
+        endDrag(true);
+        return;
+      }
+      endDrag(false);
+      if (bg) bg.remove();
+      startBowlFeed(itemId, plan);
+      return;
+    }
     const drop = ev.type === 'pointercancel' ? null : drag.feed.drop();
     const id = drop && drop.petId, itemId = drop && drop.itemId;
     const g = drag.ghost;
@@ -4352,6 +4688,10 @@ export function mountBarn3d(host, ctx) {
       refreshUi();
     },
     'put-egg': () => ctx.openEggPicker(),
+    'tray-toggle': () => setTrayCollapsed(!trayEl.classList.contains('is-collapsed'), true),
+    'bench-photo': () => { closeBench(); enterPhoto(); },
+    'bench-album': () => { closeBench(); if (typeof ctx.openAlbum === 'function') ctx.openAlbum(); },
+    pin: btn => onPinTap(btn.dataset.pin),
     play: btn => careAction('play', btn.dataset.petId),
     bath: btn => careAction('bath', btn.dataset.petId),
     toy: btn => careAction('toy', btn.dataset.petId),
@@ -4508,6 +4848,7 @@ export function mountBarn3d(host, ctx) {
     stepFestival(dt, t);
     stepKrathongs(dt);
     stepTemps(dt);
+    try { stepLandmarks(dt, t); } catch (e) { console.warn('landmarks update failed', e); removeLandmarks(); }
     try { stepKitchen(dt, t); } catch (e) { if (kitchen) { console.warn('kitchen update failed', e); removeKitchen(); } }
     if (armedFood && performance.now() - armedAt > ARMED_FOOD_MS) { armedFood = null; refreshUi(); }   // V23: unused armed food lets go
     // selection ring
@@ -4520,6 +4861,7 @@ export function mountBarn3d(host, ctx) {
     } else ring.visible = false;
     updateCameraPan(dt);
     placeLabels();
+    placePins();
     uiTick += dt;
     if (uiTick > 1) { uiTick = 0; updateNestLabels(); }
   }
@@ -4586,7 +4928,11 @@ export function mountBarn3d(host, ctx) {
       if (unStroke) unStroke();
       if (unWhole) unWhole();
       removeKitchen();
+      removeLandmarks();
       removePaths();
+      document.removeEventListener('pointerdown', onBenchOutside, true);
+      endBowl();
+      for (const P of pins.values()) P.el.remove();
       for (const el of dishFlies) el.remove();
       dishFlies.clear();
       unFriend();

@@ -1,15 +1,19 @@
 // Persistence: localStorage (guest + per-user cache) and Firestore (users/{uid}).
-// Autosave: local every <=2s when dirty, cloud every 30s when dirty, plus on tab hide / page close.
+// Autosave: local every <=2s when dirty, cloud every 10s when dirty (player actions), plus on tab hide / page close.
 // Cloud writes use optimistic concurrency: doc = { state, updatedAt, version, rev }, every write sends
 // rev = lastKnownRev + 1 (firestore.rules enforces it), so a stale tab/device can never overwrite newer data.
 // Only the most recently focused tab of an account (or of the guest save) saves: BroadcastChannel single-writer.
 // A tab that loses the writer role writes the shared local cache first; the next writer adopts the newest of
 // {its memory, local cache, cloud}.
+// Two devices: `${key}_base` keeps the last copy known to be in the cloud. When a newer cloud copy would replace
+// a local copy with unsent player actions, mergeSaves(base, local, cloud) combines both (CONTRACT_V26 section 2);
+// with no usable base the newer copy wins and the other is backed up, as before.
 import {
   getState, subscribe, migrate, createNewState, isPristine, isNewerSave, DEFAULT_FARM_NAME, STATE_VERSION,
 } from './state.js';
 import { getDb } from './auth.js';
 import { notify, now, uid as newId } from './util.js';
+import { mergeSaves } from './merge.js';
 
 // v3 uses its own local keys and channel, so a still-open v2 tab (old code) can neither overwrite our shared
 // cache nor take the writer role from us. The old keys are read once and left untouched.
@@ -20,10 +24,12 @@ const legacyUserKey = uid => `nongfarm_${uid}`;
 export const WRITER_CHANNEL = 'nongfarm3-writer';
 
 const LOCAL_INTERVAL_MS = 2000;
-const CLOUD_INTERVAL_MS = 30000;
+const CLOUD_INTERVAL_MS = 10000;
 const TICK_UPLOAD_MS = 5 * 60 * 1000; // upload tick-only drift (no player action) at most this often
 const CLOUD_TIMEOUT_MS = 10000;
-const MAX_BACKUPS = 3;
+const MAX_BACKUPS = 6;
+const MAX_MERGE_RETRIES = 3; // merge-and-upload attempts in a row before falling back to adopting the cloud copy
+const MAX_SENT_STAMPS = 6;
 const ACK_WAIT_MS = 150; // how long a new writer waits to learn whether another tab is currently writing
 const YIELD_WAIT_MS = 1500; // ...and then for that tab to announce its final save
 
@@ -39,6 +45,8 @@ let lastBackupTs = 0;
 let cloudRev = 0; // rev of the cloud doc as of our last successful load/save (missing doc or no field = 0)
 let syncedStamp = 0; // state.updatedAt at the last successful load/save: differs => unsent player actions exist
 let lastSent = null; // { rev, payload } of the latest write attempt
+let mergeRetries = 0; // consecutive rejected uploads that were answered with a merge
+const MERGED_MSG = '🔄 รวมความคืบหน้าจาก 2 เครื่องแล้ว';
 let applyFn = null; // installs a state into the game (main.loadState); set by startAutosave / connectUser
 // Writer role is only ever obtained through claimWriter(): a tab that starts in the background never writes.
 let isWriter = false;
@@ -142,6 +150,89 @@ export function loadGuest() {
   return saved ? { state: saved, isNew: false } : { state: createNewState(), isNew: true };
 }
 
+// ---- base snapshot (last copy known to be in the cloud) + merge ----
+
+const baseKeyOf = key => `${key}_base`;
+const sentKeyOf = key => `${key}_sent`;
+
+/** Base snapshot of a save key (migrated), or null if missing / corrupt / written by another state version. */
+function loadBase(key) {
+  try {
+    const raw = localStorage.getItem(baseKeyOf(key));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!isObj(parsed) || parsed.version !== STATE_VERSION) return null;
+    return migrate(parsed);
+  } catch {
+    return null;
+  }
+}
+
+/** Stores the base (a state or its JSON string). A base that cannot be stored is removed: a stale one would double-count. */
+function saveBase(state) {
+  if (!target.uid) return; // guests have no cloud copy
+  const key = baseKeyOf(target.key);
+  try {
+    localStorage.setItem(key, typeof state === 'string' ? state : JSON.stringify(state));
+  } catch (e) {
+    console.error('Base save failed', e);
+    try { localStorage.removeItem(key); } catch { /* storage unavailable */ }
+  }
+}
+
+function removeBase() {
+  try { localStorage.removeItem(baseKeyOf(target.key)); } catch { /* storage unavailable */ }
+}
+
+/** updatedAt stamps of this account's latest cloud write attempts (kept across reloads). */
+function readSentStamps(key) {
+  try {
+    const list = JSON.parse(localStorage.getItem(sentKeyOf(key)));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function recordSentStamp(key, stamp) {
+  try {
+    localStorage.setItem(sentKeyOf(key), JSON.stringify([...readSentStamps(key), stamp].slice(-MAX_SENT_STAMPS)));
+  } catch { /* storage unavailable: the merge guard just has less to go on */ }
+}
+
+/** True when `s` holds player actions that are neither in the base nor (optionally) in our last synced copy. */
+const hasUnsent = (s, base, checkSynced) => s.updatedAt !== base.updatedAt && !(checkSynced && s.updatedAt === syncedStamp);
+
+/**
+ * Three-way merge of a local copy with unsent actions and a cloud copy that moved on without it.
+ * Returns the merged state, or null when merging is not allowed (no base, other state version, cloud copy is one
+ * of our own earlier write attempts that merely landed late, merge threw) so the caller keeps the old behaviour.
+ */
+function mergeWithCloud(key, base, local, cloudState) {
+  try {
+    if (!base || local.version !== STATE_VERSION || cloudState.version !== STATE_VERSION) return null;
+    // The cloud holds one of OUR earlier writes that landed late (we never saw the ack): our local copy grew from it, so it
+    // is the real common ancestor. Merging from the older base would count it twice; merging from it keeps exactly our copy.
+    const own = readSentStamps(key).includes(cloudState.updatedAt);
+    const res = mergeSaves(own ? cloudState : base, local, cloudState);
+    const merged = res && res.state;
+    if (!isObj(merged) || merged.version !== STATE_VERSION) return null;
+    // Strictly newer than the cloud copy, so nothing ever treats the unsent merge as "the same save" as the cloud.
+    return merged.updatedAt > cloudState.updatedAt ? merged : { ...merged, updatedAt: cloudState.updatedAt + 1 };
+  } catch (e) {
+    console.error('Merge failed, falling back to the newest copy', e);
+    return null;
+  }
+}
+
+/** Installs a merged state: it continues the cloud rev, is uploaded, and the cloud copy it contains becomes the base. */
+function installMerged(merged, cloudFetched) {
+  cloudRev = Math.max(cloudRev, cloudFetched.rev);
+  installState(merged, { fromCloud: false, uploadNeeded: true });
+  saveBase(cloudFetched.state); // the merge contains this cloud copy: a further merge must start from it
+  notify(MERGED_MSG, 'success');
+}
+
 // ---- cloud ----
 
 /**
@@ -175,6 +266,7 @@ async function writeCloud(uid, state) {
   const rev = cloudRev + 1;
   const stamp = state.updatedAt;
   lastSent = { rev, payload };
+  if (target.uid === uid) recordSentStamp(target.key, stamp);
   try {
     const api = await dbProvider();
     if (!api) return 'error';
@@ -184,6 +276,8 @@ async function writeCloud(uid, state) {
     );
     cloudRev = rev;
     syncedStamp = stamp;
+    mergeRetries = 0;
+    if (target.uid === uid) saveBase(payload); // local copy == cloud copy now (the payload actually written)
     return 'ok';
   } catch (e) {
     console.error('Cloud save failed', e);
@@ -272,6 +366,7 @@ function backupUnsent() {
 function installState(state, { fromCloud, uploadNeeded }) {
   if (applyFn) applyFn(state);
   syncedStamp = fromCloud ? getState().updatedAt : -1; // -1: this copy is not in the cloud yet
+  if (fromCloud) saveBase(getState());
   saveLocal(target.key, getState());
   localDirty = false;
   cloudDirty = uploadNeeded;
@@ -279,11 +374,26 @@ function installState(state, { fromCloud, uploadNeeded }) {
   setStatus('saved');
 }
 
-/** Installs the cloud copy as the game state, backing up local actions that were never uploaded. */
-function adoptCloud(fetched) {
+/**
+ * Installs the cloud copy as the game state, backing up local actions that were never uploaded.
+ * With `allowMerge`, unsent local actions are merged into the cloud copy instead (when a usable base exists).
+ */
+function adoptCloud(fetched, allowMerge = false) {
   backupUnsent();
-  cloudRev = fetched.rev;
   cloudReady = true;
+  if (allowMerge && mergeRetries < MAX_MERGE_RETRIES) {
+    const local = getState();
+    const base = loadBase(target.key);
+    if (base && hasUnsent(local, base, true)) {
+      const merged = mergeWithCloud(target.key, base, local, fetched.state);
+      if (merged) {
+        mergeRetries += 1;
+        installMerged(merged, fetched);
+        return;
+      }
+    }
+  }
+  cloudRev = fetched.rev;
   installState(fetched.state, { fromCloud: true, uploadNeeded: false });
   notify(ADOPT_MSG, 'warn');
 }
@@ -321,7 +431,9 @@ async function handleRejectedWrite(uid) {
     return;
   }
   if (fetched.rev > cloudRev) {
-    adoptCloud(fetched);
+    const before = mergeRetries;
+    adoptCloud(fetched, true);
+    if (mergeRetries > before) void flushCloud(); // merged: upload it right away (rev continues from the cloud's)
   } else if (fetched.rev < cloudRev) {
     // Rev went backwards: the doc was replaced by a client that does not know about revs. Start counting from
     // the doc's rev and keep whichever copy is newer, backing up the other one.
@@ -425,6 +537,25 @@ async function reconcileAfterClaim(alone) {
       }
     }
     const best = candidates.reduce((b, c) => (c.state.updatedAt > b.state.updatedAt ? c : b));
+    if (fetched && applyFn && uid) {
+      // Unsent local actions AND a cloud copy that moved past our base: merge instead of dropping one side.
+      const local = candidates.filter(c => c.source !== 'cloud').reduce((b, c) => (c.state.updatedAt > b.state.updatedAt ? c : b));
+      const base = loadBase(key);
+      if (base && local.state.updatedAt !== fetched.state.updatedAt && hasUnsent(local.state, base, true)
+        && fetched.state.updatedAt !== base.updatedAt) {
+        const merged = mergeWithCloud(key, base, local.state, fetched.state);
+        if (merged) {
+          const seen = new Set();
+          for (const c of candidates) { // keep the unsent local copies as a safety net before merging
+            if (c.source === 'cloud' || seen.has(c.state.updatedAt) || !hasUnsent(c.state, base, true) || isUntouchedDefault(c.state)) continue;
+            seen.add(c.state.updatedAt);
+            backupSave(uid, c.state);
+          }
+          installMerged(merged, fetched);
+          return;
+        }
+      }
+    }
     if (best.source === 'memory') {
       backupLosers(candidates, best);
       if (fetched && fetched.state.updatedAt < best.state.updatedAt) cloudDirty = true; // cloud is behind: upload ours
@@ -494,7 +625,9 @@ export async function flushSave() {
 function flushOnLeave() {
   markAllDirty();
   flushLocal();
-  void flushCloud();
+  const run = flushCloud();
+  // An upload already in flight does not include the latest actions: send them right after it (iOS may freeze us soon).
+  if (inflight && cloudDirty) void run.then(() => flushCloud());
 }
 
 /** apply(state) installs a state into the game; it is used when another tab / the cloud holds newer data. */
@@ -545,7 +678,7 @@ function removeGuestSave() {
   try { localStorage.removeItem(GUEST_KEY); } catch { /* storage unavailable */ }
 }
 
-/** Keeps a copy of a save that is about to be overwritten: `nongfarm_<uid>_backup_<ts>`, latest 3 kept. */
+/** Keeps a copy of a save that is about to be overwritten: `nongfarm_<uid>_backup_<ts>`, latest MAX_BACKUPS kept. */
 function backupSave(uid, state) {
   const prefix = `nongfarm_${uid}_backup_`;
   lastBackupTs = Math.max(now(), lastBackupTs + 1);
@@ -574,7 +707,7 @@ const describeFarm = s => ({
  *  - The guest save is only a migration candidate: it is used outright when the account has no save yet;
  *    otherwise, if it holds real progress, askWhichFarm(accountSummary, guestSummary) -> Promise<'cloud'|'guest'>
  *    lets the player choose (anything but 'guest' keeps the account farm).
- *  - Every save that gets overwritten is first copied to a backup key (latest 3 kept).
+ *  - Every save that gets overwritten is first copied to a backup key (latest MAX_BACKUPS kept).
  */
 export async function connectUser(uid, apply, askWhichFarm) {
   let cloud = null;
@@ -618,6 +751,14 @@ export async function connectUser(uid, apply, askWhichFarm) {
   // A cloud save from a newer client always wins: this client cannot judge or safely merge it.
   const newerCloud = own.find(o => o.source === 'cloud' && isNewerSave(o.state));
   let chosen = newerCloud || (own.length ? pickNewest(own) : null);
+  // Unsent actions in this account's local cache AND a cloud copy that moved past the base: merge both.
+  if (cloud && cached && !newerCloud && !isNewerSave(cached) && cloud.updatedAt !== cached.updatedAt) {
+    const base = loadBase(key);
+    if (base && hasUnsent(cached, base, false) && cloud.updatedAt !== base.updatedAt) {
+      const merged = mergeWithCloud(key, base, cached, cloud);
+      if (merged) chosen = { source: 'merged', state: merged };
+    }
+  }
   let guest = target.uid === null && !newerCloud ? getState() : null;
 
   if (guest && chosen && guest.updatedAt === chosen.state.updatedAt) {
@@ -646,11 +787,16 @@ export async function connectUser(uid, apply, askWhichFarm) {
 
   target = { key, uid };
   cloudReady = true;
+  mergeRetries = 0;
   cloudRev = fetchedRev;
   applyFn = apply;
   acquireWriterIfVisible();
   apply(chosen.state);
   syncedStamp = chosen.source === 'cloud' ? getState().updatedAt : -1; // -1: local copy not uploaded yet
+  if (isWriter) {
+    if (chosen.source === 'cloud' || chosen.source === 'merged') saveBase(cloud); // cloud copy is in the local copy
+    else if (chosen.source === 'guest') removeBase(); // a different farm replaced the account one: old base is meaningless
+  }
   // A background tab must not touch the shared cache: the active tab owns it.
   const saved = isWriter ? saveLocal(key, getState()) : false;
   localDirty = false;
@@ -666,6 +812,7 @@ export async function connectUser(uid, apply, askWhichFarm) {
     cloudDirty = false; // we just downloaded this; nothing to upload yet
     setStatus('saved');
   } else {
+    if (chosen.source === 'merged') notify(MERGED_MSG, 'success');
     cloudDirty = true; // account had no (or an older) save: upload the winning local copy (retried by autosave)
     void flushCloud();
   }
@@ -683,6 +830,7 @@ export function disconnectUser(apply) {
   localDirty = false;
   target = { key: GUEST_KEY, uid: null };
   cloudReady = false;
+  mergeRetries = 0;
   cloudDirty = false;
   tickDirty = false;
   cloudRev = 0;

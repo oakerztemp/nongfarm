@@ -553,7 +553,7 @@ export function buildPathLights(THREE, spots, { gradient = null, tier = 'high' }
           gi.push(a, c, b, b, c, d);
         }
       };
-      disc(1.05, 0.03, 0, 4, 2.2, 0.5);
+      disc(0.74, 0.03, 0, 4, 2.2, 0.4);   // V26: ground pool ~30% smaller, dimmer
       disc(0.42, 1.24, 0, 3, 1.5, 0.7);
       disc(0.45, 1.24, 1, 3, 1.6, 0.8);
       disc(0.45, 1.24, 2, 3, 1.6, 0.8);

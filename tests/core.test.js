@@ -458,7 +458,7 @@ test('storage: a newer local save is never uploaded', () => withCloud(async clou
   assertEq(cloud.docs.u2.state, before, 'cloud not overwritten by a newer-version save');
 }));
 
-test('storage: only the latest 3 backups are kept', () => withCloud(async cloud => {
+test('storage: only the latest 6 backups are kept', () => withCloud(async cloud => {
   for (let i = 0; i < 5; i++) {
     putCloud(cloud, 'u3', mkState(`ACCOUNT${i}`, 1000 + i, { pets: 1 }));
     replaceState(mkState(`GUEST${i}`, 5000 + i, { pets: 1 }));
@@ -467,7 +467,7 @@ test('storage: only the latest 3 backups are kept', () => withCloud(async cloud 
     await storage.flushSave();
     storage.disconnectUser(apply);
   }
-  assert(backups('u3').length <= 3, `at most 3 backups, got ${backups('u3').length}`);
+  assert(backups('u3').length <= 6, `at most 6 backups, got ${backups('u3').length}`); // V26: MAX_BACKUPS 3 -> 6
   assert(backups('u3').length >= 1, 'backups exist');
 }));
 
@@ -546,6 +546,7 @@ test('stale write is rejected: adopt the cloud save, back up the local copy, no 
     putCloud(cloud, 'r2', mkState('BASE', 100, { pets: 1 }));
     cloud.docs.r2.rev = 5;
     await storage.connectUser('r2', apply, noAsk);
+    localStorage.removeItem('nongfarm3_r2_base'); // V26: with a base the copies would be merged (tests/v26b.test.js); this is the no-base behaviour
     // this tab keeps playing...
     const s = getState();
     s.player.farmName = 'LOCAL';

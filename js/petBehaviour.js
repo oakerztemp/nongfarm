@@ -94,7 +94,7 @@ const DECOR_SPOT_N = { S: 2, M: 4, L: 6, XL: 8 };
 export const PATH_WIDTH = 0.9;
 export const PATH_LIGHT_OFFSET = 0.75;
 export const PATH_LIGHT_R = 0.15;
-export const PATH_LIGHT_MAX = { S: 6, M: 8, L: 11, XL: 14 };
+export const PATH_LIGHT_MAX = { S: 2, M: 3, L: 4, XL: 5 };
 
 const bez = (a, c, b, n = 8) => Array.from({ length: n + 1 }, (_, i) => {
   const u = i / n, v = 1 - u;
@@ -168,8 +168,9 @@ export function fenceGates(tier) {
 }
 
 /**
- * Path lamp posts: about every 2.6 along the paths inside the fence, 0.75 beside the centre line, alternating sides, plus two at the front gate.
- * Never on a prop / kitchen / landmark / decor spot / bowl / nest row, 0.4 clear edge to edge (post r 0.15); S <= 6, XL <= 14.
+ * Path lamp posts (V26: only the key spots, S 2 / M 3 / L 4 / XL 5, >= 3.5 apart). Priority: beside the front gate (one post), the central
+ * junction, along the kitchen path, beside the bridge-side gate, by the pond (M+). 0.75 beside a centre line, inside the fence, never on a
+ * prop / kitchen / landmark / decor spot / bowl / nest row, 0.4 clear edge to edge (post r 0.15).
  */
 export function pathLightSpots(tier) {
   const t = FENCE_R[tier] ? tier : 'L';
@@ -192,49 +193,76 @@ export function pathLightSpots(tier) {
     return m;
   };
   const lights = [];
+  const max = PATH_LIGHT_MAX[t];
   const okAt = (c, skipId) => {
     if (c.z < zMin) return false;
     if (Math.hypot(c.x, c.z) + 0.6 > fenceR(t, c.x, c.z)) return false;
     for (const o of sol) if (Math.hypot(c.x - o.x, c.z - o.z) - o.r - PATH_LIGHT_R < 0.4) return false;
-    for (const l of lights) if (Math.hypot(c.x - l.x, c.z - l.z) < 1.5) return false;
+    for (const l of lights) if (Math.hypot(c.x - l.x, c.z - l.z) < 3.5) return false;
     return distToPath(c, skipId) >= 0.55;
   };
   const add = (c, skipId) => {
-    if (lights.length >= PATH_LIGHT_MAX[t] || !okAt(c, skipId)) return false;
+    if (lights.length >= max || !okAt(c, skipId)) return false;
     lights.push({ x: +c.x.toFixed(3), z: +c.z.toFixed(3) });
     return true;
   };
-  const walk = (p, s0, step, firstSide) => {
+  const byId = id => paths.find(p => p.id === id);
+  /** Point + left normal at arc length s of a path. */
+  const at = (p, s) => {
     const pts = p.points;
-    let side = firstSide, next = s0, acc = 0;
+    let acc = 0;
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i], b = pts[i + 1], len = Math.hypot(b.x - a.x, b.z - a.z);
-      while (len > 0 && next <= acc + len) {
-        const u = (next - acc) / len, x = a.x + (b.x - a.x) * u, z = a.z + (b.z - a.z) * u;
-        if (Math.hypot(x, z) + 0.6 > fenceR(t, x, z)) return;   // stop at the fence
-        const nx = -(b.z - a.z) / len, nz = (b.x - a.x) / len;
-        if (add({ x: x + nx * PATH_LIGHT_OFFSET * side, z: z + nz * PATH_LIGHT_OFFSET * side }, p.id)) side = -side;
-        else add({ x: x - nx * PATH_LIGHT_OFFSET * side, z: z - nz * PATH_LIGHT_OFFSET * side }, p.id);
-        next += step;
+      if (len > 0 && s <= acc + len) {
+        const u = (s - acc) / len;
+        return { x: a.x + (b.x - a.x) * u, z: a.z + (b.z - a.z) * u, nx: -(b.z - a.z) / len, nz: (b.x - a.x) / len };
       }
       acc += len;
     }
+    return null;
   };
-  const byId = id => paths.find(p => p.id === id);
-  // the two posts at the front gate, just inside the fence beside the gap
+  const pathLen = p => p.points.slice(1).reduce((m, c, i) => m + Math.hypot(c.x - p.points[i].x, c.z - p.points[i].z), 0);
+  /** First s in the list where a post fits beside the path (either side). */
+  const tryPath = (p, sList, side0 = 1) => {
+    if (!p) return false;
+    for (const s of sList) {
+      const q = at(p, s);
+      if (!q || Math.hypot(q.x, q.z) + 0.6 > fenceR(t, q.x, q.z)) continue;
+      for (const sd of [side0, -side0]) if (add({ x: q.x + q.nx * PATH_LIGHT_OFFSET * sd, z: q.z + q.nz * PATH_LIGHT_OFFSET * sd }, p.id)) return true;
+    }
+    return false;
+  };
+  const range = (a, b, st) => { const r = []; for (let v = a; v <= b + 1e-9; v += st) r.push(v); return r; };
+  // 1. one post just inside the fence beside the front gate
   const gate = byId('gate'), zf = fenceR(t, 0, 1);
-  for (const sx of [-1, 1]) {
-    for (const dz of [0.9, 1.2, 1.5]) {
+  gateLoop: for (const sx of [1, -1]) {
+    for (const dz of [0.9, 1.2, 1.5, 1.8]) {
       const q = gate.points.reduce((m, c) => (Math.abs(c.z - (zf - dz)) < Math.abs(m.z - (zf - dz)) ? c : m));
-      if (add({ x: q.x + sx * 1.15, z: zf - dz }, 'gate')) break;
+      if (add({ x: q.x + sx * 1.15, z: zf - dz }, 'gate')) break gateLoop;
     }
   }
-  walk(gate, 2.0, 2.6, 1);
-  walk(byId('bridge'), 2.4, 2.6, -1);
-  walk(byId('barn-bowl'), 1.0, 2.6, 1);
-  walk(byId('kitchen'), 2.0, 2.6, -1);
+  // 2. the central junction (a post on a ring round the middle, away from every path)
+  const ring = [];
+  for (const r of [1.3, 1.6, 1.9, 2.2, 2.6]) for (let k = 0; k < 16; k++) {   // south-west first: keeps the kitchen / pond / bridge sides free for their own posts
+    const an = 2.356 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 0.3927;
+    ring.push({ x: Math.cos(an) * r, z: Math.sin(an) * r });
+  }
+  for (const c of ring) if (add(c, null)) break;
+  // 3. along the kitchen path, 4. beside the bridge-side gate (just inside the fence), 5. by the pond
+  const kit = byId('kitchen');
+  if (kit) tryPath(kit, range(2.0, pathLen(kit) - 0.4, 0.4), -1);
+  const br = byId('bridge');
+  if (br) {
+    let sF = 0, acc = 0;
+    for (let i = 0; i < br.points.length - 1 && !sF; i++) {
+      const a = br.points[i], b = br.points[i + 1], len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (Math.hypot(b.x, b.z) + 0.6 > fenceR(t, b.x, b.z)) sF = acc + len;
+      acc += len;
+    }
+    tryPath(br, range(sF - 3.4, sF - 0.6, 0.4).reverse().filter(s => s > 1), -1);
+  }
   const pond = byId('pond');
-  if (pond) walk(pond, 2.0, 2.6, 1);
+  if (pond) tryPath(pond, range(1.5, pathLen(pond), 0.4), 1);
   return lights;
 }
 

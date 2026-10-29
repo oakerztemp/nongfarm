@@ -117,9 +117,7 @@ for (const t of TIERS) {
     configureYard(t);
     const cfg = engine.YARD_TIERS[t], lay = YARD_TIER_LAYOUT[t], L = pathLightSpots(t);
     assertEq(YARD.pathLights, L, `${t} YARD.pathLights`);
-    assert(L.length >= 3 && L.length <= PATH_LIGHT_MAX[t], `${t} count ${L.length}`);
-    if (t === 'S') assert(L.length <= 6, 'S <= 6');
-    if (t === 'XL') assert(L.length <= 14, 'XL <= 14');
+    assert(L.length === { S: 2, M: 3, L: 4, XL: 5 }[t] && L.length <= PATH_LIGHT_MAX[t], `${t} count ${L.length}`);   // V26: only the key spots
     const k = kitchenSpot(t);
     const solids = [
       ...yardProps(t).map(p => ({ id: p.id, x: p.x, z: p.z, r: p.r })),
@@ -136,7 +134,7 @@ for (const t of TIERS) {
       assert(insideFence(cfg, l, 0.3), `${t} light ${i} at the fence`);
       for (const o of solids) assert(Math.hypot(l.x - o.x, l.z - o.z) - o.r - PATH_LIGHT_R >= 0.4 - 1e-9, `${t} light ${i} vs ${o.id}`);
       assert(l.z >= lay.barnZ + 3.0, `${t} light ${i} in the barn strip`);
-      L.forEach((m, j) => { if (j > i) assert(Math.hypot(l.x - m.x, l.z - m.z) >= 1.0, `${t} lights ${i}/${j} too close`); });
+      L.forEach((m, j) => { if (j > i) assert(Math.hypot(l.x - m.x, l.z - m.z) >= 3.5, `${t} lights ${i}/${j} too close`); });
       // it stands beside a path (or the front gate), not in the field
       const d = Math.min(...paths.map(p => lineDist(l, p.points)));
       assert(d >= 0.5 && d <= 1.4, `${t} light ${i} is ${d.toFixed(2)} from the nearest path`);
@@ -160,7 +158,7 @@ for (const t of TIERS) {
 
 test('v25 light counts per tier grow with the yard and are deterministic', () => {
   const counts = TIERS.map(t => pathLightSpots(t).length);
-  assert(counts[0] <= 6 && counts[3] <= 14, `counts ${counts}`);
+  assert(counts[0] <= 2 && counts[3] <= 5, `counts ${counts}`);
   assert(counts[3] >= counts[0], `XL has at least as many lights as S (${counts})`);
   for (const t of TIERS) assertEq(pathLightSpots(t), pathLightSpots(t), `${t} deterministic`);
   assertEq(fenceGates('XL'), fenceGates('XL'), 'gates deterministic');

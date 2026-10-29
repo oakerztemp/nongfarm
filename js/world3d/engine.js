@@ -24,7 +24,7 @@
 // Host element: give it a height (e.g. CSS `height: 60vh`). Put it inside a `data-morph="skip"` wrapper so util.morph
 // never touches it, and give that wrapper a data-key. Create the world ONCE per view; sync actors when state changes.
 //
-// Coordinates: y up, lawn disc centred at (0,0,0) (island radius world.islandRadius = 5.7 / 6.4 / 7.0 / 7.6 by yard tier). Pets should stay within
+// Coordinates: y up, lawn disc centred at (0,0,0) (island radius world.islandRadius = 6.4 / 7.8 / 9.0 / 10.4 by yard tier (V23)). Pets should stay within
 // world.walkRadius (see yard tiers below) and outside world.obstacles ([{ x, z, r }] circles, e.g. the barn prop). The barn prop is at
 // the back (-z) with its door facing +z; the default camera looks from +z. Actors' positions are never saved.
 //
@@ -32,10 +32,11 @@
 //   yardTierForCapacity(cap) -> 'S'|'M'|'L'|'XL'      (pure; also createWorld(host, h, { yardTier: 'M' }))
 //   world.setYardTier(tierOrCapacity, { animate })    rebuilds lawn/fence/tufts/flowers/barn spot for the tier and (animate:true,
 //                                                     ~0.9 s) grows the fence ring from the old size with a small overshoot.
-//                                                     The camera distance does NOT change with the tier (CONTRACT_V7 §2).
+//                                                     The camera distance does NOT change with the tier (CONTRACT_V7 §2, V23: fit of radius CAMERA_FIT_RADIUS = 6.4).
+//                                                     The fence is a gently wavy ring: fenceRadiusAt(tierCfg, theta) (V23 §1).
 //                                                     Call with animate:false when mounting, true when the player upgrades
 //                                                     (then fire fx.confetti / a "ลานกว้างขึ้น!" toast).
-//   world.yardTier / walkRadius (4.3 / 5.0 / 5.6 / 6.2) / fenceRadius / islandRadius are live getters; world.yardInfo();
+//   world.yardTier / walkRadius (5.0 / 6.4 / 7.6 / 9.0, V23) / fenceRadius / islandRadius are live getters; world.yardInfo();
 //   world.onYardChange(fn(info)) -> unsubscribe. world.obstacles is one array updated IN PLACE (barn + prop obstacles).
 //   Static props (never actors, not pickable, freed on removeProp/dispose; geometry you pass stays yours unless noted):
 //     world.addProp(id, object3d, { obstacle: {x,z,r} })            any object you built (use merged geometry!)
@@ -51,11 +52,13 @@
 //   rocks and a stream on the +x side: 6 draw calls in total, all engine-owned and static. Wild props that end up inside a
 //   bigger yard sink away when setYardTier runs (same 0.9 s as the fence); `world.wildInfo()` -> { clearance, items, visible,
 //   animating, meshes } and `wildClearance(tier)` (pure) tell barn3d where the wild starts (= island radius + 0.3).
-//   Camera: one fixed distance for every tier (the fit of tier M); zoom 0.4..1.5 is relative to it. One-finger / left-mouse drag
+//   Camera: one fixed distance for every tier (the fit of radius 6.4); zoom 0.4..2.0 is relative to it. One-finger / left-mouse drag
 //   PANS the camera target (clamped to the current island radius); a press that moves < 8 px is still a tap. Mouse: right button
 //   (or shift/ctrl + left) drag orbits, wheel zooms; touch: two fingers pinch-zoom and twist to rotate. A double tap on empty
 //   ground re-centres (never when the 2nd tap lands on an actor, so double-tapping a pet still reaches onTap twice).
 //   world.recenter() / world.setPan(x, z) / world.getPan(); world.getView() also returns { pan:{x,z} }.
+//   V23 whole-farm view: world.viewWholeFarm(on) zooms out + centres so the whole island is visible (off = back to the view before);
+//   world.isWholeFarm(); world.onWholeFarmChange(fn(on)) -> unsubscribe. The player panning / zooming / recentring leaves the mode.
 //   PET STROKES (CONTRACT_V8 §1): a press that STARTS on an actor and moves more than 8 px is a stroke, not a pan (when somebody
 //   listens: world.onPetStroke(fn) -> unsubscribe). fn({ id, phase:'start'|'move'|'end', point:Vector3, region:'head'|'chin'|'back',
 //   speed (screen px/s, smoothed), durationMs (since 'start'), x, y (client px) }). A tap (< 8 px) is still a tap; a drag that starts
@@ -65,7 +68,7 @@
 //   uses a plain vertical split (no front/back). { stroke: false } opts an actor out (nests, cribs): a drag from it pans.
 //   The canvas sets touch-action:none, so the page does not scroll while a finger is on the 3D view.
 //   world.decorSpots -> [{ index, x, z }] : 2 / 4 / 6 / 8 spots (S / M / L / XL) on walkable ground away from the barn, nests,
-//   pond and other yard props. Spot i keeps its position in every tier (a placed decor never moves); the array is replaced on
+//   kitchen, pond and other yard props (V23 coordinates, CONTRACT_V23 §3). Spot i keeps its position in every tier (a placed decor never moves); the array is replaced on
 //   setYardTier and onYardChange info carries the count. `decorSpotsForTier(tierOrCapacity)` is the pure version.
 //
 // Interaction: see PAN above. Pinch / wheel zoom is clamped. A press that moves < 8 px and lasts < 500 ms is a tap. Taps pick actors by raycast first, then by screen proximity with a
@@ -101,15 +104,15 @@ export const PITCH_MIN = 0.55;
 export const PITCH_MAX = 1.15;
 export const PITCH_DEFAULT = 0.9;
 export const ZOOM_MIN = 0.4;
-export const ZOOM_MAX = 1.5;
+export const ZOOM_MAX = 2.0;
 export const ZOOM_DEFAULT = 0.85;
 export const CAMERA_FOV = 38;
-/** Yard tiers (CONTRACT_V6 §4): walkable radius grows with barnCapacity; island = walk + 1.4, fence = walk + 0.7. */
+/** Yard tiers (CONTRACT_V23 §1, must match petBehaviour.YARD_TIER_LAYOUT): walkable radius grows with barnCapacity; fence = walk + 0.7, island = fence + 0.7 (the fence is wavy: see fenceRadiusAt). */
 export const YARD_TIERS = {
-  S: { name: 'S', walk: 4.3, fence: 5.0, island: 5.7, barnZ: -3.6 },
-  M: { name: 'M', walk: 5.0, fence: 5.7, island: 6.4, barnZ: -4.3 },
-  L: { name: 'L', walk: 5.6, fence: 6.3, island: 7.0, barnZ: -4.9 },
-  XL: { name: 'XL', walk: 6.2, fence: 6.9, island: 7.6, barnZ: -5.5 },
+  S: { name: 'S', walk: 5.0, fence: 5.7, island: 6.4, barnZ: -4.3 },
+  M: { name: 'M', walk: 6.4, fence: 7.1, island: 7.8, barnZ: -5.2 },
+  L: { name: 'L', walk: 7.6, fence: 8.3, island: 9.0, barnZ: -5.8 },
+  XL: { name: 'XL', walk: 9.0, fence: 9.7, island: 10.4, barnZ: -6.4 },
 };
 export const YARD_TIER_NAMES = ['S', 'M', 'L', 'XL'];
 export const DEFAULT_YARD_TIER = 'L';
@@ -117,16 +120,16 @@ export const ISLAND_RADIUS = YARD_TIERS.L.island; // legacy constants = tier L
 export const FENCE_RADIUS = YARD_TIERS.L.fence;
 export const WALK_RADIUS = YARD_TIERS.L.walk;
 export const YARD_GROW_MS = 900;
-/** The camera distance is the fit of this tier for every tier, so pets keep one size on screen while the yard grows (CONTRACT_V7 §2). */
-export const CAMERA_FIT_TIER = 'M';
+/** The camera distance is the fit of this radius for every tier, so pets keep one size on screen while the yard grows (CONTRACT_V23 §2). */
+export const CAMERA_FIT_RADIUS = 6.4;
 export const DOUBLE_TAP_MS = 320;
 export const DOUBLE_TAP_PX = 36;
 /** Wilderness: soft-edged meadow disc (radius `meadow`), props scattered in [rMin, rMax], a stream on the +x side. */
-export const WILD = { meadow: 40, rMin: 6.0, rMax: 24, seed: 20261024, streamX: 12.5, streamAmp: 1.6, streamFreq: 0.22, streamHalf: 20 };
+export const WILD = { meadow: 48, rMin: 6.7, rMax: 30, seed: 20261024, streamX: 14.5, streamAmp: 1.6, streamFreq: 0.22, streamHalf: 26 };
 export const WILD_CLEARANCE_MARGIN = 0.3;
 const MAX_DT = 0.1;
-const FOG_NEAR = 24;      // V20 distance haze: the yard (~15 from the camera) stays clear, the far meadow / trees fade into the sky
-const FOG_FAR = 64;
+const FOG_NEAR = 28;      // V20 distance haze: the yard (~15 from the camera) stays clear, the far meadow / trees fade into the sky
+const FOG_FAR = 72;
 const MAX_SHADOWS = 128; // actors beyond this simply have no blob shadow
 const YAW_PER_PX = 0.008;
 const PITCH_PER_PX = 0.005;
@@ -198,9 +201,9 @@ export function orbitPosition(yaw, pitch, dist, target = { x: 0, y: 0, z: 0 }) {
   };
 }
 
-/** Camera distance used for every yard tier: the fit of CAMERA_FIT_TIER (M). */
+/** Camera distance used for every yard tier: the fit of CAMERA_FIT_RADIUS (6.4). */
 export function fixedCameraDistance(aspect, fovDeg = CAMERA_FOV, pitch = PITCH_DEFAULT) {
-  return fitDistance(aspect, fovDeg, pitch, YARD_TIERS[CAMERA_FIT_TIER].island);
+  return fitDistance(aspect, fovDeg, pitch, CAMERA_FIT_RADIUS);
 }
 
 /** Distance at which a disc of `radius` fits the view horizontally and (tilted by pitch) vertically. */
@@ -293,21 +296,27 @@ export function isDoubleTap(prev, cur, maxMs = DOUBLE_TAP_MS, maxPx = DOUBLE_TAP
 }
 
 /**
- * Decor spots (CONTRACT_V7 §3): spot i is fixed in every tier. Chosen to stay >= 0.7 from every yard prop of every tier
- * (see petBehaviour.yardProps), clear of the barn, the nest rows and the food bowl, and inside the walk radius of the tier
+ * Decor spots (CONTRACT_V7 §3, V23 coordinates from CONTRACT_V23 §3): spot i is fixed in every tier. Chosen to stay >= 0.7 from every yard prop of every tier
+ * (see petBehaviour.yardProps), clear of the barn, kitchen, the nest rows and the food bowl, and inside the walk radius of the tier
  * that unlocks it (two per tier). A test keeps this list in sync with the props.
  */
 export const DECOR_SPOTS = [
-  { x: 0.0, z: 3.3 }, { x: 3.4, z: 1.2 },      // S
-  { x: -2.6, z: 3.4 }, { x: -1.6, z: 0.4 },    // + M
-  { x: 0.0, z: 5.1 }, { x: 1.9, z: -0.2 },     // + L
-  { x: -5.3, z: 1.0 }, { x: 5.3, z: 0.6 },     // + XL
+  { x: 0.0, z: 3.6 }, { x: -2.8, z: 1.6 },     // S
+  { x: 2.6, z: 4.6 }, { x: -2.9, z: -0.9 },    // + M
+  { x: 0.0, z: 6.6 }, { x: 5.6, z: 4.0 },      // + L
+  { x: -7.6, z: -0.2 }, { x: 7.6, z: -1.4 },   // + XL
 ];
 export const DECOR_SPOT_COUNT = { S: 2, M: 4, L: 6, XL: 8 };
 /** [{ index, x, z }] for a tier name or barnCapacity (2 / 4 / 6 / 8 spots). */
 export function decorSpotsForTier(tierOrCapacity) {
   const n = DECOR_SPOT_COUNT[yardTierConfig(tierOrCapacity).name];
   return DECOR_SPOTS.slice(0, n).map((p, index) => ({ index, x: p.x, z: p.z }));
+}
+
+/** V23 §1: the fence ring is gently wavy. tierCfg = a YARD_TIERS entry (or anything with .fence); theta in radians (x = sin, z = cos). */
+export function fenceRadiusAt(tierCfg, theta) {
+  const f = typeof tierCfg === 'number' ? tierCfg : tierCfg.fence;
+  return f * (1 + 0.035 * Math.sin(3 * theta + 1.0) + 0.02 * Math.sin(5 * theta + 2.0));
 }
 
 /** Accepts a tier name ('S'..'XL', any case) or a capacity number; returns the tier config (default L). */
@@ -470,15 +479,7 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
   lawn.userData.noPick = true;
   group.add(lawn);
 
-  // dirt path from the barn door to the middle
-  const pathMat = own(new THREE.MeshToonMaterial({
-    color: 0xe7cf9c, gradientMap: gradient, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-  }));
-  const path = new THREE.Mesh(own(new THREE.PlaneGeometry(1.5, 4.2)), pathMat);
-  path.rotation.x = -Math.PI / 2;
-  path.position.set(0, 0.01, yard.barnZ + 3.2);
-  path.userData.noPick = true;
-  group.add(path);
+  // (V23: the dirt paths are one merged mesh built by barn3d from D's buildPathMesh)
 
   // fence (gap behind the barn)
   const posts = Math.max(12, Math.round(tier.posts * yard.fence / FENCE_RADIUS));
@@ -488,11 +489,17 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
   const woodMat = toon(0xc08a54);
   const keep = [];
   for (let i = 0; i < posts; i++) if (!inGap((i / posts) * Math.PI * 2)) keep.push(i);
+  const postPos = i => {
+    const a = (i / posts) * Math.PI * 2;
+    const R = fenceRadiusAt(yard, a);
+    return { x: Math.sin(a) * R, z: Math.cos(a) * R };
+  };
   const postMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(0.16, 0.7, 0.16)), woodMat, keep.length);
   const dummy = new THREE.Object3D();
   keep.forEach((i, n) => {
     const a = (i / posts) * Math.PI * 2;
-    dummy.position.set(Math.sin(a) * yard.fence, 0.35, Math.cos(a) * yard.fence);
+    const pp = postPos(i);
+    dummy.position.set(pp.x, 0.35, pp.z);
     dummy.rotation.set(0, a, 0);
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
@@ -501,17 +508,17 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
   postMesh.userData.noPick = true;
   group.add(postMesh);
 
-  const chord = 2 * yard.fence * Math.sin(Math.PI / posts);
   const railSegs = keep.filter(i => !inGap(((i + 1) / posts) * Math.PI * 2));
   const railMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(1, 0.07, 0.06)), woodMat, railSegs.length * 2);
   let r = 0;
   for (const i of railSegs) {
-    const a = ((i + 0.5) / posts) * Math.PI * 2;
-    const radius = yard.fence * Math.cos(Math.PI / posts);
+    const p0 = postPos(i), p1 = postPos((i + 1) % posts);
+    const dx = p1.x - p0.x, dz = p1.z - p0.z;
+    const len = Math.hypot(dx, dz);
     for (const y of [0.28, 0.54]) {
-      dummy.position.set(Math.sin(a) * radius, y, Math.cos(a) * radius);
-      dummy.rotation.set(0, a, 0);
-      dummy.scale.set(chord, 1, 1);
+      dummy.position.set((p0.x + p1.x) / 2, y, (p0.z + p1.z) / 2);
+      dummy.rotation.set(0, Math.atan2(-dz, dx), 0);
+      dummy.scale.set(len, 1, 1);
       dummy.updateMatrix();
       railMesh.setMatrixAt(r++, dummy.matrix);
     }
@@ -1114,6 +1121,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       wild.setClearance(wildClearance(next.name), animate);
       const keep = clampPan(panT.x, panT.z, next.island);
       panT.x = keep.x; panT.z = keep.z;
+      applyWhole();
       if (animate) {
         const from = Math.min(1, old.fence / next.fence);
         yardAnim = { age: 0, from, barnFrom: old.barnZ, barnTo: next.barnZ };
@@ -1197,6 +1205,37 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     let height = 0;
     let baseDist = 12;
     let baseDistT = 12;
+    // V23 whole-farm view: { zoom, pan:{x,z} } = the view to restore; null while off. The player moving the camera leaves the mode.
+    let wholeFarm = null;
+    const wholeListeners = new Set();
+    const emitWhole = () => { for (const fn of [...wholeListeners]) { try { fn(!!wholeFarm); } catch (e) { console.error(e); } } };
+    function applyWhole() {
+      if (!wholeFarm) return;
+      const need = fitDistance(camera.aspect, CAMERA_FOV, view.pitchT, yardCfg.island) / Math.max(0.001, baseDistT);
+      view.zoomT = clampZoom(Math.min(ZOOM_MAX, need));
+      panT.x = 0; panT.z = 0;
+    }
+    function leaveWhole() {
+      if (!wholeFarm) return;
+      wholeFarm = null;
+      emitWhole();
+    }
+    function viewWholeFarm(on = true) {
+      if (on) {
+        if (wholeFarm) return;
+        wholeFarm = { zoom: view.zoomT, pan: { x: panT.x, z: panT.z } };
+        applyWhole();
+      } else {
+        if (!wholeFarm) return;
+        const back = wholeFarm;
+        wholeFarm = null;
+        view.zoomT = clampZoom(back.zoom);
+        const c = clampPan(back.pan.x, back.pan.z, yardCfg.island);
+        panT.x = c.x; panT.z = c.z;
+      }
+      boostUntil = Math.max(boostUntil, performance.now() + 900);
+      emitWhole();
+    }
     // V18 close-up (the play mode): a free camera pose outside the orbit limits, blended in and out by k (eased toward kT)
     const close = { k: 0, kT: 0, pos: { x: 0, y: 2, z: 4 }, look: { x: 0, y: 0.5, z: 0 } };
 
@@ -1230,6 +1269,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       camera.aspect = w / h;
       baseDistT = fixedCameraDistance(camera.aspect); // the same for every yard tier
       baseDist = baseDistT;
+      applyWhole();
       camera.updateProjectionMatrix();
       updateCamera();
       lastRenderTs = -Infinity; // draw the resized frame right away
@@ -1534,6 +1574,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (pointers.size >= 2 && pinch) {
         const [a, b] = [...pointers.values()];
         const d = Math.max(10, Math.hypot(a.x - b.x, a.y - b.y));
+        leaveWhole();
         view.zoomT = clampZoom(pinch.zoom * (pinch.dist / d));
         if (pinch.ang != null) { // twist with two fingers = rotate the view
           let da = Math.atan2(b.y - a.y, b.x - a.x) - pinch.ang;
@@ -1567,6 +1608,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
         view.yawT -= mx * YAW_PER_PX;
         view.pitchT = clampPitch(view.pitchT + my * PITCH_PER_PX);
       } else {
+        leaveWhole();
         const d = panDelta(mx, my, view.yawT, view.pitchT, baseDist * view.zoomT, CAMERA_FOV, Math.max(1, height));
         const c = clampPan(panT.x + d.x, panT.z + d.z, yardCfg.island);
         panT.x = c.x; panT.z = c.z;
@@ -1605,6 +1647,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     }
 
     function recenter() {
+      leaveWhole();
       panT.x = 0; panT.z = 0;
       boostUntil = Math.max(boostUntil, performance.now() + 600);
     }
@@ -1612,6 +1655,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     function onWheel(e) {
       if (options.wheelZoom === false) return;
       e.preventDefault();
+      leaveWhole();
       const unit = e.deltaMode === 1 ? 16 : 1;
       view.zoomT = clampZoom(view.zoomT * Math.exp(e.deltaY * unit * 0.0015));
       boostUntil = Math.max(boostUntil, performance.now() + 250);
@@ -1732,6 +1776,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       setView(v = {}) {
         if (v.yaw != null) view.yawT = v.yaw;
         if (v.pitch != null) view.pitchT = clampPitch(v.pitch);
+        if (v.zoom != null || v.pan) leaveWhole();
         if (v.zoom != null) view.zoomT = clampZoom(v.zoom);
         if (v.pan) { const c = clampPan(Number(v.pan.x) || 0, Number(v.pan.z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; }
       },
@@ -1748,8 +1793,12 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       /** 0 = normal camera .. 1 = fully in the close-up. */
       closeUpAmount: () => close.k,
       /** Camera target offset on the ground, clamped to the current island radius (eased). */
-      setPan(x = 0, z = 0) { const c = clampPan(Number(x) || 0, Number(z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; },
+      setPan(x = 0, z = 0) { leaveWhole(); const c = clampPan(Number(x) || 0, Number(z) || 0, yardCfg.island); panT.x = c.x; panT.z = c.z; },
       getPan: () => ({ x: panT.x, z: panT.z }),
+      /** V23: zoom out + centre so the whole island shows (on, default) or go back to the view from before (off). Leaves itself when the player pans / zooms. */
+      viewWholeFarm,
+      isWholeFarm: () => !!wholeFarm,
+      onWholeFarmChange(fn) { wholeListeners.add(fn); return () => wholeListeners.delete(fn); },
       /** Back to the middle of the yard (what a double tap on empty ground does). */
       recenter,
       /** Scene dimming for ceremonies: k 0 (normal) .. 1 (very dark). Dims both lights and the CSS sky behind the canvas. */

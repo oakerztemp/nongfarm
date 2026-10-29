@@ -3,6 +3,7 @@
 import { countItem, removeItem, addItem, bumpStat } from './state.js';
 import { RECIPES, getRecipe } from './data/recipes.js';
 import { getItem } from './data/items.js';
+import { journalEvent } from './journal.js';
 
 const fail = reason => ({ ok: false, reason });
 
@@ -26,5 +27,6 @@ export function cook(state, recipeId) {
   for (const p of st.parts) removeItem(state, p.item.id, p.need);
   addItem(state, r.id, 1);
   bumpStat(state, 'cooked');
-  return { ok: true, msg: `🍳 ทำ${r.emoji} ${r.nameTh}เสร็จแล้ว! ลากไปป้อนน้องในลานได้เลย`, dish: r.id };
+  journalEvent(state, 'cook', { acc: r.nameTh });   // V23: diary line (no pet), once per dish per day
+  return { ok: true, msg: `🍳 ทำ${r.emoji} ${r.nameTh}เสร็จแล้ว! อยู่ในถาดอาหารหน้าลาน ลากไปป้อนน้องได้เลย`, dish: r.id };
 }

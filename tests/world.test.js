@@ -604,13 +604,13 @@ test('yard: capacity -> tier mapping and radii', () => {
   assertEq(engine.yardTierConfig(12).name, 'L');
   assertEq(engine.yardTierConfig('nonsense').name, engine.DEFAULT_YARD_TIER);
   const walk = engine.YARD_TIER_NAMES.map(n => engine.YARD_TIERS[n].walk);
-  assertEq(walk, [4.3, 5.0, 5.6, 6.2]);
+  assertEq(walk, [5.0, 6.4, 7.6, 9.0]);   // V23
   for (const n of engine.YARD_TIER_NAMES) {
     const c = engine.YARD_TIERS[n];
     assert(c.walk < c.fence && c.fence < c.island, `${n}: walk < fence < island`);
     assert(Math.abs(c.barnZ) < c.walk, `${n}: the barn sits inside the walkable area`);
   }
-  assertEq([engine.WALK_RADIUS, engine.ISLAND_RADIUS], [5.6, 7.0], 'legacy constants = tier L');
+  assertEq([engine.WALK_RADIUS, engine.ISLAND_RADIUS], [7.6, 9.0], 'legacy constants = tier L');
 });
 
 test('yard: grow animation scale starts small, overshoots a little and settles at 1', () => {
@@ -647,17 +647,17 @@ test('mergeStaticParts: many parts -> one coloured geometry, sources untouched',
 test('yard world: setYardTier grows radii, camera and fence; props cost 1 call each; obstacles update in place', async () => {
   if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
   await withWorld({ quality: 'auto', yardTier: 'S' }, async world => {
-    assertEq([world.yardTier, world.walkRadius, world.islandRadius], ['S', 4.3, 5.7]);
+    assertEq([world.yardTier, world.walkRadius, world.islandRadius], ['S', 5.0, 6.4]);
     const obstacles = world.obstacles;
-    assertEq(obstacles[0].z, -3.6, 'barn obstacle for tier S');
+    assertEq(obstacles[0].z, -4.3, 'barn obstacle for tier S');
     const changes = [];
     const off = world.onYardChange(i => changes.push(i.tier));
     const dist0 = world.camera.position.length();
     assertEq(world.setYardTier('XL', { animate: true }), 'XL');
     assertEq(world.setYardTier(18, { animate: true }), 'XL', 'same tier is a no-op');
     assertEq(changes, ['XL'], 'listener fired once');
-    assertEq([world.yardTier, world.walkRadius, world.fenceRadius, world.islandRadius], ['XL', 6.2, 6.9, 7.6]);
-    assert(world.obstacles === obstacles && obstacles[0].z === -5.5, 'obstacles array updated in place');
+    assertEq([world.yardTier, world.walkRadius, world.fenceRadius, world.islandRadius], ['XL', 9.0, 9.7, 10.4]);
+    assert(world.obstacles === obstacles && obstacles[0].z === -6.4, 'obstacles array updated in place');
     await frames(world, 40);
     await wait(1200);
     await frames(world, 5);
@@ -680,7 +680,7 @@ test('yard world: setYardTier grows radii, camera and fence; props cost 1 call e
     world.renderer.render(world.scene, world.camera);
     assert(world.renderer.info.render.calls - base <= 2, `2 props must cost <= 2 draw calls, got ${world.renderer.info.render.calls - base}`);
     world.setYardTier('M', { animate: false });
-    assert(obstacles.some(o => o.r === 1.5) && obstacles[0].z === -4.3, 'prop obstacles survive a tier change');
+    assert(obstacles.some(o => o.r === 1.5) && obstacles[0].z === -5.2, 'prop obstacles survive a tier change');
     assert(world.removeProp('pond') && !world.removeProp('pond'));
     assert(!obstacles.some(o => o.r === 1.5), 'obstacle removed with the prop');
     world.clearProps('flo');
@@ -708,13 +708,13 @@ test('yard world: dispose removes props and leaves nothing behind', async () => 
 
 // ---------------------------------------------------------------- V7: fixed camera, wilderness, pan, decor spots
 
-test('v7 camera: one distance for every yard tier (the fit of tier M); zoom bounds widened', () => {
+test('v7 camera: one distance for every yard tier (V23: the fit of radius 6.4); zoom bounds widened', () => {
   const d = engine.fixedCameraDistance(0.6);
-  assertEq(d, engine.fitDistance(0.6, engine.CAMERA_FOV, engine.PITCH_DEFAULT, engine.YARD_TIERS.M.island), 'tier M fit');
-  assertEq(engine.CAMERA_FIT_TIER, 'M');
+  assertEq(d, engine.fitDistance(0.6, engine.CAMERA_FOV, engine.PITCH_DEFAULT, 6.4), 'fit of radius 6.4');
+  assertEq(engine.CAMERA_FIT_RADIUS, 6.4);
   assert(engine.fixedCameraDistance(0.5) > engine.fixedCameraDistance(1.8), 'a narrow phone view is further away');
-  assertEq([engine.ZOOM_MIN, engine.ZOOM_MAX], [0.4, 1.5]);
-  assertEq(engine.clampZoom(9), 1.5);
+  assertEq([engine.ZOOM_MIN, engine.ZOOM_MAX], [0.4, 2.0]);
+  assertEq(engine.clampZoom(9), 2.0);
 });
 
 test('v7 pan helpers: clamp to the island, drag direction, double tap', () => {
@@ -762,8 +762,9 @@ test('v7 wild layout: deterministic, outside the lawn, off the stream, scaled by
   assert(a.tree.every(t => t.r >= 7), 'trees keep a gap from the yard edge');
   const XL = engine.YARD_TIERS.XL;
   assert(W.rMin >= engine.YARD_TIERS.S.island, 'wild starts at the S lawn edge');
-  assert(W.streamX - W.streamAmp - 1.55 > XL.island + 1.5, 'the stream stays clear of even the XL yard');
-  assertEq(engine.wildClearance('S'), 6.0);
+  assert(W.streamX - W.streamAmp >= XL.fence + 2.5, 'the stream centre line stays 2.5 clear of even the XL fence (V23)');
+  assert(W.streamX - W.streamAmp - 1.55 > XL.island, 'the stream bank stays outside even the XL island');
+  assertEq(engine.wildClearance('S'), 6.7);
   assert(engine.wildClearance('M') > engine.wildClearance('S') && engine.wildClearance(20) === engine.wildClearance('XL'));
   assert(W.meadow >= XL.island + 4, 'meadow reaches at least 4 beyond the biggest island');
 });
@@ -843,7 +844,7 @@ test('v7 world: wild props inside a bigger yard sink away (animated), and onYard
   if (!hasGL()) { console.log('PASS note: no WebGL, skipped'); return; }
   await withWorld({ quality: 'auto', yardTier: 'S' }, async world => {
     const s0 = world.wildInfo();
-    assertEq([s0.clearance, s0.visible === s0.items, s0.animating], [engine.wildClearance('S'), true, false]);
+    assertEq([s0.clearance, s0.items - s0.visible <= s0.items * 0.03, s0.animating], [engine.wildClearance('S'), true, false]);   // V23: WILD.rMin 6.6 < S clearance 6.7, so a sliver of props is already sunk at S
     const seen = [];
     world.onYardChange(i => seen.push(i));
     world.setYardTier('XL', { animate: true });

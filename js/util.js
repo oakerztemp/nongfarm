@@ -68,10 +68,10 @@ export function todayKey() {
 
 const notifyListeners = new Set();
 
-/** type: 'info' | 'success' | 'warn' | 'error' */
-export function notify(msg, type = 'info') {
+/** type: 'info' | 'success' | 'warn' | 'error'; opts: { ms } = how long the toast stays (default: renderer's own). */
+export function notify(msg, type = 'info', opts = {}) {
   for (const fn of [...notifyListeners]) {
-    try { fn(String(msg), type); } catch (e) { console.error(e); }
+    try { fn(String(msg), type, opts); } catch (e) { console.error(e); }
   }
 }
 

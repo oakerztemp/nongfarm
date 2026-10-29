@@ -97,7 +97,7 @@ function sendNotifications() {
 
 // ---- toasts ----
 
-function showToast(msg, type) {
+function showToast(msg, type, opts) {
   const root = $('toast-root');
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
@@ -111,7 +111,7 @@ function showToast(msg, type) {
   el.addEventListener('click', dismiss);
   root.appendChild(el);
   while (root.children.length > MAX_TOASTS) root.firstElementChild.remove();
-  setTimeout(dismiss, TOAST_MS);
+  setTimeout(dismiss, opts && opts.ms > 0 ? opts.ms : TOAST_MS);
 }
 
 // ---- header ----

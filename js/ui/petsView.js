@@ -168,7 +168,7 @@ onPortrait(() => patchPortraits(document));
 function run(fn) {
   const r = update(fn);
   if (!r) return r;
-  if (r.ok) { if (r.msg) notify(r.msg, 'success'); }
+  if (r.ok) { if (r.msg) notify(r.msg, 'success', r.dish ? { ms: 5000 } : {}); }
   else notify(r.reason || 'ทำไม่สำเร็จ', 'warn');
   return r;
 }
@@ -643,18 +643,29 @@ function kitchenHtml(state) {
       <button type="button" class="btn btn-sm${ok ? ' btn-primary' : ''}" data-cook="${e(r.id)}"${ok ? '' : ' disabled'}>🍳 ทำ</button>
     </div>`;
   }).join('');
-  return `<div class="kitchen"><p class="muted kit-note">เอาผลผลิตจากไร่กับของป่ามาทำเมนูพิเศษ แล้วลากไปป้อนน้องในลาน น้องจะอิ่มอร่อย 😋 และถ้าเจอเมนูโปรดจะดีใจมาก 💕</p>${rows}</div>`;
+  return `<div class="kitchen"><p class="muted kit-note">เอาผลผลิตจากไร่กับของป่ามาทำเมนูพิเศษ แล้วลากไปป้อนน้องในลาน น้องจะอิ่มอร่อย 😋 และถ้าเจอเมนูโปรดจะดีใจมาก 💕</p><p class="muted kit-note">🍽️ จานที่ทำเสร็จจะอยู่ในถาดอาหารหน้าลาน (จานใหม่อยู่ซ้ายสุด)</p>${rows}</div>`;
 }
 
 function openKitchen() {
+  const cooked = [];   // dishes made in this visit: they fly into the tray once the dialog is closed (behind it nobody sees them)
   openModal({
     title: '🍳 ครัวน้องๆ',
     html: kitchenHtml(getState()),
+    onClose() {
+      cooked.forEach((id, i) => setTimeout(() => { if (barn3d && typeof barn3d.cooked === 'function') barn3d.cooked(id); }, 200 + i * 300));
+    },
     onMount(body) {
       body.addEventListener('click', ev => {
         const btn = ev.target.closest('[data-cook]');
         if (!btn || btn.disabled) return;
-        run(s => cook(s, btn.dataset.cook));
+        const dishId = btn.dataset.cook;
+        const before = countItem(getState(), dishId);
+        const prev = freshDishes.get(dishId);
+        freshDishes.set(dishId, before + 1);   // before run(): the tray re-renders inside it and must already see the dish as fresh
+        const r = run(s => cook(s, dishId));
+        if (r && r.ok) { if (cooked.length < 4) cooked.push(dishId); }
+        else if (prev === undefined) freshDishes.delete(dishId);
+        else freshDishes.set(dishId, prev);
         body.innerHTML = kitchenHtml(getState());
       });
     },
@@ -842,8 +853,8 @@ function mailBtnHtml(state) {
 }
 
 /** 🍳 ครัว, 📔 บันทึก and 🖼️ อัลบั้ม chips on the yard header. */
-const memoryBtnsHtml = () =>
-  '<button type="button" class="yard-mail yard-memo" data-action="open-kitchen" title="ครัว" aria-label="ครัวทำอาหารให้น้อง">🍳</button>' +
+const memoryBtnsHtml = (with3d = false) =>
+  (with3d ? '' : '<button type="button" class="yard-mail yard-memo" data-action="open-kitchen" title="ครัว" aria-label="ครัวทำอาหารให้น้อง">🍳</button>') +
   '<button type="button" class="yard-mail yard-memo" data-action="open-journal" title="บันทึกน้อง" aria-label="บันทึกน้อง">📔</button>' +
   '<button type="button" class="yard-mail yard-memo" data-action="open-album" title="อัลบั้ม" aria-label="อัลบั้มรูป">🖼️</button>';
 
@@ -859,7 +870,7 @@ function renderBarn(state) {
       ${renderFamilyEggs(state)}
       <section class="barn-section">
         <div class="barn-head"><h2 class="barn-title">🏡 ลานน้องๆ</h2>
-          <div class="barn-head-r">${memoryBtnsHtml()}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
+          <div class="barn-head-r">${memoryBtnsHtml(true)}${mailBtnHtml(state)}<span class="badge barn-cap">${pets.length}/${state.barnCapacity}</span>${toggle}</div></div>
         ${festChip}
         ${mode === '3d'
           ? '<div class="b3" data-key="barn3d" data-morph="skip"></div>'
@@ -983,22 +994,29 @@ function wearPanelHtml(pet, state) {
   return `<div class="wear-slots">${slots}</div>${list}`;
 }
 
-/** Edible items for the food tray (chips); `pet` (optional) marks favorites. */
+/** V23: dishes cooked this session and not fed yet: dishId -> count right after cooking (fewer in the bag = no longer fresh). */
+const freshDishes = new Map();
+const isFreshDish = (state, id) => freshDishes.has(id) && countItem(state, id) >= freshDishes.get(id);
+const trayGroup = r => (r.fresh ? 0 : r.item.type === 'dish' ? 1 : r.fx && r.fx.favorite ? 2 : 3);
+
+/** Edible items for the food tray (chips); `pet` (optional) marks favorites. First chip carries data-fresh="1" when a fresh dish leads. */
 function foodTrayHtml(state, pet, selectedId) {
+  for (const id of [...freshDishes.keys()]) if (!isFreshDish(state, id)) freshDishes.delete(id);
   const chips = Object.entries(state.inventory)
     .filter(([, n]) => n > 0)
     .map(([id, n]) => ({ item: getItem(id), n }))
     .filter(r => r.item && r.item.food && r.item.type !== 'egg')
-    .map(r => ({ ...r, fx: pet ? foodEffect(pet, r.item) : null }))
-    .sort((a, b) => (b.fx ? +b.fx.favorite : 0) - (a.fx ? +a.fx.favorite : 0) || a.item.nameTh.localeCompare(b.item.nameTh, 'th'));
+    .map(r => ({ ...r, fx: pet ? foodEffect(pet, r.item) : null, fresh: isFreshDish(state, r.item.id) }))
+    .sort((a, b) => trayGroup(a) - trayGroup(b) || a.item.nameTh.localeCompare(b.item.nameTh, 'th'));
   if (!chips.length) return '<span class="b3-tray-empty">ไม่มีอาหารในกระเป๋า 🛒</span>';
-  return chips.map(r => `<button type="button" class="b3-food${selectedId === r.item.id ? ' is-on' : ''}${r.fx && r.fx.favorite ? ' is-fav' : ''}" data-b3="tray-food" data-item-id="${e(r.item.id)}" aria-label="${e(r.item.nameTh)} ${r.n}" aria-pressed="${selectedId === r.item.id}">
-      <span class="b3-food-e">${r.item.emoji}</span><small>${r.n}</small></button>`).join('');
+  return chips.map((r, i) => `<button type="button" class="b3-food${selectedId === r.item.id ? ' is-on' : ''}${r.fx && r.fx.favorite ? ' is-fav' : ''}${r.fresh ? ' is-fresh' : ''}"${r.fresh && i === 0 ? ' data-fresh="1"' : ''} data-b3="tray-food" data-item-id="${e(r.item.id)}" aria-label="${e(r.item.nameTh)} ${r.n}${r.fresh ? ' (ใหม่)' : ''}" aria-pressed="${selectedId === r.item.id}">
+      <span class="b3-food-e">${r.item.emoji}</span><small>${r.n}</small>${r.fresh ? '<i class="b3-food-new">ใหม่</i>' : ''}</button>`).join('');
 }
 
 /** What barn3d.js needs from this module. */
 const barnCtx = {
   run, esc: e, petSheetHtml, foodTrayHtml,
+  openKitchen: () => openKitchen(),
   openDetails: id => openDetails(id),
   openEggPicker: () => openEggPicker(),
   revealHatch: (pet, toNursery) => openHatchReveal(pet, !!toNursery), // the list's normal reveal, used when the 3D ceremony is cut short

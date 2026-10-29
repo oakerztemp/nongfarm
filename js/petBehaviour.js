@@ -8,28 +8,31 @@ import { getSpecies } from './data/species.js';
 import { getItem } from './data/items.js';
 
 /**
- * Layout shared with barn3d.js, matched to js/world3d/engine.js (island radius 7, fence 6.3, barn prop at z = -4.9
- * facing +z, default camera at +z). Pets use a smaller circle than the engine allows so they stay big on screen.
+ * Layout shared with barn3d.js, matched to js/world3d/engine.js (V23: tier L island radius 9.0, fence 8.3, barn prop at
+ * z = -5.8 facing +z, default camera at +z). Pets use a smaller circle than the engine allows so they stay big on screen.
+ * The defaults below are tier L; configureYard(tier) re-targets them.
  */
 export const YARD = {
-  walkRadius: 4.3,                   // pets never walk beyond this
-  backLimit: -1.9,                   // z below this is the nest row / barn strip: no wander targets there
-  nestZ: -2.55,                      // incubator nests stand in a row in front of the barn door
+  walkRadius: 7.5,                   // pets never walk beyond this
+  backLimit: -2.8,                   // z below this (and x in the barn/kitchen strip) is the nest row / barn strip: no wander targets there
+  nestZ: -3.45,                      // incubator nests stand in a row in front of the barn door
   bowl: { x: 1.7, z: 2.3 },          // food bowl, front right
   bowlClear: 0.9,                    // wander targets keep this far from the bowl centre
-  obstacles: [],                     // static prop circles { x, z, r } of the current yard tier (pond, tree, ...)
+  kitchen: { x: 4.17, z: -4.7, r: 1.1 }, // the kitchen hut (V23 section 3), right behind the yard; also an obstacle
+  playground: null,                  // { x, z, r } of the playground prop (L+), where cheerful pets like to play
+  obstacles: [],                     // static prop circles { x, z, r } of the current yard tier (pond, tree, kitchen ...)
   flowers: [],                       // where a bee may visit: flowerbed blooms and pond lilies of the current tier (V11 §5)
   trees: [],                         // tree props { id, x, z } of the current tier (a spider hangs from one)
 };
 
 // ── Yard tiers (CONTRACT_V6 §4) ─────────────────────────────────────────────
-// Mirrors engine.YARD_TIERS (walk radius + barn z); a test keeps the two in sync. Props are static scenery that
-// barn3d builds; the circles also keep wander targets away from them.
+// Mirrors engine.YARD_TIERS (walk radius + barn z; V23 sizes, CONTRACT_V23 section 1); a test keeps the two in sync. Props are
+// static scenery that barn3d builds; the circles also keep wander targets away from them.
 export const YARD_TIER_LAYOUT = {
-  S: { walk: 4.3, barnZ: -3.6 },
-  M: { walk: 5.0, barnZ: -4.3 },
-  L: { walk: 5.6, barnZ: -4.9 },
-  XL: { walk: 6.2, barnZ: -5.5 },
+  S: { walk: 5.0, barnZ: -4.3 },
+  M: { walk: 6.4, barnZ: -5.2 },
+  L: { walk: 7.6, barnZ: -5.8 },
+  XL: { walk: 9.0, barnZ: -6.4 },
 };
 const TIER_RANK = { S: 0, M: 1, L: 2, XL: 3 };
 
@@ -39,17 +42,23 @@ export function yardTierOf(capacity) {
   return c >= 15 ? 'XL' : c >= 10 ? 'L' : c >= 6 ? 'M' : 'S';
 }
 
-/** Static props of a tier: M pond + tree, L + flower bed + playground, XL + hill with gazebo + 4 lanterns. r = blocked radius. */
+/** Static props of a tier (V23 zones): M pond + tree, L + flower bed + playground, XL + hill with gazebo + 4 lanterns. r = blocked radius. */
 export function yardProps(tier) {
   const rank = TIER_RANK[tier] ?? 0;
   const out = [];
-  if (rank >= 1) out.push({ id: 'pond', kind: 'pond', x: -3.6, z: 1.6, r: 1.1 }, { id: 'tree', kind: 'tree', x: 3.9, z: -0.4, r: 0.55 });
-  if (rank >= 2) out.push({ id: 'flowerbed', kind: 'flowerbed', x: 3.3, z: 3.5, r: 0.9 }, { id: 'playground', kind: 'playground', x: -3.8, z: -0.9, r: 1.0 });
+  if (rank >= 1) out.push({ id: 'pond', kind: 'pond', x: 4.3, z: 1.4, r: 1.1 }, { id: 'tree', kind: 'tree', x: -4.6, z: -1.6, r: 0.55 });
+  if (rank >= 2) out.push({ id: 'flowerbed', kind: 'flowerbed', x: -3.4, z: 4.6, r: 0.9 }, { id: 'playground', kind: 'playground', x: -5.4, z: 1.6, r: 1.0 });
   if (rank >= 3) {
-    out.push({ id: 'hill', kind: 'hill', x: 5.2, z: -2.4, r: 1.3 });
-    for (const [i, [x, z]] of [[-4.6, 2.9], [4.6, 2.9], [-2.6, 4.9], [2.6, 4.9]].entries()) out.push({ id: `lantern${i}`, kind: 'lantern', x, z, r: 0.25 });
+    out.push({ id: 'hill', kind: 'hill', x: -6.6, z: -3.6, r: 1.3 });
+    for (const [i, [x, z]] of [[-6.6, 4.8], [6.6, 4.8], [-2.2, 7.4], [2.2, 7.4]].entries()) out.push({ id: `lantern${i}`, kind: 'lantern', x, z, r: 0.25 });
   }
   return out;
+}
+
+/** The kitchen hut (CONTRACT_V23 section 3): right behind the yard, beside the barn, at every tier. r = footprint radius. */
+export function kitchenSpot(tier) {
+  const lay = YARD_TIER_LAYOUT[tier] || YARD_TIER_LAYOUT.L;
+  return { x: 3.0 + (lay.walk - 5) * 0.45, z: lay.barnZ + 1.1, r: 1.1 };
 }
 
 /** Re-targets the behaviour layout (walk radius, nest row, blocked props) when the yard changes tier. */
@@ -59,7 +68,9 @@ export function configureYard(tier = 'L') {
   YARD.nestZ = lay.barnZ + 2.35;
   YARD.backLimit = lay.barnZ + 3.0;
   const props = yardProps(tier);
-  YARD.obstacles = props.map(({ x, z, r }) => ({ x, z, r }));
+  YARD.kitchen = kitchenSpot(YARD_TIER_LAYOUT[tier] ? tier : 'L');
+  YARD.playground = props.find(p => p.kind === 'playground') || null;
+  YARD.obstacles = [...props.map(({ x, z, r }) => ({ x, z, r })), { ...YARD.kitchen }];
   YARD.trees = props.filter(p => p.kind === 'tree').map(({ id, x, z }) => ({ id, x, z }));
   YARD.flowers = [];
   for (const p of props) {
@@ -175,9 +186,10 @@ function weightedPick(entries, rng) {
   return entries[entries.length - 1][0];
 }
 
+const BACK_STRIP_X0 = -5.2;   // the barn strip spans x from here to the kitchen's far edge; beyond it pets may walk behind the barn
 function validTarget(x, z, fromX, fromZ) {
   if (dist(x, z, YARD.bowl.x, YARD.bowl.z) < YARD.bowlClear) return false;
-  if (z < YARD.backLimit) return false; // the nest row / barn strip stays clear
+  if (z < YARD.backLimit && x >= BACK_STRIP_X0 && x <= YARD.kitchen.x + YARD.kitchen.r + 0.3) return false; // the nest row / barn / kitchen strip stays clear
   for (const o of YARD.obstacles) if (dist(x, z, o.x, o.z) < o.r + 0.6) return false; // pond, tree, hill ...
   if (dist(x, z, fromX, fromZ) < 0.9) return false; // tiny shuffles look jittery
   return true;
@@ -189,14 +201,30 @@ function randomYardPoint(rng) {
   return { x: Math.cos(ang) * r, z: Math.sin(ang) * r };
 }
 
+/** Zone bonus (0..0.5, V23 section 4): a small pull toward the part of the yard a personality likes. Never decides alone. */
+export const ZONE_BONUS_MAX = 0.5;
+export function zoneBonus(personality, x, z) {
+  const near = (c, rad) => (c ? Math.max(0, 1 - dist(x, z, c.x, c.z) / rad) : 0);
+  let k = 0;
+  switch (personality) {
+    case 'lazy': k = near({ x: 0, z: YARD.backLimit + 0.8 }, 4); break;                              // near the barn
+    case 'glutton': k = Math.max(near(YARD.kitchen, 3.5), near(YARD.bowl, 3)); break;                // kitchen and bowl
+    case 'cheerful': case 'naughty': k = Math.max(near({ x: 0, z: 0 }, 3.5), near(YARD.playground, 3)); break;   // middle of the yard and the playground
+    case 'shy': k = Math.max(0, Math.min(1, (Math.hypot(x, z) / Math.max(1, YARD.walkRadius) - 0.6) / 0.4)); break;   // the rim
+    default: break;
+  }
+  return ZONE_BONUS_MAX * k;
+}
+
 /**
  * Picks a wander target by occupancy: several random yard points are scored by their distance to every other pet
  * (and to where the others are heading: `tx`,`tz`), so the crowd spreads out instead of clumping in the middle.
  * Shy pets only look at the distance; everyone else adds a little randomness so paths do not look planned.
+ * `personality` (optional) adds the small zone bonus (V23 section 4).
  */
-export function pickTarget(rng, ax, az, others, shy) {
+export function pickTarget(rng, ax, az, others, shy, personality) {
   let best = null, bestScore = -Infinity;
-  const tries = shy ? 8 : 7;
+  const tries = 10;
   for (let i = 0; i < tries; i++) {
     const c = randomYardPoint(rng);
     if (!validTarget(c.x, c.z, ax, az)) continue;
@@ -206,7 +234,7 @@ export function pickTarget(rng, ax, az, others, shy) {
       if (Number.isFinite(o.tx) && Number.isFinite(o.tz)) d = Math.min(d, dist(c.x, c.z, o.tx, o.tz));
       if (d < nearest) nearest = d;
     }
-    const score = Math.min(nearest, 3) + (shy ? 0 : rng() * 0.6);
+    const score = Math.min(nearest, 3) + (shy ? 0 : rng() * 0.6) + zoneBonus(personality, c.x, c.z);
     if (score > bestScore) { bestScore = score; best = c; }
   }
   if (best) return best;
@@ -360,7 +388,7 @@ function nextActionBase(pet, actorState, rng, now) { // eslint-disable-line no-u
   if (pet && pet.personality === 'shy' && others.length) {
     const closest = others.reduce((b, o) => (dist(ax, az, o.x, o.z) < dist(ax, az, b.x, b.z) ? o : b), others[0]);
     if (dist(ax, az, closest.x, closest.z) < 1.8 && rng() < 0.8) {
-      return { type: 'wander', target: pickTarget(rng, ax, az, others, true), speed: pace, reason: 'shy', duration: 0 };
+      return { type: 'wander', target: pickTarget(rng, ax, az, others, true, 'shy'), speed: pace, reason: 'shy', duration: 0 };
     }
   }
 
@@ -453,7 +481,7 @@ function nextActionBase(pet, actorState, rng, now) { // eslint-disable-line no-u
       };
     }
     case 'wander':
-      return { type: 'wander', target: pickTarget(rng, ax, az, others, pet && pet.personality === 'shy'), speed: pace, duration: 0 };
+      return { type: 'wander', target: pickTarget(rng, ax, az, others, pet && pet.personality === 'shy', pet && pet.personality), speed: pace, duration: 0 };
     case 'signature':
       return { type: sig.type, duration: DEFAULT_DUR[sig.type], small: sig.tier === 'epic', tier: sig.tier };
     case 'lookAtCamera':
@@ -938,7 +966,8 @@ export function shelterSpots(props) {
       // face the yard centre: the spots on the open side of the prop come first
       const base = Math.atan2(-p.z, -p.x);
       const a = base + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI * 2 / (n + 1));
-      out.push({ id: `${p.id}:${i}`, x: p.x + Math.cos(a) * r, z: p.z + Math.sin(a) * r });
+      const q = clampToYard(p.x + Math.cos(a) * r, p.z + Math.sin(a) * r);   // the gazebo sits near the rim: keep every spot walkable
+      out.push({ id: `${p.id}:${i}`, x: q.x, z: q.z });
     }
   }
   return out;

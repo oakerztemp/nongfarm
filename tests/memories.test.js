@@ -60,12 +60,12 @@ test('journal: caps at 14 days and 6 lines a day (oldest dropped), days stay sor
 
 test('journal: every event kind has cute Thai text with the pet name, short, deterministic', () => withFakeNow(NOON, () => {
   const s = game([{ id: 'p1', name: 'มีมี่' }, { id: 'p2', name: 'โมจิ' }]);
-  assertEq(JOURNAL_KINDS.sort(), ['away', 'birthday', 'bestFriend', 'favSpot', 'firstWear', 'hatch', 'melt', 'photo', 'postcard', 'familyEgg', 'familyHatch', 'favDish', 'favToy'].sort());
+  assertEq(JOURNAL_KINDS.sort(), ['away', 'birthday', 'bestFriend', 'favSpot', 'firstWear', 'hatch', 'melt', 'photo', 'postcard', 'familyEgg', 'familyHatch', 'favDish', 'favToy', 'cook', 'dish'].sort());
   const ctx = { petId: 'p1', otherId: 'p2', spot: 'chin', acc: '🎩 หมวกทรงสูง', months: 3 };
   for (const [i, kind] of JOURNAL_KINDS.filter(k => k !== 'away').entries()) {
     ctx.day = `2026-09-0${i + 1}`; // one day each: a day only holds 6 lines
     const text = journalText(kind, { name: 'มีมี่', other: 'โมจิ', spot: 'คาง', acc: 'โบว์', months: 3 });
-    assert(text.includes('มีมี่') && text.length <= 60 && !text.includes('{'), `${kind}: ${text}`);
+    assert((kind === 'cook' ? text.includes('โบว์') : text.includes('มีมี่')) && text.length <= 60 && !text.includes('{'), `${kind}: ${text}`);
     assertEq(journalText(kind, { name: 'มีมี่', other: 'โมจิ', spot: 'คาง', acc: 'โบว์', months: 3 }), text, 'deterministic');
     assert(journalEvent(s, kind, ctx), `${kind} written`);
     assert(!journalEvent(s, kind, ctx), `${kind} only once a day`);

@@ -817,3 +817,19 @@ img.pg-pet.pet-portrait { width: min(46vw, 200px); height: min(46vw, 200px); }
 /* the picture already shows the shiny colours: no emoji hue-rotate, just the glow */
 .is-shiny img.pet-emoji.pet-portrait, img.pet-emoji.pet-portrait.is-shiny { filter: drop-shadow(0 0 6px var(--accent)); }
 .pet-card.is-sick img.pet-emoji.pet-portrait { filter: saturate(0.6) brightness(0.95); }
+
+/* ───────── CONTRACT_V23: ปุ่มดูทั้งฟาร์ม 🗺️, ป้ายจานใหม่, ป้ายชื่อตอนป้อน, จานลอย ───────── */
+.b3-mapbtn { min-height: 34px; padding: 0 10px; background: var(--surface); box-shadow: var(--shadow); font-size: 1rem; }
+.b3-mapbtn.is-on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 22%, var(--surface)); }
+.b3-food.is-fresh { border-color: #ff8a5c; }
+.b3-food-new {
+  position: absolute; top: -6px; right: -4px; padding: 1px 6px; border-radius: 999px; font-style: normal; font-size: 0.62rem; font-weight: 800;
+  line-height: 1.3; color: #fff; background: linear-gradient(135deg, #ff6f91, #ff9a3c); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35); pointer-events: none;
+}
+.b3-feed-tag {
+  position: absolute; left: 0; top: 0; z-index: 6; max-width: 40%; padding: 2px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 800;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 2px solid var(--accent); box-shadow: var(--shadow); pointer-events: none; transform: translate(-50%, -100%);
+}
+.b3-dish-fly { position: fixed; left: 0; top: 0; z-index: 1000; font-size: 42px; line-height: 1; pointer-events: none; will-change: transform, opacity; filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.35)); }
+@media (max-width: 480px) { .b3-feed-tag { font-size: 0.74rem; padding: 1px 8px; max-width: 55%; } }

@@ -3,7 +3,7 @@
 // Each kind of event for one pet is written at most once per day (a diary, not a log). Other modules call journalEvent();
 // main.js also runs syncJournal() on every state change for the events nobody "calls" (hatch, postcard arrived).
 //
-//   journalEvent(state, 'hatch'|'bestFriend'|'favSpot'|'birthday'|'firstWear'|'photo'|'postcard'|'melt'|'away'|'familyEgg'|'familyHatch', ctx)
+//   journalEvent(state, 'hatch'|'bestFriend'|'favSpot'|'birthday'|'firstWear'|'photo'|'postcard'|'melt'|'away'|'familyEgg'|'familyHatch'|'cook'|'dish', ctx)
 //   addJournal(state, { kind, petId, emoji, text, day? })    low level: returns true when a line was written
 //   journalDays(state)                                        newest day first (what the sheet shows)
 //   journalAway(state, digest)                                the away-digest lines as diary lines
@@ -51,6 +51,8 @@ const T = {
   familyHatch: ['🐣', ['ลูกของ {n} กับ {m} ฟักออกมาแล้ว']],
   away: ['🏡', ['{text}']],
   favDish: ['🍽️', ['{n} ได้กิน{a} เมนูโปรดแล้ว ยิ้มหน้าบานเลย!', 'ค้นพบแล้ว! เมนูโปรดของ {n} คือ{a}', '{n} กิน{a}เกลี้ยงจาน แล้วขอเพิ่มอีก']],
+  cook: ['🍳', ['วันนี้ทำ{a}ให้น้องๆ', 'วันนี้เข้าครัวทำ{a}ให้น้องๆ กินกัน', 'ทำ{a}เสร็จแล้ว น้องๆ ต้องชอบแน่']],
+  dish: ['😋', ['{n} กิน{a}หมดจาน', '{n} กิน{a}เกลี้ยงเลย ชอบมาก', '{n} ได้กิน{a} อิ่มหนำสำราญ']],
   favToy: ['🧸', ['ค้นพบแล้ว! ของเล่นโปรดของ {n} คือ {a}', '{n} ได้เล่น {a} ของเล่นชิ้นโปรด ดีใจสุดๆ', 'รู้แล้วว่า {n} ชอบ {a} ที่สุด']],
 };
 export const JOURNAL_KINDS = Object.keys(T);

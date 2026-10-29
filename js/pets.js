@@ -790,6 +790,7 @@ export function feedPet(state, petId, itemId) {
       pet.favDishKnown = true;
       journalEvent(state, 'favDish', { petId, acc: item.nameTh });
     }
+    if (!favDish) journalEvent(state, 'dish', { petId, acc: item.nameTh });   // V23: a plain dish eaten (the favourite has its own line)
   }
 
   const note = favDish ? ' เมนูโปรดเลย! 💕' : favorite ? ' ของโปรดเลย! ⭐' : match ? ' ถูกปากมาก' : ' กินพอได้ (ไม่ใช่อาหารถนัด)';

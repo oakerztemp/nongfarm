@@ -398,3 +398,240 @@ export function buildBench(THREE, { gradient, tier = 'high' } = {}) {
   group.add(body);
   return { group, radius: 0.7, height: 0.85, dispose() { disposeGroup(group, [body]); } };
 }
+
+// ---------------------------------------------------------------- V25 path border / path lights / sign board (CONTRACT_V25 s3)
+//   buildPathBorder(THREE, paths, { gradient, tier, avoid:[{x,z,r}], seed }) -> Group + .dispose()   (<= 2 draw calls: flowers, pebbles; low = pebbles only)
+//   buildPathLights(THREE, spots, { gradient, tier }) -> { group, setNight(bool), update(dt, t), dispose() }   (lantern posts 1 + additive glow 1; low = no glow)
+//   buildSignBoard(THREE, { gradient, tier, texture }) -> { group, radius 0.6, height, setTexture(tex), dispose() }   (board 1 + front plane 1; front = +z)
+
+function rng32(seed) {
+  let s = (seed >>> 0) || 1;
+  return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+function distToPolyline(px, pz, pts) {
+  let best = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1], dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+    const t = l2 > 1e-9 ? Math.max(0, Math.min(1, ((px - a.x) * dx + (pz - a.z) * dz) / l2)) : 0;
+    const d = Math.hypot(px - (a.x + dx * t), pz - (a.z + dz * t));
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+const FLOWER_COLORS = [0xf59ab5, 0xffe27a, 0xffffff, 0xb8a4f0];
+const PEBBLE_COLORS = [0x9a958c, 0xb5ae9f, 0x8a8680, 0xc4b79c];
+
+export function buildPathBorder(THREE, paths, { gradient = null, tier = 'high', avoid = [], seed = 1 } = {}) {
+  const group = new THREE.Group();
+  group.name = 'path-border';
+  const rnd = rng32(seed);
+  const step = tier === 'medium' ? 0.9 : 0.45;
+  const flowers = [], pebbles = [];                                   // { x, z, s, r, c }
+  const lines = [];
+  for (const p of paths || []) {
+    const pts = [];
+    for (const q of p.points || []) { const l = pts[pts.length - 1]; if (!l || Math.hypot(q.x - l.x, q.z - l.z) > 1e-4) pts.push({ x: q.x, z: q.z }); }
+    lines.push({ pts, width: p.width || 0.9 });
+  }
+  lines.forEach((ln, li) => {
+    if (ln.pts.length < 2) return;
+    let len = 0;
+    for (let i = 0; i < ln.pts.length - 1; i++) len += Math.hypot(ln.pts[i + 1].x - ln.pts[i].x, ln.pts[i + 1].z - ln.pts[i].z);
+    let acc = 0, k = 0;                                               // acc = arc length at the start of the current segment
+    for (let i = 0; i < ln.pts.length - 1; i++) {
+      const a = ln.pts[i], b = ln.pts[i + 1], dx = b.x - a.x, dz = b.z - a.z, sl = Math.hypot(dx, dz);
+      const ux = dx / sl, uz = dz / sl;
+      while (k * step < acc + sl) {
+        const s = k * step, t = s - acc, cx = a.x + ux * t, cz = a.z + uz * t;
+        const endOk = s > 0.4 && s < len - 0.4;
+        for (const side of [1, -1]) {
+          const isFlower = ((k + (side > 0 ? 0 : 1)) & 1) === 0;
+          const off = ln.width / 2 + 0.15 + rnd() * 0.2, jit = (rnd() - 0.5) * 0.18;
+          const x = cx + (-uz) * side * off + ux * jit, z = cz + ux * side * off + uz * jit;
+          const sc = 0.8 + rnd() * 0.5, rot = rnd() * 6.283, ci = Math.floor(rnd() * 4);
+          if (!endOk || (isFlower && tier === 'low')) continue;
+          let ok = true;
+          for (const c of avoid) if (Math.hypot(x - c.x, z - c.z) < c.r) { ok = false; break; }
+          if (ok) for (let o = 0; o < lines.length; o++) if (o !== li && lines[o].pts.length > 1 && distToPolyline(x, z, lines[o].pts) < 0.8) { ok = false; break; }
+          if (ok) (isFlower ? flowers : pebbles).push({ x, z, s: sc, r: rot, c: ci });
+        }
+        k++;
+      }
+      acc += sl;
+    }
+  });
+
+  const meshes = [];
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v3 = new THREE.Vector3(), sc3 = new THREE.Vector3(), col = new THREE.Color();
+  const fill = (name, geo, mat, list, palette, y, flat) => {
+    const im = new THREE.InstancedMesh(geo, mat, list.length);
+    im.name = name; im.frustumCulled = false; im.castShadow = false; im.receiveShadow = true;
+    im.userData.noPick = true;
+    list.forEach((it, i) => {
+      q.setFromEuler(e.set(0, it.r, 0));
+      sc3.set(it.s, flat ? it.s * 0.6 : it.s, it.s);
+      m4.compose(v3.set(it.x, y, it.z), q, sc3);
+      im.setMatrixAt(i, m4);
+      im.setColorAt(i, col.setHex(palette[it.c]));
+    });
+    im.instanceMatrix.needsUpdate = true; im.instanceColor.needsUpdate = true;
+    group.add(im); meshes.push(im);
+  };
+  if (flowers.length) {
+    const geo = mergeColored(THREE, [
+      { geo: new THREE.BoxGeometry(0.014, 0.17, 0.014), color: 0x5aa845, pos: [0, 0.085, 0] },
+      { geo: new THREE.SphereGeometry(0.065, 6, 4), color: 0xffffff, pos: [0, 0.185, 0] },
+      { geo: new THREE.SphereGeometry(0.028, 5, 4), color: 0xf2c14e, pos: [0, 0.2, 0.05] },
+    ]);
+    const mat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradient });
+    // only the white head takes the per-instance colour; the stem and the centre keep their own
+    mat.onBeforeCompile = sh => {
+      sh.vertexShader = sh.vertexShader.replace('#include <color_vertex>',
+        '#include <color_vertex>\n#ifdef USE_INSTANCING_COLOR\n  vColor.xyz = mix(color.rgb, color.rgb * instanceColor.rgb, step(0.99, color.b));\n#endif');
+    };
+    mat.customProgramCacheKey = () => 'path-border-flower';
+    fill('path-border-flowers', geo, mat, flowers, FLOWER_COLORS, 0, false);
+  }
+  if (pebbles.length) {
+    const geo = new THREE.IcosahedronGeometry(0.06, 0);
+    const mat = new THREE.MeshToonMaterial({ gradientMap: gradient });
+    fill('path-border-pebbles', geo, mat, pebbles, PEBBLE_COLORS, 0.02, true);
+  }
+  group.userData.counts = { flowers: flowers.length, pebbles: pebbles.length };
+  group.dispose = () => { for (const m of meshes) { m.geometry.dispose(); m.material.dispose(); m.dispose(); } meshes.length = 0; if (group.parent) group.parent.remove(group); group.clear(); };
+  return group;
+}
+
+export function buildPathLights(THREE, spots, { gradient = null, tier = 'high' } = {}) {
+  const group = new THREE.Group();
+  group.name = 'path-lights';
+  const list = spots || [];
+  const n = list.length;
+  const seg = tier === 'low' ? 5 : 8;
+  const PAPER = 0xffd98a;
+  const postGeo = mergeColored(THREE, [
+    { geo: new THREE.BoxGeometry(0.16, 0.05, 0.16), color: 0x8f9a6a, pos: [0, 0.025, 0] },
+    { geo: new THREE.CylinderGeometry(0.03, 0.04, 1.1, seg), color: WOOD_M, pos: [0, 0.55, 0] },
+    { geo: new THREE.BoxGeometry(0.2, 0.04, 0.2), color: WOOD_D, pos: [0, 1.1, 0] },                       // lantern seat
+    { geo: new THREE.CylinderGeometry(0.095, 0.085, 0.2, 6), color: PAPER, pos: [0, 1.22, 0] },            // paper lantern
+    { geo: new THREE.CylinderGeometry(0.1, 0.1, 0.02, 6), color: WOOD_D, pos: [0, 1.32, 0] },
+    { geo: new THREE.ConeGeometry(0.13, 0.1, 6), color: 0xc9602b, pos: [0, 1.38, 0] },                     // little roof
+  ]);
+  const postMat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradient, emissive: new THREE.Color(0xffd070), emissiveIntensity: 0.1 });
+  // emissive only on the lantern paper (red channel ~1.0); the wooden parts stay unlit
+  postMat.onBeforeCompile = sh => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>',
+      '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n  totalEmissiveRadiance *= step(0.95, vColor.r);\n#endif');
+  };
+  postMat.customProgramCacheKey = () => 'path-light-post';
+  const meshes = [];
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1), v3 = new THREE.Vector3(), white = new THREE.Color(1, 1, 1);
+  let glow = null, night = false;
+  if (n) {
+    const posts = new THREE.InstancedMesh(postGeo, postMat, n);
+    posts.name = 'path-light-posts'; posts.frustumCulled = false; posts.castShadow = true; posts.receiveShadow = false;
+    list.forEach((s, i) => { m4.compose(v3.set(s.x, 0, s.z), q.identity(), one); posts.setMatrixAt(i, m4); });
+    posts.instanceMatrix.needsUpdate = true;
+    group.add(posts); meshes.push(posts);
+    if (tier !== 'low') {
+      // glow: soft ground pool + two crossed vertical halos; vertex colours fade to black at the rim so additive blending vanishes there
+      const gp = [], gc = [], gi = [];
+      const disc = (r, y, ax, rings, fall, k) => {                                      // ax: 0 = flat on the ground, 1 = facing z, 2 = facing x
+        const base = gp.length / 3, N = 14;
+        const put = (a, rr, br) => {
+          const u = Math.cos(a) * rr, w = Math.sin(a) * rr;
+          if (ax === 0) gp.push(u, y, w); else if (ax === 1) gp.push(u, y + w, 0); else gp.push(0, y + w, u);
+          gc.push(br * k, 0.62 * br * k, 0.24 * br * k);
+        };
+        put(0, 0, 1);
+        for (let r2 = 1; r2 <= rings; r2++) for (let i = 0; i < N; i++) { const f = r2 / rings; put((i / N) * 6.2832, r * f, Math.pow(1 - f, fall)); }
+        for (let i = 0; i < N; i++) gi.push(base, base + 1 + i, base + 1 + (i + 1) % N);
+        for (let r2 = 1; r2 < rings; r2++) for (let i = 0; i < N; i++) {
+          const a = base + 1 + (r2 - 1) * N + i, b = base + 1 + (r2 - 1) * N + (i + 1) % N, c = a + N, d = b + N;
+          gi.push(a, c, b, b, c, d);
+        }
+      };
+      disc(1.05, 0.03, 0, 4, 2.2, 0.5);
+      disc(0.42, 1.24, 0, 3, 1.5, 0.7);
+      disc(0.45, 1.24, 1, 3, 1.6, 0.8);
+      disc(0.45, 1.24, 2, 3, 1.6, 0.8);
+      const gg = new THREE.BufferGeometry();
+      gg.setAttribute('position', new THREE.Float32BufferAttribute(gp, 3));
+      gg.setAttribute('color', new THREE.Float32BufferAttribute(gc, 3));
+      gg.setIndex(gi);
+      gg.computeBoundingSphere();
+      const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
+      glow = new THREE.InstancedMesh(gg, glowMat, n);
+      glow.name = 'path-light-glow'; glow.frustumCulled = false; glow.visible = false; glow.renderOrder = 3;
+      glow.userData.noPick = true;
+      list.forEach((s, i) => { m4.compose(v3.set(s.x, 0, s.z), q.identity(), one); glow.setMatrixAt(i, m4); glow.setColorAt(i, white); });
+      glow.instanceMatrix.needsUpdate = true; glow.instanceColor.needsUpdate = true;
+      group.add(glow); meshes.push(glow);
+    }
+  } else { postGeo.dispose(); postMat.dispose(); }
+  return {
+    group,
+    count: n,
+    setNight(on) {
+      night = !!on;
+      postMat.emissive.setHex(night ? 0xffa030 : 0xffd070);
+      postMat.emissiveIntensity = night ? 1.0 : 0.1;
+      if (glow) glow.visible = night;
+    },
+    update(dt, t) {
+      if (!glow || !night) return;
+      const a = glow.instanceColor.array;
+      for (let i = 0; i < n; i++) {
+        const v = 0.8 + 0.12 * Math.sin(t * (4.2 + (i % 5) * 0.7) + i * 1.9) + 0.07 * Math.sin(t * 11.3 + i * 3.1);
+        a[i * 3] = a[i * 3 + 1] = a[i * 3 + 2] = v;
+      }
+      glow.instanceColor.needsUpdate = true;
+    },
+    dispose() {
+      for (const m of meshes) { m.geometry.dispose(); m.material.dispose(); m.dispose(); }
+      meshes.length = 0; if (group.parent) group.parent.remove(group); group.clear();
+    },
+  };
+}
+
+export function buildSignBoard(THREE, { gradient = null, tier = 'high', texture = null } = {}) {
+  const group = new THREE.Group();
+  group.name = 'signboard';
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const BW = 1.1, BH = 0.46, BY = 0.82, rise = 0.1, half = 0.1,   // a narrow roof: the default camera looks down ~50 deg and a deep overhang hid the name
+    a = Math.atan2(rise, half), slab = Math.hypot(half, rise) + 0.07;
+  const parts = [
+    { geo: box(0.1, 1.0, 0.1), color: WOOD_M, pos: [-0.45, 0.5, 0] },                                       // posts
+    { geo: box(0.1, 1.0, 0.1), color: WOOD_M, pos: [0.45, 0.5, 0] },
+    { geo: box(0.19, 0.05, 0.19), color: 0x8f9a6a, pos: [-0.45, 0.025, 0] },                                 // footings
+    { geo: box(0.19, 0.05, 0.19), color: 0x8f9a6a, pos: [0.45, 0.025, 0] },
+    { geo: box(BW, BH, 0.06), color: WOOD_L, pos: [0, BY, 0] },                                              // board
+    { geo: box(BW + 0.06, 0.05, 0.1), color: WOOD_D, pos: [0, BY + BH / 2 + 0.01, 0.01] },                   // frame
+    { geo: box(BW + 0.06, 0.05, 0.1), color: WOOD_D, pos: [0, BY - BH / 2 - 0.01, 0.01] },
+    { geo: box(0.05, BH + 0.06, 0.1), color: WOOD_D, pos: [-BW / 2 - 0.005, BY, 0.01] },
+    { geo: box(0.05, BH + 0.06, 0.1), color: WOOD_D, pos: [BW / 2 + 0.005, BY, 0.01] },
+  ];
+  const roofY = BY + BH / 2 + 0.06;
+  const tri = new THREE.Shape(); tri.moveTo(-half, 0); tri.lineTo(half, 0); tri.lineTo(0, rise); tri.closePath();
+  const gable = new THREE.ExtrudeGeometry(tri, { depth: 1.16, bevelEnabled: false });
+  gable.translate(0, 0, -0.58); gable.rotateY(Math.PI / 2);
+  parts.push({ geo: gable, color: CREAM_L, pos: [0, roofY, 0] });
+  for (const s of [1, -1]) parts.push({ geo: box(1.26, 0.05, slab), color: 0xe2763a, pos: [0, roofY + rise / 2 + 0.025, s * half / 2], rot: [s * a, 0, 0] });
+  parts.push({ geo: box(1.28, 0.06, 0.08), color: 0xc9602b, pos: [0, roofY + rise + 0.04, 0] });
+  const body = toonMesh(THREE, 'signboard-body', parts, gradient);
+  const faceMat = new THREE.MeshToonMaterial({ gradientMap: gradient, color: texture ? 0xffffff : WOOD_L, map: texture || null });
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(BW - 0.1, BH - 0.1), faceMat);
+  face.name = 'signboard-face'; face.position.set(0, BY, 0.032);
+  group.add(body, face);
+  return {
+    group, radius: 0.6, height: roofY + rise + 0.08, face,
+    setTexture(tex) {
+      faceMat.map = tex || null;
+      faceMat.color.setHex(tex ? 0xffffff : WOOD_L);
+      faceMat.needsUpdate = true;
+    },
+    dispose() { disposeGroup(group, [body, face]); },
+  };
+}

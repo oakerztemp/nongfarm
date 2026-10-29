@@ -1012,8 +1012,13 @@ function foodTrayHtml(state, pet, selectedId) {
       <span class="b3-food-e">${r.item.emoji}</span><small>${r.n}</small>${r.fresh ? '<i class="b3-food-new">ใหม่</i>' : ''}</button>`).join('');
 }
 
+// main.js owns the farm-name modal and hands it over after loading the views (no circular import).
+let farmNameOpener = null;
+export function setFarmNameOpener(fn) { farmNameOpener = typeof fn === 'function' ? fn : null; }
+
 /** What barn3d.js needs from this module. */
 const barnCtx = {
+  openFarmName: () => { if (farmNameOpener) farmNameOpener({ rename: true }); },
   run, esc: e, petSheetHtml, foodTrayHtml,
   openKitchen: () => openKitchen(),
   openDetails: id => openDetails(id),

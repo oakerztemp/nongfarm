@@ -20,6 +20,7 @@ export const YARD = {
   bowlClear: 0.9,                    // wander targets keep this far from the bowl centre
   kitchen: { x: 4.17, z: -4.7, r: 1.1 }, // the kitchen hut (V23 section 3), right behind the yard; also an obstacle
   landmarks: { mailbox: { x: 3.3, z: 3.6, r: 0.35 }, board: { x: 3.6, z: -2.1, r: 0.6 }, bench: { x: -3.4, z: 3.4, r: 0.7 } }, // V24 section 2 (also obstacles)
+  pathLights: [],                    // V25 path lamp posts { x, z } of the current tier (also obstacles, r 0.15)
   playground: null,                  // { x, z, r } of the playground prop (L+), where cheerful pets like to play
   obstacles: [],                     // static prop circles { x, z, r } of the current yard tier (pond, tree, kitchen ...)
   flowers: [],                       // where a bee may visit: flowerbed blooms and pond lilies of the current tier (V11 §5)
@@ -78,6 +79,165 @@ export function landmarkSpots(tier) {
   return { mailbox: { ...l.mailbox }, board: { ...l.board }, bench: { ...l.bench } };
 }
 
+// ── V25 yard paths, fence gates and path lights (CONTRACT_V25 section 2) ───────────────────────────
+// Pure data. barn3d draws the paths (placePaths used to build the first three itself in V23), engine cuts the fence gaps from
+// fenceGates(). The fence constants below mirror engine.YARD_TIERS / fenceRadiusAt / WILD / DECOR_SPOTS (tests keep them in sync).
+const FENCE_R = { S: 5.7, M: 7.1, L: 8.3, XL: 9.7 };
+const fenceR = (tier, x, z) => {
+  const f = FENCE_R[tier] || FENCE_R.L, th = Math.atan2(x, z);
+  return f * (1 + 0.035 * Math.sin(3 * th + 1.0) + 0.02 * Math.sin(5 * th + 2.0));
+};
+const STREAM = { x: 14.5, amp: 1.6, freq: 0.22 };
+const streamXAt = z => STREAM.x + STREAM.amp * Math.sin(z * STREAM.freq);
+const DECOR_SPOT_XZ = [[0.0, 3.6], [-2.8, 1.6], [2.6, 4.6], [-2.9, -0.9], [0.0, 6.6], [5.6, 4.0], [-7.6, -0.2], [7.6, -1.4]];
+const DECOR_SPOT_N = { S: 2, M: 4, L: 6, XL: 8 };
+export const PATH_WIDTH = 0.9;
+export const PATH_LIGHT_OFFSET = 0.75;
+export const PATH_LIGHT_R = 0.15;
+export const PATH_LIGHT_MAX = { S: 6, M: 8, L: 11, XL: 14 };
+
+const bez = (a, c, b, n = 8) => Array.from({ length: n + 1 }, (_, i) => {
+  const u = i / n, v = 1 - u;
+  return { x: v * v * a.x + 2 * u * v * c.x + u * u * b.x, z: v * v * a.z + 2 * u * v * c.z + u * u * b.z };
+});
+/** Chaikin corner cutting that keeps both end points. */
+function smooth(pts, iter = 3) {
+  let p = pts.map(([x, z]) => ({ x, z }));
+  for (let k = 0; k < iter; k++) {
+    const q = [p[0]];
+    for (let i = 0; i < p.length - 1; i++) {
+      const a = p[i], b = p[i + 1];
+      q.push({ x: 0.75 * a.x + 0.25 * b.x, z: 0.75 * a.z + 0.25 * b.z }, { x: 0.25 * a.x + 0.75 * b.x, z: 0.25 * a.z + 0.75 * b.z });
+    }
+    q.push(p[p.length - 1]);
+    p = q;
+  }
+  return p;
+}
+
+/**
+ * The paths of a tier: barn door -> centre -> bowl, centre -> kitchen door, centre -> pond (M+), centre -> front gate -> field ('gate'),
+ * centre -> east gate -> stream bank ('bridge'). Points are the centre line; the 'gate' and 'bridge' lines leave the fence.
+ */
+export function yardPaths(tier) {
+  const t = FENCE_R[tier] ? tier : 'L';
+  const lay = YARD_TIER_LAYOUT[t];
+  const spot = kitchenSpot(t);
+  const centre = { x: 0, z: 0 };
+  const barnDoor = { x: 0, z: lay.barnZ + 1.2 };
+  const bowlEdge = { x: YARD.bowl.x - 0.55, z: YARD.bowl.z - 0.4 };
+  const kDoor = { x: spot.x - 0.25, z: spot.z + 0.8 + 0.15 };
+  const out = [
+    { id: 'barn-bowl', points: [...bez(barnDoor, { x: -0.5, z: barnDoor.z * 0.45 }, centre, 8), ...bez(centre, { x: 0.3, z: 1.6 }, bowlEdge, 6).slice(1)], width: PATH_WIDTH },
+    { id: 'kitchen', points: bez(centre, { x: kDoor.x * 0.2, z: (centre.z + kDoor.z) * 0.5 }, kDoor, 8), width: PATH_WIDTH },
+  ];
+  const pond = yardProps(t).find(p => p.kind === 'pond');
+  if (pond) out.push({ id: 'pond', points: bez(centre, { x: pond.x * 0.35, z: pond.z * 0.2 }, { x: pond.x - 1.2, z: pond.z - 0.2 }, 6), width: PATH_WIDTH });
+  // front gate: out of the +z fence, 3 units into the field
+  const zf = fenceR(t, 0, 1);
+  out.push({ id: 'gate', points: smooth([[0, 0], [-0.3, 1.6], [-0.35, 3.4], [-0.2, zf - 0.6], [-0.1, zf + 0.8], [-0.1, zf + 3.0]]), width: PATH_WIDTH });
+  // bridge: east, between the board and the pond (or low in the yard at S), through the +x fence, up to 1.2 short of the stream centre line
+  const zEnd = 0.1;
+  const xEnd = streamXAt(zEnd) - 1.2;
+  const wp = t === 'S'
+    ? [[0, 0], [1.4, 0.6], [3, 1.1], [5, 1.2], [8, 1.0], [11, 0.5], [xEnd, zEnd]]
+    : [[0, 0], [1.6, -0.25], [3.8, -0.35], [6.5, -0.3], [10, -0.2], [xEnd, zEnd]];
+  out.push({ id: 'bridge', points: smooth(wp), width: PATH_WIDTH });
+  return out;
+}
+
+/** Where the 'gate' and 'bridge' lines cross the wavy fence: { id, angle (atan2(z, x)), halfWidth } (the fence gaps). */
+export function fenceGates(tier) {
+  const t = FENCE_R[tier] ? tier : 'L';
+  const res = [];
+  for (const p of yardPaths(t)) {
+    const pts = p.points;
+    const inside = q => Math.hypot(q.x, q.z) < fenceR(t, q.x, q.z);
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (!inside(pts[i]) || inside(pts[i + 1])) continue;
+      let a = pts[i], b = pts[i + 1];
+      for (let k = 0; k < 24; k++) {
+        const m = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
+        if (inside(m)) a = m; else b = m;
+      }
+      res.push({ id: p.id, angle: Math.atan2((a.z + b.z) / 2, (a.x + b.x) / 2), halfWidth: p.width / 2 + 0.25 });
+      break;
+    }
+  }
+  return res;
+}
+
+/**
+ * Path lamp posts: about every 2.6 along the paths inside the fence, 0.75 beside the centre line, alternating sides, plus two at the front gate.
+ * Never on a prop / kitchen / landmark / decor spot / bowl / nest row, 0.4 clear edge to edge (post r 0.15); S <= 6, XL <= 14.
+ */
+export function pathLightSpots(tier) {
+  const t = FENCE_R[tier] ? tier : 'L';
+  const lay = YARD_TIER_LAYOUT[t];
+  const paths = yardPaths(t);
+  const sol = [...yardProps(t), kitchenSpot(t), ...Object.values(landmarkSpots(t))].map(o => ({ x: o.x, z: o.z, r: o.r }));
+  sol.push({ x: YARD.bowl.x, z: YARD.bowl.z, r: 0.4 });
+  for (let i = 0; i < DECOR_SPOT_N[t]; i++) sol.push({ x: DECOR_SPOT_XZ[i][0], z: DECOR_SPOT_XZ[i][1], r: 0 });
+  const zMin = lay.barnZ + 3.0 + 0.4;   // nest row / cribs / barn strip
+  const distToPath = (q, skipId) => {
+    let m = Infinity;
+    for (const p of paths) {
+      if (p.id === skipId) continue;
+      for (let i = 0; i < p.points.length - 1; i++) {
+        const a = p.points[i], b = p.points[i + 1], dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz || 1;
+        const u = Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.z - a.z) * dz) / l2));
+        m = Math.min(m, Math.hypot(q.x - a.x - u * dx, q.z - a.z - u * dz));
+      }
+    }
+    return m;
+  };
+  const lights = [];
+  const okAt = (c, skipId) => {
+    if (c.z < zMin) return false;
+    if (Math.hypot(c.x, c.z) + 0.6 > fenceR(t, c.x, c.z)) return false;
+    for (const o of sol) if (Math.hypot(c.x - o.x, c.z - o.z) - o.r - PATH_LIGHT_R < 0.4) return false;
+    for (const l of lights) if (Math.hypot(c.x - l.x, c.z - l.z) < 1.5) return false;
+    return distToPath(c, skipId) >= 0.55;
+  };
+  const add = (c, skipId) => {
+    if (lights.length >= PATH_LIGHT_MAX[t] || !okAt(c, skipId)) return false;
+    lights.push({ x: +c.x.toFixed(3), z: +c.z.toFixed(3) });
+    return true;
+  };
+  const walk = (p, s0, step, firstSide) => {
+    const pts = p.points;
+    let side = firstSide, next = s0, acc = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1], len = Math.hypot(b.x - a.x, b.z - a.z);
+      while (len > 0 && next <= acc + len) {
+        const u = (next - acc) / len, x = a.x + (b.x - a.x) * u, z = a.z + (b.z - a.z) * u;
+        if (Math.hypot(x, z) + 0.6 > fenceR(t, x, z)) return;   // stop at the fence
+        const nx = -(b.z - a.z) / len, nz = (b.x - a.x) / len;
+        if (add({ x: x + nx * PATH_LIGHT_OFFSET * side, z: z + nz * PATH_LIGHT_OFFSET * side }, p.id)) side = -side;
+        else add({ x: x - nx * PATH_LIGHT_OFFSET * side, z: z - nz * PATH_LIGHT_OFFSET * side }, p.id);
+        next += step;
+      }
+      acc += len;
+    }
+  };
+  const byId = id => paths.find(p => p.id === id);
+  // the two posts at the front gate, just inside the fence beside the gap
+  const gate = byId('gate'), zf = fenceR(t, 0, 1);
+  for (const sx of [-1, 1]) {
+    for (const dz of [0.9, 1.2, 1.5]) {
+      const q = gate.points.reduce((m, c) => (Math.abs(c.z - (zf - dz)) < Math.abs(m.z - (zf - dz)) ? c : m));
+      if (add({ x: q.x + sx * 1.15, z: zf - dz }, 'gate')) break;
+    }
+  }
+  walk(gate, 2.0, 2.6, 1);
+  walk(byId('bridge'), 2.4, 2.6, -1);
+  walk(byId('barn-bowl'), 1.0, 2.6, 1);
+  walk(byId('kitchen'), 2.0, 2.6, -1);
+  const pond = byId('pond');
+  if (pond) walk(pond, 2.0, 2.6, 1);
+  return lights;
+}
+
 /** Re-targets the behaviour layout (walk radius, nest row, blocked props) when the yard changes tier. */
 export function configureYard(tier = 'L') {
   const lay = YARD_TIER_LAYOUT[tier] || YARD_TIER_LAYOUT.L;
@@ -89,6 +249,8 @@ export function configureYard(tier = 'L') {
   YARD.playground = props.find(p => p.kind === 'playground') || null;
   YARD.landmarks = landmarkSpots(YARD_TIER_LAYOUT[tier] ? tier : 'L');
   YARD.obstacles = [...props.map(({ x, z, r }) => ({ x, z, r })), { ...YARD.kitchen }, ...Object.values(YARD.landmarks).map(l => ({ ...l }))];
+  YARD.pathLights = pathLightSpots(YARD_TIER_LAYOUT[tier] ? tier : 'L');
+  for (const l of YARD.pathLights) YARD.obstacles.push({ x: l.x, z: l.z, r: PATH_LIGHT_R });
   YARD.trees = props.filter(p => p.kind === 'tree').map(({ id, x, z }) => ({ id, x, z }));
   YARD.flowers = [];
   for (const p of props) {

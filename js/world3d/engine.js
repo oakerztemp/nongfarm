@@ -448,27 +448,116 @@ export function windify(mat, wind, base, k) {
   return mat;
 }
 
-/** Builds ground island, fence, grass tufts, flowers (group) and the barn prop (barn) for a yard tier. */
-function buildEnvironment(tier, gradient, yard, wind = null) {
+// ---- V25 §1: lawn colours (patches + mown stripes), fence gates, hedge, bridge -----------------------------------------
+
+const TAU2 = Math.PI * 2;
+const angNorm = a => ((a % TAU2) + TAU2) % TAU2;
+const angDist = (a, b) => Math.abs(((a - b + Math.PI * 3) % TAU2) - Math.PI);
+/** Hedge arc behind the barn: 200..340 degrees (x/z plane, from +x) = fence parameter PI +- this (fence parameter: x = sin a, z = cos a). */
+export const HEDGE_HALF = (70 * Math.PI) / 180;
+/** Gate angles are atan2(z, x) in the x/z plane (CONTRACT_V25 section 2): front gate = PI/2, bridge gate = 0. Fence parameter = PI/2 - angle. */
+const gateParam = angle => angNorm(Math.PI / 2 - angle);
+
+function hash2(ix, iz) {
+  let h = Math.imul(ix | 0, 374761393) ^ Math.imul(iz | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+/** Smooth value noise 0..1 (pure, deterministic). */
+export function valueNoise(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+/** Fence geometry for a tier + gates: { posts:[{a}], edges:[{a, gate}], rails:[[a0,a1]], gates:[{id,a,dA,hw}] } (angles = fence parameter). Pure. */
+export function planFence(tierPosts, yard, gates) {
+  const spacingA = TAU2 / Math.max(12, Math.round(tierPosts * yard.fence / FENCE_RADIUS));
+  const gl = [];
+  for (const g of Array.isArray(gates) ? gates : []) {
+    if (!g || !Number.isFinite(g.angle)) continue;
+    const a = gateParam(g.angle);
+    if (angDist(a, Math.PI) < HEDGE_HALF) continue;   // behind the barn there is only hedge
+    const hw = g.halfWidth > 0 ? g.halfWidth : 0.6;
+    gl.push({ id: g.id, a, hw, dA: hw / fenceRadiusAt(yard, a), endZ: Number.isFinite(g.endZ) ? g.endZ : null });
+  }
+  const inGap = a => gl.some(g => angDist(a, g.a) < g.dA - 1e-6);
+  const inHedge = a => angDist(a, Math.PI) < HEDGE_HALF;
+  const pts = [];
+  const n = Math.max(12, Math.round(tierPosts * yard.fence / FENCE_RADIUS));
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU2;
+    if (gl.some(g => angDist(a, g.a) < g.dA + 0.35 * spacingA)) continue;   // the gate posts stand there instead
+    pts.push({ a, edge: null });
+  }
+  for (const g of gl) { pts.push({ a: angNorm(g.a - g.dA), edge: g }); pts.push({ a: angNorm(g.a + g.dA), edge: g }); }
+  pts.sort((p, q) => p.a - q.a);
+  const drawn = p => !inHedge(p.a) && !inGap(p.a);
+  const rails = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    const qa = i + 1 < pts.length ? q.a : q.a + TAU2;
+    if (drawn(p) && drawn(q) && !inGap((p.a + qa) / 2)) rails.push([p.a, qa]);
+  }
+  return { posts: pts.filter(p => !p.edge && drawn(p)), edges: pts.filter(p => p.edge), rails, gates: gl };
+}
+
+/** Vertex colours for the lawn: three greens in soft low-frequency patches, faint mown stripes, edge = the meadow colour. Pure. */
+export function lawnColor(x, z, island, out) {
+  const f = valueNoise(x * 0.2 + 7.3, z * 0.2 - 2.1) * 0.62 + valueNoise(x * 0.47 - 3.7, z * 0.47 + 9.2) * 0.38;
+  const A = LAWN_A, B = LAWN_B, C = LAWN_C;   // light / mid / dark
+  const t = Math.min(1, Math.max(0, (f - 0.3) / 0.4));
+  const lo = t < 0.5 ? C : B, hi = t < 0.5 ? B : A, u = t < 0.5 ? t * 2 : (t - 0.5) * 2;
+  const r = Math.hypot(x, z) / island;
+  const stripe = 0.5 + 0.5 * Math.sin((x * 0.55 + z * 0.12) * (Math.PI * 2 / 1.5) * 0.5 * 2);
+  const sk = 1 + (stripe - 0.5) * 0.09 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.3)));
+  const edge = Math.min(1, Math.max(0, (r - 0.78) / 0.22));
+  const e = edge * edge * (3 - 2 * edge);
+  const m = MEADOW_NEAR;
+  for (let k = 0; k < 3; k++) {
+    const v = (lo[k] + (hi[k] - lo[k]) * u) * sk;
+    out[k] = v + (m[k] - v) * e;
+  }
+  return out;
+}
+// vertex colours are linear in three r160: convert the sRGB hex values (the meadow's 0x76bb58 next to it, the old lawn 0x8ccf6a)
+const lin = hex => [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255].map(v => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+const LAWN_A = lin(0x9ad876), LAWN_B = lin(0x86cc66), LAWN_C = lin(0x72b957);
+const MEADOW_NEAR = lin(0x76bb58);
+
+/** Where the stream is at z and which way the bridge faces: { x, rotY } (pure, uses WILD). */
+export function bridgeSpot(z) {
+  const cx = WILD.streamX + WILD.streamAmp * Math.sin(z * WILD.streamFreq);
+  const slope = WILD.streamAmp * WILD.streamFreq * Math.cos(z * WILD.streamFreq);
+  return { x: cx, z, rotY: Math.atan(slope) };
+}
+
+/** Builds ground island, fence, hedge, gates, bridge, grass tufts, flowers (group) and the barn prop (barn) for a yard tier. */
+function buildEnvironment(tier, gradient, yard, wind = null, gates = []) {
   const group = new THREE.Group();
   group.name = 'environment';
   const disposables = [];
+  const instanced = [];
   const own = o => { disposables.push(o); return o; };
   const toon = color => own(new THREE.MeshToonMaterial({ color, gradientMap: gradient }));
   const rand = mulberry32(20261023);
+  const low = tier.name === 'low';
+  const vcToon = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradient }));
+  const geoBox = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const tmpParts = [];   // source geometries of merged parts (cloned by mergeStaticParts): freed at the end
+  const P = (geometry) => { tmpParts.push(geometry); return geometry; };
 
-  // lawn: a mown disc on the meadow (one draw call), green with a dirt-coloured edge
-  const lawnGeo = own(new THREE.RingGeometry(0, yard.island, 48, 8));
+  // lawn: a mown disc on the meadow (one draw call): three greens in soft patches + faint stripes, the rim melts into the meadow colour
+  const lawnGeo = own(new THREE.RingGeometry(0, yard.island, 96, 26));
   lawnGeo.rotateX(-Math.PI / 2);
   const lawnCol = [];
   const lawnPos = lawnGeo.attributes.position;
-  const grassC = new THREE.Color(0x8ccf6a);
-  const dirtC = new THREE.Color(0xd2b184);
-  const mixC = new THREE.Color();
+  const lc = [0, 0, 0];
   for (let i = 0; i < lawnPos.count; i++) {
-    const t = Math.min(1, Math.max(0, (Math.hypot(lawnPos.getX(i), lawnPos.getZ(i)) / yard.island - 0.86) / 0.14));
-    mixC.copy(grassC).lerp(dirtC, t);
-    lawnCol.push(mixC.r, mixC.g, mixC.b);
+    lawnColor(lawnPos.getX(i), lawnPos.getZ(i), yard.island, lc);
+    lawnCol.push(lc[0], lc[1], lc[2]);
   }
   lawnGeo.setAttribute('color', new THREE.Float32BufferAttribute(lawnCol, 3));
   const lawnMat = own(new THREE.MeshToonMaterial({
@@ -481,26 +570,18 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
 
   // (V23: the dirt paths are one merged mesh built by barn3d from D's buildPathMesh)
 
-  // fence (gap behind the barn)
-  const posts = Math.max(12, Math.round(tier.posts * yard.fence / FENCE_RADIUS));
+  // fence: wooden posts + rails, gaps at the gates (tall gate posts), a hedge of round bushes behind the barn
   const areaK = (yard.fence / FENCE_RADIUS) ** 2;
-  const gapAngle = Math.PI;
-  const inGap = a => Math.abs(((a - gapAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < 0.5;
+  const plan = planFence(tier.posts, yard, gates);
   const woodMat = toon(0xc08a54);
-  const keep = [];
-  for (let i = 0; i < posts; i++) if (!inGap((i / posts) * Math.PI * 2)) keep.push(i);
-  const postPos = i => {
-    const a = (i / posts) * Math.PI * 2;
-    const R = fenceRadiusAt(yard, a);
-    return { x: Math.sin(a) * R, z: Math.cos(a) * R };
-  };
-  const postMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(0.16, 0.7, 0.16)), woodMat, keep.length);
+  const fenceXZ = a => { const R = fenceRadiusAt(yard, a); return { x: Math.sin(a) * R, z: Math.cos(a) * R }; };
+  const postMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(0.16, 0.7, 0.16)), woodMat, Math.max(1, plan.posts.length));
+  postMesh.count = plan.posts.length;
   const dummy = new THREE.Object3D();
-  keep.forEach((i, n) => {
-    const a = (i / posts) * Math.PI * 2;
-    const pp = postPos(i);
+  plan.posts.forEach((p, n) => {
+    const pp = fenceXZ(p.a);
     dummy.position.set(pp.x, 0.35, pp.z);
-    dummy.rotation.set(0, a, 0);
+    dummy.rotation.set(0, p.a, 0);
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     postMesh.setMatrixAt(n, dummy.matrix);
@@ -508,11 +589,11 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
   postMesh.userData.noPick = true;
   group.add(postMesh);
 
-  const railSegs = keep.filter(i => !inGap(((i + 1) / posts) * Math.PI * 2));
-  const railMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(1, 0.07, 0.06)), woodMat, railSegs.length * 2);
+  const railMesh = new THREE.InstancedMesh(own(new THREE.BoxGeometry(1, 0.07, 0.06)), woodMat, Math.max(1, plan.rails.length * 2));
+  railMesh.count = plan.rails.length * 2;
   let r = 0;
-  for (const i of railSegs) {
-    const p0 = postPos(i), p1 = postPos((i + 1) % posts);
+  for (const [a0, a1] of plan.rails) {
+    const p0 = fenceXZ(a0), p1 = fenceXZ(a1);
     const dx = p1.x - p0.x, dz = p1.z - p0.z;
     const len = Math.hypot(dx, dz);
     for (const y of [0.28, 0.54]) {
@@ -525,6 +606,136 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
   }
   railMesh.userData.noPick = true;
   group.add(railMesh);
+  instanced.push(postMesh, railMesh);
+
+  // hedge behind the barn: two staggered rows of round bushes (1 instanced draw call)
+  {
+    const a0 = Math.PI - HEDGE_HALF, a1 = Math.PI + HEDGE_HALF;
+    const R0 = fenceRadiusAt(yard, Math.PI);
+    const step = (low ? 0.95 : 0.72) / R0;
+    const n = Math.ceil((a1 - a0) / step);
+    const items = [];
+    for (let row = 0; row < 2; row++) {
+      for (let i = 0; i <= n - (row ? 1 : 0); i++) {
+        const a = a0 + (i + (row ? 0.5 : 0)) * ((a1 - a0) / n);
+        const R = fenceRadiusAt(yard, a) + (row ? 0.34 : 0);
+        items.push({ x: Math.sin(a) * R, z: Math.cos(a) * R, s: (row ? 0.78 : 0.95) + rand() * 0.3, h: 0.28 + rand() * 0.07, l: 0.3 + rand() * 0.08, rot: rand() * 6 });
+      }
+    }
+    const hedge = new THREE.InstancedMesh(own(new THREE.IcosahedronGeometry(0.5, 1)), toon(0xffffff), items.length);
+    const hc = new THREE.Color();
+    items.forEach((it, i) => {
+      dummy.position.set(it.x, 0.3 * it.s, it.z);
+      dummy.rotation.set(0, it.rot, 0);
+      dummy.scale.set(it.s * 1.15, it.s * 0.95, it.s * 1.15);
+      dummy.updateMatrix();
+      hedge.setMatrixAt(i, dummy.matrix);
+      hc.setHSL(it.h, 0.5, it.l);
+      hedge.setColorAt(i, hc);
+    });
+    hedge.userData.noPick = true;
+    hedge.name = 'hedge';
+    group.add(hedge);
+    instanced.push(hedge);
+  }
+
+  // gate posts (taller, thicker) + the little wooden arch over the front gate: one merged vertex-coloured mesh
+  {
+    const parts = [];
+    for (const e of plan.edges) {
+      const pp = fenceXZ(e.a);
+      parts.push({ geometry: P(geoBox(0.22, 1.2, 0.22)), color: 0xa86f3e, position: [pp.x, 0.6, pp.z], rotation: [0, e.a, 0] });
+      parts.push({ geometry: P(geoBox(0.3, 0.07, 0.3)), color: 0xd9a566, position: [pp.x, 1.22, pp.z], rotation: [0, e.a, 0] });
+    }
+    for (const g of plan.gates) {
+      if (g.id !== 'gate') continue;
+      const c = fenceXZ(g.a);
+      const tx = Math.cos(g.a), tz = -Math.sin(g.a);   // fence tangent
+      const hw = g.hw;
+      parts.push({ geometry: P(new THREE.TorusGeometry(hw, 0.05, 6, 22, Math.PI)), color: 0xb98150, position: [c.x, 1.2, c.z], rotation: [0, g.a, 0], scale: [1, 0.65, 1] });
+      parts.push({ geometry: P(geoBox(hw * 2 + 0.2, 0.07, 0.1)), color: 0xa86f3e, position: [c.x, 1.18, c.z], rotation: [0, g.a, 0] });
+      if (!low) {
+        const cols = [0xff8fb1, 0xffffff, 0xffd84a, 0xff8fb1, 0xb9a0ff, 0xffffff, 0xffd84a];
+        cols.forEach((col, i) => {
+          const t = ((i + 0.5) / cols.length) * Math.PI;
+          const lx = Math.cos(t) * hw, ly = 1.2 + Math.sin(t) * hw * 0.65;
+          parts.push({ geometry: P(new THREE.SphereGeometry(0.07, 6, 4)), color: col, position: [c.x + tx * lx, ly + 0.03, c.z + tz * lx] });
+          parts.push({ geometry: P(new THREE.SphereGeometry(0.06, 6, 4)), color: 0x4fae56, position: [c.x + tx * lx * 0.97, ly - 0.04, c.z + tz * lx * 0.97] });
+        });
+      }
+    }
+    if (parts.length) {
+      const m = new THREE.Mesh(own(mergeStaticParts(THREE, parts)), vcToon);
+      m.name = 'gates';
+      m.userData.noPick = true;
+      group.add(m);
+    }
+  }
+
+  // wooden bridge over the stream where the 'bridge' path leaves the yard + stones along the banks
+  const bridgeGate = plan.gates.find(g => g.id === 'bridge');
+  if (bridgeGate) {
+    const gp = fenceXZ(bridgeGate.a);
+    const bs = bridgeSpot(bridgeGate.endZ != null ? bridgeGate.endZ : gp.z);
+    const L = 3.7, N = 9, rise = 0.34, wide = 0.95;
+    const arc = u => rise * (1 - (2 * u - 1) ** 2);
+    const parts = [];
+    for (let i = 0; i < N; i++) {
+      const u0 = i / N, u1 = (i + 1) / N, um = (u0 + u1) / 2;
+      const x0 = -L / 2 + u0 * L, x1 = -L / 2 + u1 * L;
+      const ang = Math.atan2(arc(u1) - arc(u0), x1 - x0);
+      parts.push({ geometry: P(geoBox((x1 - x0) * 1.04, 0.07, wide)), color: i % 2 ? 0xb98150 : 0xc79058, position: [(x0 + x1) / 2, 0.1 + arc(um), 0], rotation: [0, 0, ang] });
+    }
+    for (const s of [-1, 1]) {
+      parts.push({ geometry: P(geoBox(L * 0.98, 0.08, 0.07)), color: 0x8d5a34, position: [0, 0.05 + rise * 0.55, s * (wide / 2 - 0.02)], rotation: [0, 0, 0], scale: [1, 0.01, 1] });
+      for (let i = 0; i <= 4; i++) {
+        const u = i / 4, x = -L / 2 + u * L;
+        parts.push({ geometry: P(geoBox(0.09, 0.62, 0.09)), color: 0x8d5a34, position: [x, 0.1 + arc(u) + 0.3, s * (wide / 2 + 0.02)] });
+      }
+      for (let i = 0; i < 4; i++) {
+        const u0 = i / 4, u1 = (i + 1) / 4;
+        const x0 = -L / 2 + u0 * L, x1 = -L / 2 + u1 * L;
+        const ang = Math.atan2(arc(u1) - arc(u0), x1 - x0);
+        for (const y of [0.34, 0.56]) {
+          parts.push({ geometry: P(geoBox(Math.hypot(x1 - x0, arc(u1) - arc(u0)), 0.06, 0.06)), color: 0xa8703f, position: [(x0 + x1) / 2, y + (arc(u0) + arc(u1)) / 2 + 0.1, s * (wide / 2 + 0.02)], rotation: [0, 0, ang] });
+        }
+      }
+    }
+    for (const s of [-1, 1]) parts.push({ geometry: P(new THREE.IcosahedronGeometry(0.3, 0)), color: 0x9b9a92, position: [s * (L / 2 + 0.05), 0.08, 0.2], scale: [1.2, 0.5, 1.1] });
+    const bridge = new THREE.Mesh(own(mergeStaticParts(THREE, parts)), vcToon);
+    bridge.name = 'bridge';
+    bridge.position.set(bs.x, 0.02, bs.z);
+    bridge.rotation.y = bs.rotY;
+    bridge.userData.noPick = true;
+    group.add(bridge);
+
+    if (!low) {   // stones sitting on both banks around the crossing
+      const items = [];
+      const sr = mulberry32(777);
+      for (const s of [-1, 1]) {
+        for (let z = bs.z - 5.5; z <= bs.z + 5.5; z += 0.62 + sr() * 0.4) {
+          if (Math.abs(z - bs.z) < 0.7) continue;
+          const cx = WILD.streamX + WILD.streamAmp * Math.sin(z * WILD.streamFreq);
+          items.push({ x: cx + s * (1.5 + sr() * 0.28), z: z + (sr() - 0.5) * 0.3, sc: 0.13 + sr() * 0.13, rot: sr() * 3, grey: 0.5 + sr() * 0.2 });
+        }
+      }
+      const stones = new THREE.InstancedMesh(own(new THREE.IcosahedronGeometry(1, 0)), toon(0xffffff), items.length);
+      const sc = new THREE.Color();
+      items.forEach((it, i) => {
+        dummy.position.set(it.x, 0.03 + it.sc * 0.3, it.z);
+        dummy.rotation.set(0, it.rot, 0);
+        dummy.scale.set(it.sc * 1.2, it.sc * 0.7, it.sc);
+        dummy.updateMatrix();
+        stones.setMatrixAt(i, dummy.matrix);
+        sc.setHSL(0.1, 0.06, it.grey);
+        stones.setColorAt(i, sc);
+      });
+      stones.userData.noPick = true;
+      stones.name = 'bank-stones';
+      group.add(stones);
+      instanced.push(stones);
+    }
+  }
 
   // grass tufts
   const tufts_n = Math.round(tier.tufts * areaK);
@@ -547,10 +758,22 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
   tufts.userData.noPick = true;
   group.add(tufts);
 
-  // flowers
-  const flowerMat = windify(toon(0xffffff), wind, -0.3, 0.5);   // V22: a little nod (the head is a sphere on an unseen stem)
-  const flowers = new THREE.InstancedMesh(own(new THREE.SphereGeometry(0.075, 6, 4)), flowerMat, flowers_n);
+  // flowers in the yard + small wildflower patches in the meadow just outside (same instanced mesh)
   const palette = [0xffd84a, 0xff8fb1, 0xffffff, 0xb9a0ff].map(c => new THREE.Color(c));
+  const wildPatches = [];
+  if (!low) {
+    const wr = mulberry32(5150);
+    for (let tries = 0; wildPatches.length < 9 && tries < 80; tries++) {
+      const a = wr() * Math.PI * 2, rad = yard.island + 1.6 + wr() * (tier.name === 'high' ? 8 : 5);
+      const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
+      if (Math.abs(x - (WILD.streamX + WILD.streamAmp * Math.sin(z * WILD.streamFreq))) < 3.4) continue;
+      wildPatches.push({ x, z, n: 8 + Math.floor(wr() * 8), c0: Math.floor(wr() * 4), c1: Math.floor(wr() * 4), spread: 0.5 + wr() * 0.5 });
+    }
+  }
+  const wildN = wildPatches.reduce((s, p) => s + p.n, 0);
+  const flowerMat = windify(toon(0xffffff), wind, -0.3, 0.5);   // V22: a little nod (the head is a sphere on an unseen stem)
+  const flowers = new THREE.InstancedMesh(own(new THREE.SphereGeometry(0.075, 6, 4)), flowerMat, Math.max(1, flowers_n + wildN));
+  flowers.count = flowers_n + wildN;
   for (let i = 0; i < flowers_n; i++) {
     const a = rand() * Math.PI * 2;
     const rad = 1.5 + Math.sqrt(rand()) * (yard.fence - 2);
@@ -561,58 +784,139 @@ function buildEnvironment(tier, gradient, yard, wind = null) {
     flowers.setMatrixAt(i, dummy.matrix);
     flowers.setColorAt(i, palette[i % palette.length]);
   }
+  {
+    const wr = mulberry32(31337);
+    let i = flowers_n;
+    for (const p of wildPatches) {
+      for (let k = 0; k < p.n; k++) {
+        const a = wr() * Math.PI * 2, d = Math.sqrt(wr()) * p.spread * 1.6;
+        dummy.position.set(p.x + Math.sin(a) * d, 0.09, p.z + Math.cos(a) * d);
+        dummy.rotation.set(0, 0, 0);
+        const s = 0.8 + wr() * 0.5;
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        flowers.setMatrixAt(i, dummy.matrix);
+        flowers.setColorAt(i, palette[wr() < 0.7 ? p.c0 : p.c1]);
+        i++;
+      }
+    }
+  }
   flowers.userData.noPick = true;
   group.add(flowers);
 
-  // barn prop (door faces +z)
+  // barn prop (door faces +z): ONE merged vertex-coloured mesh (body, roof, trim, windows, flower boxes, hay) + night glow
   const barn = new THREE.Group();
   barn.name = 'barn';
   const W = 2.8, D = 2.3, WALL = 1.25, PEAK = 2.1;
+  const FZ = D / 2;
   const shape = new THREE.Shape();
   shape.moveTo(-W / 2, 0); shape.lineTo(W / 2, 0); shape.lineTo(W / 2, WALL);
   shape.lineTo(0, PEAK); shape.lineTo(-W / 2, WALL); shape.closePath();
-  const bodyGeo = own(new THREE.ExtrudeGeometry(shape, { depth: D, bevelEnabled: false }));
+  const bodyGeo = P(new THREE.ExtrudeGeometry(shape, { depth: D, bevelEnabled: false }));
   bodyGeo.translate(0, 0, -D / 2);
-  barn.add(new THREE.Mesh(bodyGeo, toon(0xd8574a)));
   const slopeLen = Math.hypot(W / 2, PEAK - WALL) + 0.25;
   const slopeAng = Math.atan2(PEAK - WALL, W / 2);
-  const roofMat = toon(0x7b5b45);
-  const roofGeo = own(new THREE.BoxGeometry(slopeLen, 0.1, D + 0.3));
+  const RED = 0xd8574a, CREAM = 0xfff4e4;
+  const bp = [{ geometry: bodyGeo, color: RED }];
   for (const side of [-1, 1]) {
-    const roof = new THREE.Mesh(roofGeo, roofMat);
-    roof.position.set(side * (W / 4 + 0.02), (WALL + PEAK) / 2 + 0.07, 0);
-    roof.rotation.z = -side * slopeAng;
-    barn.add(roof);
+    bp.push({ geometry: P(geoBox(slopeLen, 0.1, D + 0.3)), color: 0x7b5b45, position: [side * (W / 4 + 0.02), (WALL + PEAK) / 2 + 0.07, 0], rotation: [0, 0, -side * slopeAng] });
   }
-  const trimMat = toon(0xfff4e4);
-  const door = new THREE.Mesh(own(new THREE.BoxGeometry(1.0, 0.95, 0.06)), trimMat);
-  door.position.set(0, 0.475, D / 2 + 0.01);
-  barn.add(door);
-  const crossGeo = own(new THREE.BoxGeometry(1.15, 0.07, 0.04));
-  const crossMat = toon(0xd8574a);
-  for (const s of [-1, 1]) {
-    const bar = new THREE.Mesh(crossGeo, crossMat);
-    bar.position.set(0, 0.475, D / 2 + 0.05);
-    bar.rotation.z = s * 0.7;
-    bar.scale.x = 0.85;
-    barn.add(bar);
+  bp.push({ geometry: P(geoBox(0.2, 0.09, D + 0.36)), color: 0x5e4332, position: [0, PEAK + 0.06, 0] });                     // ridge cap
+  bp.push({ geometry: P(geoBox(W + 0.02, 0.07, 0.06)), color: CREAM, position: [0, WALL, FZ + 0.02] });                      // gable beam
+  for (const s of [-1, 1]) bp.push({ geometry: P(geoBox(0.09, WALL, 0.07)), color: CREAM, position: [s * (W / 2 - 0.03), WALL / 2, FZ + 0.02] });   // corner trims
+  bp.push({ geometry: P(geoBox(W + 0.02, 0.09, 0.07)), color: 0x9c3e36, position: [0, 0.045, FZ + 0.02] });                   // base board
+  bp.push({ geometry: P(geoBox(1.0, 0.95, 0.06)), color: CREAM, position: [0, 0.475, FZ + 0.01] });                           // door
+  for (const s of [-1, 1]) bp.push({ geometry: P(geoBox(1.15 * 0.85, 0.07, 0.04)), color: RED, position: [0, 0.475, FZ + 0.05], rotation: [0, 0, s * 0.7] });
+  bp.push({ geometry: P(geoBox(0.5, 0.4, 0.05)), color: CREAM, position: [0, 1.45, FZ + 0.01] });                             // loft frame
+  bp.push({ geometry: P(geoBox(0.38, 0.28, 0.05)), color: 0x6f8fb0, position: [0, 1.45, FZ + 0.03] });                        // loft glass
+  const WIN_X = 0.98, WIN_Y = 0.78;
+  if (!low) {
+    for (const s of [-1, 1]) {
+      const x = s * WIN_X;
+      bp.push({ geometry: P(geoBox(0.46, 0.46, 0.05)), color: CREAM, position: [x, WIN_Y, FZ + 0.01] });                      // window frame
+      bp.push({ geometry: P(geoBox(0.34, 0.34, 0.05)), color: 0x6f8fb0, position: [x, WIN_Y, FZ + 0.03] });                    // glass
+      bp.push({ geometry: P(geoBox(0.03, 0.34, 0.06)), color: CREAM, position: [x, WIN_Y, FZ + 0.045] });                      // mullions
+      bp.push({ geometry: P(geoBox(0.34, 0.03, 0.06)), color: CREAM, position: [x, WIN_Y, FZ + 0.045] });
+      for (const t of [-1, 1]) bp.push({ geometry: P(geoBox(0.13, 0.4, 0.04)), color: 0x9c3e36, position: [x + t * 0.3, WIN_Y, FZ + 0.03] });   // shutters
+      bp.push({ geometry: P(geoBox(0.54, 0.13, 0.16)), color: 0x8a5d3b, position: [x, WIN_Y - 0.32, FZ + 0.1] });              // flower box
+      const fcols = [0xff6b8b, 0xffd84a, 0xffffff, 0xff9f43, 0xb79bff, 0xff6b8b];
+      fcols.forEach((c, i) => {
+        const fx = x - 0.22 + i * 0.088;
+        bp.push({ geometry: P(new THREE.SphereGeometry(0.058, 6, 5)), color: c, position: [fx, WIN_Y - 0.2, FZ + 0.12 + (i % 2) * 0.03] });
+        bp.push({ geometry: P(new THREE.SphereGeometry(0.05, 5, 4)), color: 0x3f9a45, position: [fx + 0.02, WIN_Y - 0.25, FZ + 0.15] });
+      });
+    }
+    // two hay bales beside the barn (left side)
+    const bale = (x, y, z, ry) => {
+      bp.push({ geometry: P(geoBox(0.64, 0.4, 0.44)), color: 0xe3c260, position: [x, y, z], rotation: [0, ry, 0] });
+      for (const o of [-0.17, 0.17]) {
+        bp.push({ geometry: P(geoBox(0.04, 0.42, 0.46)), color: 0xa98428, position: [x + Math.cos(ry) * o, y, z - Math.sin(ry) * o], rotation: [0, ry, 0] });
+      }
+    };
+    bale(-1.95, 0.2, 0.55, 0.25);
+    bale(-2.1, 0.2, -0.15, -0.35);
   }
-  const loft = new THREE.Mesh(own(new THREE.BoxGeometry(0.5, 0.4, 0.05)), trimMat);
-  loft.position.set(0, 1.45, D / 2 + 0.01);
-  barn.add(loft);
+  const barnMesh = new THREE.Mesh(own(mergeStaticParts(THREE, bp)), vcToon);
+  barnMesh.name = 'barn-body';
+  barn.add(barnMesh);
+
+  // warm window / door glow at night (not on the low tier): lit panes + a soft pool of light on the grass in front of the door
+  let glowMat = null, poolMat = null, glowMesh = null, poolMesh = null;
+  if (!low) {
+    const gp = [
+      { geometry: P(geoBox(0.34, 0.24, 0.01)), position: [0, 1.45, FZ + 0.065] },
+      { geometry: P(geoBox(0.46, 0.3, 0.01)), position: [0, 0.7, FZ + 0.1] },
+    ];
+    for (const s of [-1, 1]) gp.push({ geometry: P(geoBox(0.3, 0.3, 0.01)), position: [s * WIN_X, WIN_Y, FZ + 0.065] });
+    glowMat = own(new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, depthWrite: false, fog: false }));
+    glowMesh = new THREE.Mesh(own(mergeStaticParts(THREE, gp.map(q => ({ ...q, color: 0xffc766 })))), glowMat);
+    glowMesh.visible = false;
+    glowMesh.userData.noCast = true;
+    glowMesh.renderOrder = 3;
+    barn.add(glowMesh);
+    const poolGeo = own(new THREE.CircleGeometry(1.35, 24));
+    poolGeo.rotateX(-Math.PI / 2);
+    const pc = [];
+    const pp = poolGeo.attributes.position;
+    for (let i = 0; i < pp.count; i++) {
+      const k = 1 - Math.min(1, Math.hypot(pp.getX(i), pp.getZ(i)) / 1.35);
+      pc.push(0.55 * k * k, 0.38 * k * k, 0.14 * k * k);
+    }
+    poolGeo.setAttribute('color', new THREE.Float32BufferAttribute(pc, 3));
+    poolMat = own(new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
+    poolMesh = new THREE.Mesh(poolGeo, poolMat);
+    poolMesh.position.set(0, 0.04, FZ + 0.85);
+    poolMesh.scale.set(1.25, 1, 0.9);
+    poolMesh.visible = false;
+    poolMesh.userData.noCast = true;
+    poolMesh.renderOrder = 3;
+    barn.add(poolMesh);
+  }
   barn.position.set(0, 0, yard.barnZ);
   barn.traverse(o => { o.userData.noPick = true; });
   const barnGroup = new THREE.Group();
   barnGroup.name = 'barn-holder';
   barnGroup.add(barn);
 
+  for (const gm of tmpParts) gm.dispose();   // the merged copies own the data
+
   return {
     group,
     barn: barnGroup,
     obstacles: [{ x: 0, z: yard.barnZ, r: 2.0 }],
+    plan,
+    /** 0..1: how dark it is (the engine's night look); lights the barn windows + door pool. */
+    setNight(n) {
+      if (!glowMesh) return;
+      const k = Math.max(0, Math.min(1, Number(n) || 0));
+      glowMat.opacity = k * 0.95;
+      poolMat.opacity = k * 0.8;
+      glowMesh.visible = poolMesh.visible = k > 0.02;
+    },
     dispose() {
       for (const o of disposables) o.dispose();
-      postMesh.dispose(); railMesh.dispose(); tufts.dispose(); flowers.dispose();
+      for (const m of instanced) m.dispose();
+      tufts.dispose(); flowers.dispose();
     },
   };
 }
@@ -923,6 +1227,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     let look = skyAt(12);
     let lookAge = 0;
     let skyFx = null;              // created with the yard below
+    let applyEnvNight = () => {};  // V25: lights the barn windows from look.night once the yard exists
     const stormGrey = new THREE.Color(0xc4ccd6);
     const skyColor = new THREE.Color();
     const skyGrey = new THREE.Color();
@@ -960,6 +1265,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       applySky();
       if (skyFx) skyFx.setLook(look, weather.cloud);
       syncShadowFlags();
+      applyEnvNight();
     }
     const onScheme = () => { weather.skyKey = ''; refreshLook(); };
     refreshLook();
@@ -973,9 +1279,13 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
     // ---- yard (grows with barnCapacity), static props
     let yardCfg = yardTierConfig(options.yardTier || DEFAULT_YARD_TIER);
     const wind = tier.name === 'low' ? null : { t: { value: 0 } };   // V22: no sway on the low tier
-    let env = buildEnvironment(tier, toonGradient, yardCfg, wind);
+    let yardGates = Array.isArray(options.yardGates) ? options.yardGates : [];   // V25: [{ id, angle, halfWidth }] (petBehaviour.fenceGates)
+    let gatesSig = JSON.stringify(yardGates);
+    let env = buildEnvironment(tier, toonGradient, yardCfg, wind, yardGates);
     undo.push(() => env.dispose());
     scene.add(env.group, env.barn);
+    applyEnvNight = () => env.setNight(look.night);
+    applyEnvNight();
     const wild = buildWilderness(tier, toonGradient, wildClearance(yardCfg.name), wind);
     undo.push(() => wild.dispose());
     scene.add(wild.group);
@@ -1080,7 +1390,7 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (on === shadowFlagsOn && !on) return;
       shadowFlagsOn = on;
       env.group.traverse(o => { if (o.isMesh) o.receiveShadow = on; });
-      env.barn.traverse(o => { if (o.isMesh) { o.castShadow = on; o.receiveShadow = on; } });
+      env.barn.traverse(o => { if (o.isMesh) { o.castShadow = on && !o.userData.noCast; o.receiveShadow = on; } });
       wild.group.traverse(o => { if (o.isMesh) o.receiveShadow = on; });
       for (const pr of props.values()) pr.object.traverse(o => { if (o.isMesh) { const k = on && opaque(o.material); o.castShadow = k; o.receiveShadow = on; } });
       for (const a of actors.values()) a.object.traverse(o => { if (o.isMesh) { o.castShadow = on && opaque(o.material); o.receiveShadow = on; } });
@@ -1103,15 +1413,44 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       if (was && !on && sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }   // three recompiles programs itself (lights hash)
     }
 
-    function setYardTier(tierOrCapacity, { animate = true } = {}) {
+    /** V25: swaps in a freshly built yard (new tier or new gates), keeping a running grow animation's scale / barn offset. */
+    function rebuildEnv(next) {
+      const sc = env.group.scale.x, bz = env.barn.position.z;
+      scene.remove(env.group, env.barn);
+      env.dispose();
+      env = buildEnvironment(tier, toonGradient, next, wind, yardGates);
+      scene.add(env.group, env.barn);
+      env.group.scale.set(sc, 1, sc);
+      env.barn.position.z = bz;
+      applyEnvNight();
+      syncObstacles();
+      shadowFlagsOn = !sun.castShadow;
+      syncShadowFlags();
+    }
+    /** V25 §1: the fence gaps / gate posts / front arch / bridge follow these gates; rebuilds the yard only when they changed. */
+    function setYardGates(gates) {
+      const list = Array.isArray(gates) ? gates.filter(g => g && Number.isFinite(g.angle)).map(g => ({ id: g.id, angle: g.angle, halfWidth: g.halfWidth, endZ: g.endZ })) : [];
+      const sig = JSON.stringify(list);
+      if (sig === gatesSig) return false;
+      yardGates = list; gatesSig = sig;
+      rebuildEnv(yardCfg);
+      return true;
+    }
+
+    function setYardTier(tierOrCapacity, { animate = true, gates } = {}) {
       const next = yardTierConfig(tierOrCapacity);
-      if (next.name === yardCfg.name) return next.name;
+      if (Array.isArray(gates)) {
+        yardGates = gates.filter(g => g && Number.isFinite(g.angle)).map(g => ({ id: g.id, angle: g.angle, halfWidth: g.halfWidth, endZ: g.endZ }));
+        gatesSig = JSON.stringify(yardGates);
+      }
+      if (next.name === yardCfg.name) { if (Array.isArray(gates)) rebuildEnv(yardCfg); return next.name; }
       const old = yardCfg;
       yardCfg = next;
       scene.remove(env.group, env.barn);
       env.dispose();
-      env = buildEnvironment(tier, toonGradient, next, wind);
+      env = buildEnvironment(tier, toonGradient, next, wind, yardGates);
       scene.add(env.group, env.barn);
+      applyEnvNight();
       syncObstacles();
       rainFx.setArea(next.walk, obstacles);
       skyFx.setArea(next.walk);
@@ -1743,6 +2082,9 @@ export function createWorld(hostEl, handlers = {}, options = {}) {
       obstacles,
       /** Switch yard size by tier name or barnCapacity. Rebuilds ground/fence/flowers; { animate:true } grows the fence ring. Returns the tier. */
       setYardTier,
+      setYardGates,
+      get yardGates() { return yardGates.map(g => ({ ...g })); },
+      fencePlan: () => env.plan,
       onYardChange(fn) { yardListeners.add(fn); return () => yardListeners.delete(fn); },
       yardInfo,
       /** Pet strokes (CONTRACT_V8 §1): fn({ id, phase:'start'|'move'|'end', point, region:'head'|'chin'|'back', speed, durationMs, x, y }). Returns unsubscribe. */

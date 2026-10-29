@@ -41,6 +41,7 @@ import { nextAction, bubbleFor, clampToYard, hashId, YARD, nestSpot, cribSpot, b
 import * as PETS from '../pets.js';           // namespace: bowlFeedPlan is read defensively (V24)
 import * as PB from '../petBehaviour.js';   // namespace: kitchenSpot / YARD_TIER_LAYOUT are read defensively (V23)
 import { createWorld, mergeStaticParts, WILD } from '../world3d/engine.js';
+import { makeSignTexture } from '../world3d/signText.js';
 import { getSkyPref, onPrefChange } from '../prefs.js';
 import { activeFestival, LOY_ID } from '../festival.js';
 import * as fx from '../world3d/fx.js';
@@ -111,10 +112,23 @@ export function mountBarn3d(host, ctx) {
   const trayEl = host.querySelector('.b3-tray');
   const sheetEl = host.querySelector('.b3-sheet');
 
+  /** V25: where the paths cross the fence (fence gaps, gate posts, arch) + the z where the bridge path ends (the bridge crosses the stream there). */
+  const gatesOf = tier => {
+    try {
+      if (typeof PB.fenceGates !== 'function') return [];
+      const paths = typeof PB.yardPaths === 'function' ? PB.yardPaths(tier) : [];
+      return (PB.fenceGates(tier) || []).map(g => {
+        if (g.id !== 'bridge') return g;
+        const bp = paths.find(p => p.id === 'bridge');
+        const last = bp && bp.points[bp.points.length - 1];
+        return last ? { ...g, endZ: last.z } : g;
+      });
+    } catch { return []; }
+  };
   let world;
   try {
     world = createWorld(stage, { onTap: id => { if (tapFn) tapFn(id); }, onTapGround: () => { if (groundFn) groundFn(); } },
-      { yardTier: yardTierOf(getState().barnCapacity), timeMode: getSkyPref() });
+      { yardTier: yardTierOf(getState().barnCapacity), timeMode: getSkyPref(), yardGates: gatesOf(yardTierOf(getState().barnCapacity)) });
   } catch (err) {
     host.innerHTML = '';
     throw err;
@@ -198,7 +212,7 @@ export function mountBarn3d(host, ctx) {
   // V23 kitchen hut + dirt paths (buildings.js is imported lazily: a missing / failing module only costs the hut, never the barn)
   let bldMod = null, bldLoading = null, bldSeq = 0;
   let kitchen = null, kitchenTier = '', kitchenGlide = null, kitchenCirc = null, kitchenBusy = false, kitchenFailed = false;
-  let pathMesh = null;
+  let pathMesh = null, pathBorder = null, pathLights = null;   // V25: dirt paths + their border (flowers / pebbles) + lamp posts
   const dishFlies = new Set();    // DOM ghosts of dishes flying into the tray
   let armedAt = 0;                // performance.now() when the armed food was chosen / last used
   let feedTag = null;             // { el, petId }: the name pill over the pet that would eat the dragged food
@@ -241,6 +255,7 @@ export function mountBarn3d(host, ctx) {
     if (lanternMat) lanternMat.color.set(n ? 0xffd966 : 0xfff1c9);
     if (lanternHaloMat) lanternHaloMat.visible = n;   // no halo draw call by day
     if (kitchen) { try { kitchen.setNight(n); } catch (e) { console.warn('kitchen.setNight failed', e); } }
+    if (pathLights) { try { pathLights.setNight(n); } catch (e) { console.warn('pathLights.setNight failed', e); } }
   }
 
   /** Builds the static scenery of the current tier as a few merged / instanced props (<= +15 draw calls at XL). */
@@ -377,10 +392,21 @@ export function mountBarn3d(host, ctx) {
     kitchen = null; kitchenTier = ''; kitchenGlide = null;
   }
   function removePaths() {
-    if (!pathMesh) return;
-    try { world.removeProp('yard-paths'); } catch { /* gone */ }
-    try { pathMesh.material.dispose(); } catch { /* shared */ }
-    pathMesh = null;
+    if (pathMesh) {
+      try { world.removeProp('yard-paths'); } catch { /* gone */ }
+      try { pathMesh.material.dispose(); } catch { /* shared */ }
+      pathMesh = null;
+    }
+    if (pathBorder) {
+      try { world.removeProp('yard-path-border'); } catch { /* gone */ }
+      try { pathBorder.dispose(); } catch (e) { console.warn('pathBorder.dispose failed', e); }
+      pathBorder = null;
+    }
+    if (pathLights) {
+      try { world.removeProp('yard-path-lights'); } catch { /* gone */ }
+      try { pathLights.dispose(); } catch (e) { console.warn('pathLights.dispose failed', e); }
+      pathLights = null;
+    }
   }
   /** Builds the kitchen at its tier spot, or (tier change) glides the existing one there. Then rebuilds the paths. */
   function syncBuildings() {
@@ -411,28 +437,33 @@ export function mountBarn3d(host, ctx) {
   }
   function placePaths(m) {
     removePaths();
-    const spot = kitchenSpotOf(yardTier);
-    if (typeof m.buildPathMesh !== 'function' || !spot) return;
-    const lay = (PB.YARD_TIER_LAYOUT && PB.YARD_TIER_LAYOUT[yardTier]) || { barnZ: YARD.nestZ - 2.35 };
-    const bez = (a, c, b, n = 8) => Array.from({ length: n + 1 }, (_, i) => {
-      const u = i / n, v = 1 - u;
-      return { x: v * v * a.x + 2 * u * v * c.x + u * u * b.x, z: v * v * a.z + 2 * u * v * c.z + u * u * b.z };
-    });
-    const centre = { x: 0, z: 0 };
-    const barnDoor = { x: 0, z: lay.barnZ + 1.2 };
-    const bowlEdge = { x: YARD.bowl.x - 0.55, z: YARD.bowl.z - 0.4 };
-    const d = kitchen && kitchen.doorLocal ? kitchen.doorLocal : { x: 0, z: 1.1 };
-    const kDoor = { x: spot.x + d.x, z: spot.z + d.z + 0.15 };
-    const lines = [
-      [...bez(barnDoor, { x: -0.5, z: barnDoor.z * 0.45 }, centre, 8), ...bez(centre, { x: 0.3, z: 1.6 }, bowlEdge, 6).slice(1)],
-      bez(centre, { x: kDoor.x * 0.2, z: (centre.z + kDoor.z) * 0.5 }, kDoor, 8),
-    ];
-    const pond = yardProps(yardTier).find(p => p.kind === 'pond');
-    if (pond) lines.push(bez(centre, { x: pond.x * 0.35, z: pond.z * 0.2 }, { x: pond.x - 1.2, z: pond.z - 0.2 }, 6));
-    const mesh = m.buildPathMesh(THREE, lines, { width: 0.9, color: 0xe7cf9c });
+    if (typeof m.buildPathMesh !== 'function' || typeof PB.yardPaths !== 'function') return;
+    const paths = PB.yardPaths(yardTier) || [];
+    if (!paths.length) return;
+    const mesh = m.buildPathMesh(THREE, paths.map(p => p.points), { width: paths[0].width || 0.9, color: 0xe7cf9c });
     if (!mesh) return;
     world.addProp('yard-paths', mesh, { ownGeometry: true });
     pathMesh = mesh;
+    // V25: flowers + pebbles along the edges (never on a prop, landmark, the kitchen, a decor spot or the bowl) and lamp posts
+    if (typeof m.buildPathBorder === 'function') {
+      try {
+        const avoid = YARD.obstacles.map(o => ({ x: o.x, z: o.z, r: (o.r || 0.5) + 0.3 }));
+        const k = kitchenSpotOf(yardTier);
+        if (k) avoid.push({ x: k.x, z: k.z, r: (k.r || 1.1) + 0.4 });
+        const lm = lmSpotsOf(yardTier);
+        if (lm) for (const o of Object.values(lm)) avoid.push({ x: o.x, z: o.z, r: (o.r || 0.5) + 0.4 });
+        for (const sp of (world.decorSpots || [])) avoid.push({ x: sp.x, z: sp.z, r: 0.75 });
+        avoid.push({ x: YARD.bowl.x, z: YARD.bowl.z, r: 0.9 });
+        pathBorder = m.buildPathBorder(THREE, paths, { gradient: world.toonGradient, tier: world.tier, avoid, seed: 25 });
+        if (pathBorder) world.addProp('yard-path-border', pathBorder);
+      } catch (e) { console.warn('pathBorder failed', e); pathBorder = null; }
+    }
+    if (typeof m.buildPathLights === 'function' && typeof PB.pathLightSpots === 'function') {
+      try {
+        pathLights = m.buildPathLights(THREE, PB.pathLightSpots(yardTier) || [], { gradient: world.toonGradient, tier: world.tier });
+        if (pathLights) { world.addProp('yard-path-lights', pathLights.group); pathLights.setNight(hourIsNight()); }
+      } catch (e) { console.warn('pathLights failed', e); pathLights = null; }
+    }
   }
   // ── V24 ของในแมพที่กดได้: ตู้จดหมาย / กระดาน / ม้านั่ง + ประตูโรงนา + หมุด (CONTRACT_V24 §2) ───────────────────────
   const LM_DEFS = [
@@ -718,7 +749,7 @@ export function mountBarn3d(host, ctx) {
     const old = yardTier;
     yardTier = tier;
     configureYard(tier);
-    world.setYardTier(tier, { animate });
+    world.setYardTier(tier, { animate, gates: gatesOf(tier) });
     buildYardProps(tier, animate);
     if (nestCount) buildNests(nestCount); // the nest row follows the barn
     spotSig = '';                         // decor spots of the new tier
@@ -3011,13 +3042,40 @@ export function mountBarn3d(host, ctx) {
     group.scale.setScalar(0.01);
     world.addActor(`decor-${rec.id}`, group, { radius: 0.62, height: 0.7, shadowScale: rec.decorId === 'ball' ? 0.4 : 0.9, stroke: false });
     decorInst.set(rec.id, inst);
+    if (inst.sign) {   // V25: the plain sign becomes D's wooden board with the farm name once buildings.js is ready
+      if (bldMod) upgradeSign(inst);
+      else loadBuildings().then(() => { if (!disposed && decorInst.get(inst.id) === inst) upgradeSign(inst); });
+    }
     return inst;
+  }
+
+  function upgradeSign(inst) {
+    if (!inst.sign || inst.sign.board || !bldMod || typeof bldMod.buildSignBoard !== 'function') return;
+    let tex = null;
+    try {
+      const farm = (getState().player && getState().player.farmName) || 'ฟาร์มของฉัน';
+      tex = makeSignTexture(THREE, farm);
+      const board = bldMod.buildSignBoard(THREE, { gradient: world.toonGradient, tier: world.tier, texture: tex.texture });
+      const old = inst.sign;
+      for (const c of [...inst.body.children]) inst.body.remove(c);   // the plain model (shared geometry) + its plane
+      if (old.mat.map) old.mat.map.dispose();
+      old.mat.dispose(); old.geo.dispose();
+      inst.body.add(board.group);
+      inst.sign = { board, tex };
+      inst.signName = farm;
+    } catch (e) { console.warn('signboard failed', e); if (tex) tex.dispose(); }
+  }
+  function disposeSign(inst) {
+    const sg = inst.sign;
+    if (!sg) return;
+    if (sg.board) { try { sg.board.dispose(); } catch { /* gone */ } try { sg.tex.dispose(); } catch { /* gone */ } }
+    else { if (sg.mat.map) sg.mat.map.dispose(); sg.mat.dispose(); sg.geo.dispose(); }
   }
 
   function removeDecorInst(inst) {
     for (const A of actors.values()) if (A.decorId === inst.id) { A.decorId = null; if (A.act.type === 'decor') begin(A, { type: 'idle', dur: 0.4 }); }
     world.removeActor(`decor-${inst.id}`);
-    if (inst.sign) { if (inst.sign.mat.map) inst.sign.mat.map.dispose(); inst.sign.mat.dispose(); inst.sign.geo.dispose(); }
+    disposeSign(inst);
     decorInst.delete(inst.id);
   }
 
@@ -3039,9 +3097,12 @@ export function mountBarn3d(host, ctx) {
         else fxo('sparkleAt', world, { x: inst.x, y: 0.5, z: inst.z });
       }
       if (inst.sign && inst.signName !== farm) {
-        if (inst.sign.mat.map) inst.sign.mat.map.dispose();
-        inst.sign.mat.map = signTexture(farm);
-        inst.sign.mat.needsUpdate = true;
+        if (inst.sign.tex) inst.sign.tex.setText(farm);
+        else {
+          if (inst.sign.mat.map) inst.sign.mat.map.dispose();
+          inst.sign.mat.map = signTexture(farm);
+          inst.sign.mat.needsUpdate = true;
+        }
         inst.signName = farm;
       }
     }
@@ -3077,7 +3138,10 @@ export function mountBarn3d(host, ctx) {
     if (decorMode) { openDecorSpot(inst.spot); return; }
     inst.pulse = 1;
     if (inst.ball) kickBall(null, inst, 0.9);
-    if (inst.decorId === 'sign') notify(`🪧 ${(getState().player || {}).farmName || 'ฟาร์มของฉัน'}`, 'info');
+    if (inst.decorId === 'sign') {
+      if (typeof ctx.openFarmName === 'function') ctx.openFarmName();
+      else notify(`🪧 ${(getState().player || {}).farmName || 'ฟาร์มของฉัน'}`, 'info');
+    }
   }
 
   function decorList() {
@@ -4849,6 +4913,7 @@ export function mountBarn3d(host, ctx) {
     stepKrathongs(dt);
     stepTemps(dt);
     try { stepLandmarks(dt, t); } catch (e) { console.warn('landmarks update failed', e); removeLandmarks(); }
+    if (pathLights) { try { pathLights.update(dt, t); } catch (e) { console.warn('pathLights.update failed', e); } }
     try { stepKitchen(dt, t); } catch (e) { if (kitchen) { console.warn('kitchen update failed', e); removeKitchen(); } }
     if (armedFood && performance.now() - armedAt > ARMED_FOOD_MS) { armedFood = null; refreshUi(); }   // V23: unused armed food lets go
     // selection ring
@@ -4930,6 +4995,7 @@ export function mountBarn3d(host, ctx) {
       removeKitchen();
       removeLandmarks();
       removePaths();
+      for (const inst of [...decorInst.values()]) { try { disposeSign(inst); } catch { /* gone */ } }
       document.removeEventListener('pointerdown', onBenchOutside, true);
       endBowl();
       for (const P of pins.values()) P.el.remove();

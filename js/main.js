@@ -202,6 +202,7 @@ async function loadViews() {
       return null;
     })));
   for (const m of mods) {
+    if (m && typeof m.setFarmNameOpener === 'function') m.setFarmNameOpener(promptFarmName); // petsView -> rename modal (no circular import)
     for (const v of (m && m.views) || []) byId.set(v.id, v);
   }
   return VIEW_ORDER.filter(id => byId.has(id)).map(id => byId.get(id));
@@ -343,14 +344,17 @@ function maybeClaimDaily() {
   notify(`🎁 รางวัลรายวัน! +50 🪙${seedText ? ` และเมล็ด ${seedText}` : ''}${bonusEgg ? ' และไข่ทุ่งนา 🥚 โชคดี!' : ''}`, 'success');
 }
 
-function promptFarmName() {
+/** First-run naming (no argument) or renaming later ({ rename: true }: prefilled with the current name, "บันทึก"). */
+export function promptFarmName(opts) {
+  const rename = !!(opts && opts.rename);
+  const current = rename ? (getState().player.farmName || DEFAULT_FARM_NAME) : DEFAULT_FARM_NAME;
   const close = openModal({
-    title: 'ยินดีต้อนรับสู่ฟาร์มน้องๆ 🐣',
+    title: rename ? 'เปลี่ยนชื่อฟาร์ม 🪧' : 'ยินดีต้อนรับสู่ฟาร์มน้องๆ 🐣',
     html:
       '<p class="muted">ตั้งชื่อฟาร์มของคุณ (ไม่เกิน 20 ตัวอักษร)</p>' +
       '<form class="name-form">' +
-        `<input class="input" name="farm" maxlength="20" autocomplete="off" required value="${escapeHtml(DEFAULT_FARM_NAME)}">` +
-        '<button type="submit" class="btn btn-primary">เริ่มเลย!</button>' +
+        `<input class="input" name="farm" maxlength="20" autocomplete="off" required value="${escapeHtml(current)}">` +
+        `<button type="submit" class="btn btn-primary">${rename ? 'บันทึก' : 'เริ่มเลย!'}</button>` +
       '</form>',
     onMount(el) {
       const form = el.querySelector('form');
